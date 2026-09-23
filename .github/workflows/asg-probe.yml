@@ -6,7 +6,9 @@ name: ASG API probe
 on:
   # Also runs when .github/asg-probe.request changes on a pushed branch: lets automation
   # without workflow_dispatch permission request a probe. File format: KEY=value lines
-  # (DATE=YYYY-MM-DD, WEBSITE_ID=123), both optional.
+  # (DATE=YYYY-MM-DD, WEBSITE_ID=123, WHERE=server|github), all optional.
+  # ADOK blocks frequent requests, so a run probes from ONE place: the production server
+  # by default (that is where the ingest will run), GitHub runners only on request.
   push:
     paths: [".github/asg-probe.request"]
   workflow_dispatch:
@@ -17,6 +19,10 @@ on:
       website_id:
         description: "AdSpyglass website id to scope per-site probes (optional)"
         required: false
+      where:
+        description: "Where to probe from: server (default) or github"
+        required: false
+        default: server
 
 jobs:
   probe:
@@ -35,12 +41,19 @@ jobs:
           ASG_PROBE_OUT: ${{ runner.temp }}/asg-samples
           INPUT_DATE: ${{ inputs.date }}
           INPUT_SITE: ${{ inputs.website_id }}
+          INPUT_WHERE: ${{ inputs.where }}
         run: |
           if [ "${{ github.event_name }}" = "push" ] && [ -f .github/asg-probe.request ]; then
             req_date=$(sed -n 's/^DATE=\([0-9-]*\)$/\1/p' .github/asg-probe.request | head -n1)
             req_site=$(sed -n 's/^WEBSITE_ID=\([0-9]*\)$/\1/p' .github/asg-probe.request | head -n1)
+            req_where=$(sed -n 's/^WHERE=\(server\|github\)$/\1/p' .github/asg-probe.request | head -n1)
             INPUT_DATE="${req_date:-$INPUT_DATE}"
             INPUT_SITE="${req_site:-$INPUT_SITE}"
+            INPUT_WHERE="${req_where:-$INPUT_WHERE}"
+          fi
+          if [ "${INPUT_WHERE:-server}" != "github" ]; then
+            echo "Probing from the server only (WHERE=${INPUT_WHERE:-server}); skipping the GitHub runner."
+            exit 0
           fi
           if [ -z "$ASG_AUTH_EMAIL" ] || [ -z "$ASG_AUTH_TOKEN" ]; then
             echo "::error::Add ASG_AUTH_EMAIL and ASG_AUTH_TOKEN to the production environment secrets."
@@ -75,7 +88,21 @@ jobs:
           ASG_AUTH_EMAIL: ${{ secrets.ASG_AUTH_EMAIL }}
           ASG_AUTH_TOKEN: ${{ secrets.ASG_AUTH_TOKEN }}
           INPUT_DATE: ${{ inputs.date }}
+          INPUT_SITE: ${{ inputs.website_id }}
+          INPUT_WHERE: ${{ inputs.where }}
         run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ -f .github/asg-probe.request ]; then
+            req_date=$(sed -n 's/^DATE=\([0-9-]*\)$/\1/p' .github/asg-probe.request | head -n1)
+            req_site=$(sed -n 's/^WEBSITE_ID=\([0-9]*\)$/\1/p' .github/asg-probe.request | head -n1)
+            req_where=$(sed -n 's/^WHERE=\(server\|github\)$/\1/p' .github/asg-probe.request | head -n1)
+            INPUT_DATE="${req_date:-$INPUT_DATE}"
+            INPUT_SITE="${req_site:-$INPUT_SITE}"
+            INPUT_WHERE="${req_where:-$INPUT_WHERE}"
+          fi
+          if [ "${INPUT_WHERE:-server}" = "github" ]; then
+            echo "Probing from the GitHub runner only (WHERE=github); skipping the server."
+            exit 0
+          fi
           date="${INPUT_DATE:-$(date -u -d yesterday +%F)}"
           dir=/tmp/asg-probe-$GITHUB_RUN_ID
           ssh deploy@"$HOST" "mkdir -p $dir/scripts/ci"
@@ -84,4 +111,4 @@ jobs:
           # Credentials go over stdin, never on a command line (ps) or in the log.
           { printf 'ASG_AUTH_EMAIL=%q\n' "$ASG_AUTH_EMAIL"; printf 'ASG_AUTH_TOKEN=%q\n' "$ASG_AUTH_TOKEN"; } |
             ssh deploy@"$HOST" "set -a; . /dev/stdin; set +a; \
-              ASG_PROBE_REDACT=1 ASG_PROBE_OUT=$dir/out bash $dir/scripts/asg-probe.sh $date; rc=\$?; rm -rf $dir; exit \$rc"
+              ASG_PROBE_REDACT=1 ASG_PROBE_OUT=$dir/out bash $dir/scripts/asg-probe.sh $date $INPUT_SITE; rc=\$?; rm -rf $dir; exit \$rc"

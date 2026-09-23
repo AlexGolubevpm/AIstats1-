@@ -4,6 +4,9 @@
 # Saves every response to docs/asg-samples/ (or $ASG_PROBE_OUT) and prints a status summary.
 # ASG_PROBE_REDACT=1 prints only structure (status, row counts, field names, masked name
 # shapes) — required when output goes to public CI logs.
+# ADOK blocks clients that send many requests: requests are spaced by ASG_PROBE_DELAY seconds
+# (default 5), capped at ASG_PROBE_MAX_REQUESTS (default 12), and the run stops at the first
+# auth failure / rate limit instead of hammering the API.
 set -uo pipefail
 
 BASE="${ASG_API_URL:-https://api.adok.ai/api}"
@@ -12,6 +15,11 @@ SITE="${2:-}"
 OUT="${ASG_PROBE_OUT:-$(dirname "$0")/../docs/asg-samples}"
 REDACT="${ASG_PROBE_REDACT:-0}"
 SHAPE="$(dirname "$0")/ci/shape.sh"
+DELAY="${ASG_PROBE_DELAY:-5}"
+MAX_REQUESTS="${ASG_PROBE_MAX_REQUESTS:-12}"
+REQUESTS=0
+LAST_CODE=""
+LAST_ROWS=""
 mkdir -p "$OUT"
 
 : "${ASG_AUTH_EMAIL:?set ASG_AUTH_EMAIL}"
@@ -37,10 +45,24 @@ printf 'after strip: ASG_AUTH_EMAIL length=%s, ASG_AUTH_TOKEN length=%s non-alph
 fingerprint() { printf '%s' "$1" | sha256sum | cut -c1-8; }
 printf 'fingerprints: email=%s token=%s\n' "$(fingerprint "$ASG_AUTH_EMAIL")" "$(fingerprint "$ASG_AUTH_TOKEN")"
 
+# Stops the whole run: further requests would only deepen a block on the ADOK side.
+stop_run() {
+  echo
+  echo "STOPPED after $REQUESTS request(s): $1"
+  echo "Wait before the next run (ADOK throttles/blocks frequent requests)."
+  exit 3
+}
+
 probe() {
   local label="$1" query="$2"
   local file="$OUT/${label}.json"
   local code redirect meta
+  if [ "$REQUESTS" -ge "$MAX_REQUESTS" ]; then
+    echo "$(printf '%-28s' "$label") skipped (request cap $MAX_REQUESTS reached)"
+    return
+  fi
+  [ "$REQUESTS" -gt 0 ] && sleep "$DELAY"
+  REQUESTS=$((REQUESTS + 1))
   meta=$(curl -sS -m 60 -o "$file" -w '%{http_code} %{redirect_url}' \
     -H "X-Asg-Auth-Email: $ASG_AUTH_EMAIL" \
     -H "X-Asg-Auth-Token: $ASG_AUTH_TOKEN" \
@@ -68,31 +90,43 @@ probe() {
     [ -n "$redirect" ] && first="redirect -> $redirect $first"
   fi
   printf '%-28s %s rows=%-6s first=%s\n' "$label" "$code" "$rows" "$first"
+  LAST_CODE="$code"
+  LAST_ROWS="$rows"
+  case "$code" in
+    302|401|403) stop_run "API rejected the credentials (HTTP $code${redirect:+, redirect to ${redirect%%\?*}})" ;;
+    429) stop_run "rate limited (HTTP 429)" ;;
+    000) stop_run "connection failed or reset by the API" ;;
+  esac
 }
 
 site_q=""
 [ -n "$SITE" ] && site_q="&website_id=$SITE"
 
-echo "Date: $DATE  Site: ${SITE:-all}"
-# Known-good baseline
-probe baseline_website       "group_by=website"
-# Partner / network dimension — candidate names
-for g in broker brokers network networks ad_network partner partners source advertiser campaign; do
+echo "Date: $DATE  Site: ${SITE:-all}  delay=${DELAY}s  max_requests=$MAX_REQUESTS"
+# 1. Known-good baseline. If this fails, nothing else will work — stop_run() ends here.
+probe baseline_website "group_by=website"
+
+# 2. Partner / network dimension: most likely names first, stop at the first that returns rows.
+PARTNER=""
+for g in broker network partner ad_network source; do
   probe "gb_$g" "group_by=$g$site_q"
+  if [ "$LAST_CODE" = "200" ] && [[ "$LAST_ROWS" =~ ^[0-9]+$ ]] && [ "$LAST_ROWS" -gt 0 ]; then
+    PARTNER="$g"; break
+  fi
 done
-# Multiple dimensions at once — candidate syntaxes
-probe multi_comma            "group_by=website,country$site_q"
-probe multi_array            "group_by[]=website&group_by[]=country$site_q"
-probe multi_repeat           "group_by=website&group_by=country$site_q"
-probe multi_broker_country   "group_by=broker,country$site_q"
-# Per-site cuts we will need regardless
-probe spot                   "group_by=spot$site_q"
-probe ad_type                "group_by=ad_type$site_q"
-probe country                "group_by=country$site_q"
-probe device                 "group_by=device$site_q"
-# Filters that would let us cross dimensions via iteration
-probe filter_country         "group_by=broker&country=JP$site_q"
-probe filter_ad_type         "group_by=spot&ad_type=banner$site_q"
+echo "partner dimension: ${PARTNER:-not found}"
+
+# 3. Multiple dimensions at once — one syntax at a time, only with a known partner name.
+if [ -n "$PARTNER" ]; then
+  probe multi_comma  "group_by=$PARTNER,country$site_q"
+  [ "$LAST_CODE" = "200" ] || probe multi_array "group_by[]=$PARTNER&group_by[]=country$site_q"
+  probe filter_country "group_by=$PARTNER&country=US$site_q"
+fi
+
+# 4. Cuts the ingest needs regardless.
+probe spot    "group_by=spot$site_q"
+probe ad_type "group_by=ad_type$site_q"
+probe filter_ad_type "group_by=spot&ad_type=banner$site_q"
 
 if [ "$REDACT" = "1" ]; then
   echo
@@ -107,4 +141,4 @@ if [ "$REDACT" = "1" ]; then
 fi
 
 echo
-echo "Responses saved to $OUT. Share the summary above (no tokens are written to the files)."
+echo "Requests sent: $REQUESTS. Responses saved to $OUT (no tokens are written to the files)."
