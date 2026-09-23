@@ -32,6 +32,10 @@ ASG_AUTH_TOKEN=$(printf '%s' "$ASG_AUTH_TOKEN" | tr -d '[:space:]')
 token_classes=$(printf '%s' "$ASG_AUTH_TOKEN" | tr -d '[:alnum:]' | wc -c | tr -d ' ')
 printf 'after strip: ASG_AUTH_EMAIL length=%s, ASG_AUTH_TOKEN length=%s non-alphanumeric=%s\n' \
   "${#ASG_AUTH_EMAIL}" "${#ASG_AUTH_TOKEN}" "$token_classes"
+# First 8 hex of sha256: lets the owner confirm the secret matches what they were given,
+# without the log being usable to recover it.
+fingerprint() { printf '%s' "$1" | sha256sum | cut -c1-8; }
+printf 'fingerprints: email=%s token=%s\n' "$(fingerprint "$ASG_AUTH_EMAIL")" "$(fingerprint "$ASG_AUTH_TOKEN")"
 
 probe() {
   local label="$1" query="$2"

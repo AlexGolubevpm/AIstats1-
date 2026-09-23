@@ -54,6 +54,7 @@ forbid "no token"                 "tok-SECRET"
 forbid "no email"                 "me@example.com"
 expect "whitespace reported"      "ASG_AUTH_TOKEN: length=11 whitespace=yes"
 expect "length after strip"       "ASG_AUTH_TOKEN length=10 non-alphanumeric=1"
+expect "fingerprints"             "fingerprints: email=$(printf 'me@example.com' | sha256sum | cut -c1-8) token=$(printf 'tok-SECRET' | sha256sum | cut -c1-8)"
 forbid "no shell errors"          "integer expression expected"
 
 # Wrong token: every probe is redirected; the log must show where, but not the query string.
