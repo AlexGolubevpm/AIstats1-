@@ -1,3 +1,6 @@
 docs/asg-samples/
 .env
 node_modules/
+.next/
+*.tsbuildinfo
+next-env.d.ts

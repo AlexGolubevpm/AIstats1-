@@ -1,0 +1,9 @@
+node_modules
+.next
+.git
+.github
+docs
+deploy
+scripts
+.env*
+!.env.example
