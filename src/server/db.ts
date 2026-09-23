@@ -9,5 +9,19 @@ export function createPrisma(url = process.env.DATABASE_URL): PrismaClient {
   return new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
 }
 
-export const db: PrismaClient = globalForDb.prisma ?? createPrisma();
-if (process.env.NODE_ENV !== "production") globalForDb.prisma = db;
+function client(): PrismaClient {
+  globalForDb.prisma ??= createPrisma();
+  return globalForDb.prisma;
+}
+
+/**
+ * Created on first use, not on import: `next build` imports route modules without a database
+ * (Docker build has no DATABASE_URL), and that must not fail.
+ */
+export const db: PrismaClient = new Proxy({} as PrismaClient, {
+  get(_, prop) {
+    const c = client();
+    const v = Reflect.get(c, prop, c);
+    return typeof v === "function" ? v.bind(c) : v;
+  },
+});

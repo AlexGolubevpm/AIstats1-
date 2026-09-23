@@ -92,3 +92,27 @@ describe("statuses", () => {
     expect(() => checkInvoiceAmount("100", "110", "доп. размещение")).not.toThrow();
   });
 });
+
+describe("deal form validation", async () => {
+  const { validateDeal, parseGeoList } = await import("@/server/domain/deals");
+  const { parseDecimal } = await import("@/server/domain/errors");
+  const base = { title: " T ", advertiser: " A ", format: "BANNER", paymentBasis: "PER_1000_LOADS" as const, price: "0.80", siteIds: ["s"], geoScope: [],
+    geoExclude: false, startsAt: "2026-09-01", endsAt: null, billingPeriod: "MONTH" as const, paymentTermsDays: 30, counterSource: "ASG_ZONE" as const, billedVia: "DIRECT" as const };
+  it("trims and normalises", () => expect(validateDeal(base)).toMatchObject({ title: "T", advertiser: "A", price: "0.8" }));
+  it("price precision depends on the model", () => {
+    expect(() => validateDeal({ ...base, price: "0.123456" })).toThrow(/5/);
+    expect(() => validateDeal({ ...base, paymentBasis: "FLAT_DAILY", price: "10.555" })).toThrow(/2/);
+    expect(() => validateDeal({ ...base, price: "abc" })).toThrow(/больше нуля/);
+  });
+  it("flat for the whole term needs an end date", () =>
+    expect(() => validateDeal({ ...base, paymentBasis: "FLAT_PERIOD", billingPeriod: "TERM" })).toThrow(/конца/));
+  it("terms and geo", () => {
+    expect(() => validateDeal({ ...base, paymentTermsDays: 400 })).toThrow(/180/);
+    expect(parseGeoList("jp, US;kr  jp")).toEqual(["JP", "US", "KR"]);
+  });
+  it("parseDecimal never throws", () => {
+    expect(parseDecimal("abc").isNaN()).toBe(true);
+    expect(parseDecimal("").isNaN()).toBe(true);
+    expect(parseDecimal("1.5").toString()).toBe("1.5");
+  });
+});

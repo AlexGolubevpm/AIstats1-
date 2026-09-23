@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AsgClient } from "@/server/ingest/adspyglass/client";
-import { ingestSiteGeo, ingestSiteTotals, ingestSiteZones, reprocessGeoFromRaw } from "@/server/ingest/adspyglass/ingest";
+import { ingestSiteGeo, ingestSiteTotals, ingestSiteZones, rawGeoKeys, reprocessGeoFromRaw } from "@/server/ingest/adspyglass/ingest";
 import { LocalRawStore, rawKey } from "@/server/ingest/raw-store";
 import { asgPause, asgRequestsToday, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
 import { seedReference } from "@/server/seed/reference";
@@ -99,6 +99,16 @@ describe("AdSpyglass ingest", () => {
     await reprocessGeoFromRaw(db, raw, [{ key: rawKey("adspyglass", "country/101", DATE, "r5"), date: DATE, siteId: "a" }]);
     expect((await geoRows()).map((x) => x.countryCode)).toEqual(["GR"]);
     expect(calls).toHaveLength(1);
+  });
+
+  it("finds the latest raw country response per site and day", async () => {
+    const { client } = fakeAsg(() => [{ name: "Japan", hits: 10, broker_income: 1 }]);
+    const own = new LocalRawStore(mkdtempSync(path.join(tmpdir(), "raw-")));
+    await ingestSiteGeo({ db, client, raw: own, runId: "c1" }, [DATE], "a");
+    await ingestSiteGeo({ db, client, raw: own, runId: "c2" }, [DATE], "a");
+    const keys = await rawGeoKeys(db, own, DATE, DATE);
+    expect(keys).toEqual([{ key: rawKey("adspyglass", "country/101", DATE, "c2"), date: DATE, siteId: "a" }]);
+    expect(await rawGeoKeys(db, own, "2026-01-01", "2026-01-02")).toEqual([]);
   });
 
   it("auth failure stops the run immediately and pauses the queue", async () => {

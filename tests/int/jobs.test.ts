@@ -56,4 +56,19 @@ describe("job handlers", () => {
     expect(run.rowsUpsert).toBeGreaterThan(0);
     expect(await db.alert.count({ where: { rule: "loss_geo" } })).toBeGreaterThan(0);
   });
+
+  it("geo:reprocess rewrites XX rows from raw after mapping, without API calls", async () => {
+    const date = "2026-09-20";
+    const s1 = await db.site.findUniqueOrThrow({ where: { id: "s1" } });
+    const runId = "rp1";
+    await raw.put(`raw/adspyglass/country/${s1.adsgSiteId}/${date}/${runId}.json`, [{ name: "Atlantis", hits: 10, impressions: 5, broker_income: 4 }]);
+    await db.countryAlias.create({ data: { source: "adspyglass", raw: "Atlantis", countryCode: "GR" } });
+    let calls = 0;
+    const fetchImpl = (async () => { calls++; return new Response("[]"); }) as typeof fetch;
+    const r = await runJob("geo:reprocess", { db, cfg: config({}), raw, today, fetchImpl });
+    expect(r.status).toBe("ok");
+    const gr = await db.factRevenueGeo.findMany({ where: { siteId: "s1", date: new Date(`${date}T00:00:00Z`), countryCode: "GR" } });
+    expect(gr.map((x) => Number(x.revenueReported))).toEqual([4]);
+    expect(calls).toBe(0);
+  });
 });

@@ -5,7 +5,7 @@ import Decimal from "decimal.js";
 import type { PrismaClient } from "@/generated/prisma/client";
 import {
   DealRuleError, calcAmount, checkInvoiceAmount, distribute, effectiveAmount, inGeoScope, periodsOverlap,
-  revenueStateOf, statusAfterPayment, weightOf, type PaymentBasis, type PeriodStatus,
+  revenueStateOf, statusAfterPayment, validateDeal, weightOf, type DealInput, type PaymentBasis, type PeriodStatus,
 } from "@/server/domain/deals";
 
 const d = (s: string) => new Date(`${s}T00:00:00Z`);
@@ -201,4 +201,56 @@ export async function correctPeriod(db: PrismaClient, periodId: string, input: E
   });
   await distributePeriod(db, next.id);
   return next.id;
+}
+
+// ---------- deal terms ----------
+
+const TERM_FIELDS = ["title", "format", "paymentBasis", "price", "geoScope", "geoExclude", "startsAt", "endsAt", "billingPeriod",
+  "paymentTermsDays", "counterSource", "billedVia", "notes"] as const;
+
+export async function saveDeal(db: PrismaClient, raw: DealInput, id?: string, reason?: string | null): Promise<string> {
+  const i = validateDeal(raw);
+  const known = await db.site.count({ where: { id: { in: i.siteIds } } });
+  if (known !== i.siteIds.length) throw new DealRuleError("sites", "Сайт не найден", "siteIds");
+  const advertiser = await db.advertiser.upsert({ where: { name: i.advertiser }, create: { name: i.advertiser }, update: {} });
+  const data = {
+    title: i.title, advertiserId: advertiser.id, format: i.format as never, paymentBasis: i.paymentBasis, price: i.price, geoScope: i.geoScope,
+    geoExclude: i.geoExclude, startsAt: d(i.startsAt), endsAt: i.endsAt ? d(i.endsAt) : null, billingPeriod: i.billingPeriod,
+    paymentTermsDays: i.paymentTermsDays, counterSource: i.counterSource, billedVia: i.billedVia, notes: i.notes || null,
+  };
+  const sites = i.siteIds.map((siteId) => ({ siteId, zoneId: i.zoneBySite?.[siteId] || null }));
+  if (!id) {
+    const deal = await db.deal.create({ data: { ...data, status: "ACTIVE", sites: { create: sites } } });
+    await db.auditLog.create({ data: { entity: "Deal", entityId: deal.id, field: "created", after: `${i.paymentBasis} ${i.price}` } });
+    return deal.id;
+  }
+  const before = await db.deal.findUniqueOrThrow({ where: { id } });
+  const hasPeriods = (await db.dealPeriod.count({ where: { dealId: id, status: { not: "OPEN" } } })) > 0;
+  const priceChanged = before.price.toString() !== new Decimal(i.price).toString() || before.paymentBasis !== i.paymentBasis;
+  if (hasPeriods && priceChanged && !reason?.trim()) throw new DealRuleError("reason_required", "По дилу уже внесены периоды — укажите причину изменения условий", "reason");
+  await db.$transaction(async (tx) => {
+    await tx.deal.update({ where: { id }, data });
+    await tx.dealSite.deleteMany({ where: { dealId: id } });
+    await tx.dealSite.createMany({ data: sites.map((s) => ({ ...s, dealId: id })) });
+    const norm = (v: unknown) => (v instanceof Date ? isoOf(v) : Array.isArray(v) ? v.join(",") : v == null ? "" : String(v));
+    for (const f of TERM_FIELDS) {
+      const a = norm((before as Record<string, unknown>)[f]), b = norm(f === "price" ? new Decimal(i.price) : (data as Record<string, unknown>)[f]);
+      if (f === "price" ? !new Decimal(a || 0).equals(b || 0) : a !== b) await tx.auditLog.create({ data: { entity: "Deal", entityId: id, field: f, before: a, after: b, reason: reason || null } });
+    }
+  });
+  return id;
+}
+
+export async function setDealStatus(db: PrismaClient, id: string, status: "ACTIVE" | "PAUSED" | "ENDED", endsAt?: string): Promise<void> {
+  const before = await db.deal.findUniqueOrThrow({ where: { id } });
+  await db.deal.update({ where: { id }, data: { status, ...(status === "ENDED" && !before.endsAt ? { endsAt: d(endsAt ?? isoOf(new Date())) } : {}) } });
+  await db.auditLog.create({ data: { entity: "Deal", entityId: id, field: "status", before: before.status, after: status } });
+}
+
+/** Only a draft deal without entered periods can be deleted; everything else keeps history. */
+export async function deleteDeal(db: PrismaClient, id: string): Promise<void> {
+  const deal = await db.deal.findUniqueOrThrow({ where: { id } });
+  const entered = await db.dealPeriod.count({ where: { dealId: id, status: { not: "OPEN" } } });
+  if (deal.status !== "DRAFT" || entered) throw new DealRuleError("delete", "Удалить можно только черновик без внесённых периодов — завершите дил");
+  await db.deal.delete({ where: { id } });
 }

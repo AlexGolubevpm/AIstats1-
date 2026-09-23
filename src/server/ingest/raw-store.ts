@@ -1,11 +1,13 @@
 // Raw API responses are stored BEFORE transformation, so metrics can be recomputed without
 // calling the API again (docs/tubestat-spec.md, principle 4). S3 when configured, else a local dir.
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export interface RawStore {
   put(key: string, body: unknown): Promise<string>;
   get(key: string): Promise<unknown>;
+  /** Keys under a prefix (e.g. "raw/adspyglass/country/"). */
+  list(prefix: string): Promise<string[]>;
 }
 
 export class LocalRawStore implements RawStore {
@@ -17,6 +19,12 @@ export class LocalRawStore implements RawStore {
     return key;
   }
   async get(key: string) { return JSON.parse(await readFile(path.join(this.dir, key), "utf8")); }
+  async list(prefix: string) {
+    try {
+      const files = await readdir(path.join(this.dir, prefix), { recursive: true, withFileTypes: true });
+      return files.filter((f) => f.isFile()).map((f) => path.relative(this.dir, path.join(f.parentPath, f.name)).split(path.sep).join("/")).sort();
+    } catch { return []; }
+  }
 }
 
 export class S3RawStore implements RawStore {
@@ -35,6 +43,18 @@ export class S3RawStore implements RawStore {
     const { GetObjectCommand } = await import("@aws-sdk/client-s3");
     const r = await (await this.client()).send(new GetObjectCommand({ Bucket: this.cfg.bucket, Key: key }));
     return JSON.parse(await r.Body!.transformToString());
+  }
+  async list(prefix: string) {
+    const { ListObjectsV2Command } = await import("@aws-sdk/client-s3");
+    const c = await this.client();
+    const out: string[] = [];
+    let token: string | undefined;
+    do {
+      const r = await c.send(new ListObjectsV2Command({ Bucket: this.cfg.bucket, Prefix: prefix, ContinuationToken: token }));
+      out.push(...(r.Contents ?? []).map((o) => o.Key!).filter(Boolean));
+      token = r.IsTruncated ? r.NextContinuationToken : undefined;
+    } while (token);
+    return out.sort();
   }
 }
 

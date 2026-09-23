@@ -140,3 +140,18 @@ export async function reprocessGeoFromRaw(db: PrismaClient, raw: RawStore, keys:
   for (const k of keys) rows += await writeGeo(db, k.date, k.siteId, mapCountryRows((await raw.get(k.key)) as never, resolver), "country", netId);
   return rows;
 }
+
+/**
+ * Latest stored country response per site × day in a window (runs are ordered by cuid, so the
+ * lexicographically last key of a day is the latest run).
+ */
+export async function rawGeoKeys(db: PrismaClient, raw: RawStore, from: string, to: string): Promise<{ key: string; date: string; siteId: string }[]> {
+  const sites = new Map((await db.site.findMany({ where: { adsgSiteId: { not: null } } })).map((s) => [String(s.adsgSiteId), s.id]));
+  const latest = new Map<string, { key: string; date: string; siteId: string }>();
+  for (const key of await raw.list("raw/adspyglass/country/")) {
+    const m = /^raw\/adspyglass\/country\/(\d+)\/(\d{4}-\d{2}-\d{2})\//.exec(key);
+    if (!m || m[2] < from || m[2] > to || !sites.has(m[1])) continue;
+    latest.set(`${m[1]}|${m[2]}`, { key, date: m[2], siteId: sites.get(m[1])! });
+  }
+  return [...latest.values()];
+}

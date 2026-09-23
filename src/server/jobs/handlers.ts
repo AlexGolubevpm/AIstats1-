@@ -4,7 +4,7 @@ import { addDays } from "@/lib/period";
 import type { Config } from "@/server/config";
 import { evaluateAlerts } from "@/server/domain/alerts/rules";
 import { AsgClient } from "@/server/ingest/adspyglass/client";
-import { ingestSiteGeo, ingestSiteTotals, ingestSiteZones } from "@/server/ingest/adspyglass/ingest";
+import { ingestSiteGeo, ingestSiteTotals, ingestSiteZones, rawGeoKeys, reprocessGeoFromRaw } from "@/server/ingest/adspyglass/ingest";
 import { MetrikaClient } from "@/server/ingest/metrika/client";
 import { ingestMetrika } from "@/server/ingest/metrika/ingest";
 import type { RawStore } from "@/server/ingest/raw-store";
@@ -15,7 +15,7 @@ import { forecastDeals } from "@/server/services/deals";
 export interface JobContext { db: PrismaClient; cfg: Config; raw: RawStore; today?: string; fetchImpl?: typeof fetch }
 export interface JobData { from?: string; to?: string; siteId?: string }
 
-export const JOB_NAMES = ["asg:totals", "asg:sites", "metrika", "derive"] as const;
+export const JOB_NAMES = ["asg:totals", "asg:sites", "metrika", "derive", "geo:reprocess"] as const;
 export type JobName = (typeof JOB_NAMES)[number];
 
 const todayOf = (ctx: JobContext) => ctx.today ?? new Date().toISOString().slice(0, 10);
@@ -40,6 +40,7 @@ export function windowFor(name: JobName, ctx: JobContext, data: JobData): { from
     case "asg:sites": return { from: addDays(t, -ctx.cfg.asg.restateDays), to: addDays(t, -1) };
     case "metrika": return { from: addDays(t, -1), to: t };
     case "derive": return { from: addDays(t, -4), to: addDays(t, -1) };
+    case "geo:reprocess": return { from: addDays(t, -90), to: t };
   }
 }
 
@@ -68,6 +69,15 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
     return withIngestRun(db, { source: "metrika", job: name, ...w }, async (runId) => {
       const r = await ingestMetrika({ db, client, raw, runId }, w.from, w.to, data.siteId);
       return { rows: r.rows, partial: r.failed };
+    });
+  }
+  if (name === "geo:reprocess") {
+    // After an alias was mapped: rewrite country rows from stored raw responses, no API calls.
+    return withIngestRun(db, { source: "adspyglass", job: name, ...w }, async () => {
+      const keys = await rawGeoKeys(db, raw, w.from, w.to);
+      const rows = await reprocessGeoFromRaw(db, raw, keys.filter((k) => !data.siteId || k.siteId === data.siteId));
+      const derived = await runJob("derive", ctx, { from: w.from, to: addDays(todayOf(ctx), -1) });
+      return { rows, partial: derived.error ? [`derive: ${derived.error}`] : [] };
     });
   }
   // derive: costs → deal forecast → alerts, in that order.

@@ -1,23 +1,81 @@
-/* Design tokens from docs/tubestat-spec.md. Tailwind + shadcn arrive with the UI PR. */
+@import "tailwindcss";
+
+/* Design tokens (docs/design/07-design-system.md). Light is the default theme, following the
+   approved reference: soft white cards on a cool grey canvas, blue accent. Dark is opt-in. */
 :root {
+  --bg: #f5f7fb;
+  --surface: #ffffff;
+  --surface-2: #f8fafc;
+  --surface-hover: #f1f5f9;
+  --border: #e6eaf0;
+  --border-strong: #d5dbe5;
+  --text: #0f172a;
+  --text-muted: #64748b;
+  --text-faint: #a0aec0;
+  --accent: #3b82f6;
+  --accent-soft: #eaf2ff;
+  --positive: #16a34a;
+  --positive-soft: #e8f7ee;
+  --negative: #e11d48;
+  --negative-soft: #fdecef;
+  --warning: #d97706;
+  --warning-soft: #fdf3e2;
+  --heat-pos: #16a34a1a;
+  --heat-neg: #e11d481a;
+  --shadow: 0 1px 2px rgb(15 23 42 / 0.04), 0 1px 1px rgb(15 23 42 / 0.03);
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
   --bg: #09090b;
   --surface: #131316;
+  --surface-2: #17171b;
+  --surface-hover: #1c1c21;
   --border: #26262c;
+  --border-strong: #35353d;
   --text: #fafafa;
   --text-muted: #8e8e99;
+  --text-faint: #5a5a66;
   --accent: #4f8df7;
+  --accent-soft: #1b2740;
+  --positive: #22c55e;
+  --positive-soft: #11261a;
+  --negative: #f43f5e;
+  --negative-soft: #2d1319;
+  --warning: #f59e0b;
+  --warning-soft: #2b2110;
+  --heat-pos: #22c55e1f;
+  --heat-neg: #f43f5e1f;
+  --shadow: none;
+  color-scheme: dark;
 }
 
-* { box-sizing: border-box; }
-
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 14px/20px Inter, system-ui, -apple-system, sans-serif;
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-muted: var(--text-muted);
+  --color-faint: var(--text-faint);
+  --color-accent: var(--accent);
+  --color-accent-soft: var(--accent-soft);
+  --color-positive: var(--positive);
+  --color-positive-soft: var(--positive-soft);
+  --color-negative: var(--negative);
+  --color-negative-soft: var(--negative-soft);
+  --color-warning: var(--warning);
+  --color-warning-soft: var(--warning-soft);
+  --font-sans: Inter, "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --radius-card: 12px;
 }
 
-.shell { max-width: 1600px; margin: 0 auto; padding: 24px; }
-h1 { font-size: 20px; line-height: 28px; font-weight: 600; letter-spacing: -0.01em; margin: 0 0 8px; }
-.muted { color: var(--text-muted); }
-.mono { font: 12px/16px ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-muted); }
+html, body { background: var(--bg); color: var(--text); }
+body { font-family: var(--font-sans); font-size: 14px; line-height: 20px; -webkit-font-smoothing: antialiased; }
+.num { font-variant-numeric: tabular-nums; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-card); box-shadow: var(--shadow); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }

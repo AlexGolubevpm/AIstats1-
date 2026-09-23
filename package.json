@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build && npm run build:worker",
-    "build:worker": "esbuild src/worker.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=dist/worker.js --alias:@=./src",
+    "build:worker": "esbuild src/worker.ts src/seed.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outdir=dist --entry-names=[name] --alias:@=./src",
     "start": "next start -p 3000",
     "worker": "tsx src/worker.ts",
     "typecheck": "tsc --noEmit",
@@ -54,6 +54,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4.3.3",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/jest-dom": "^6.6.0",

@@ -117,9 +117,8 @@ export function effectiveAmount(p: { status: PeriodStatus; amountInvoiced: Decim
   }
 }
 
-export class DealRuleError extends Error {
-  constructor(public code: string, message: string, public field?: string) { super(message); }
-}
+export { RuleError as DealRuleError } from "./errors";
+import { RuleError as DealRuleError, parseDecimal } from "./errors";
 
 /** Status after recording a payment; underpayment needs an explicit choice. */
 export function statusAfterPayment(invoiced: Decimal.Value, paid: Decimal.Value, remainder: "open" | "write_off" | undefined, reason?: string): PeriodStatus {
@@ -138,3 +137,31 @@ export function checkInvoiceAmount(calculated: Decimal.Value, invoiced: Decimal.
     throw new DealRuleError("override_reason", "Сумма отличается от расчёта — укажите причину", "overrideReason");
   }
 }
+
+export interface DealInput {
+  title: string; advertiser: string; format: string; paymentBasis: PaymentBasis; price: string; siteIds: string[];
+  geoScope: string[]; geoExclude: boolean; startsAt: string; endsAt: string | null; billingPeriod: BillingPeriod; paymentTermsDays: number;
+  counterSource: "ASG_ZONE" | "METRIKA" | "MANUAL"; billedVia: "DIRECT" | "VIA_ASG"; notes?: string | null; zoneBySite?: Record<string, string | null>;
+}
+
+const ISO = /^\d{4}-\d{2}-\d{2}$/;
+/** Validates the new-deal / edit-terms form; errors point at the field. */
+export function validateDeal(i: DealInput): DealInput {
+  if (!i.advertiser.trim()) throw new DealRuleError("advertiser", "Укажите рекламодателя", "advertiser");
+  if (!i.title.trim()) throw new DealRuleError("title", "Укажите название", "title");
+  const price = parseDecimal(i.price);
+  if (!price.isFinite() || price.lessThanOrEqualTo(0)) throw new DealRuleError("price", "Цена должна быть больше нуля", "price");
+  const dp = i.paymentBasis.startsWith("FLAT") ? 2 : 5;
+  if (price.decimalPlaces() > dp) throw new DealRuleError("price", `Не больше ${dp === 2 ? "2" : "5"} знаков после запятой`, "price");
+  if (!i.siteIds.length) throw new DealRuleError("sites", "Выберите хотя бы один сайт", "siteIds");
+  if (!ISO.test(i.startsAt)) throw new DealRuleError("startsAt", "Укажите дату начала", "startsAt");
+  if (i.endsAt && (!ISO.test(i.endsAt) || i.endsAt < i.startsAt)) throw new DealRuleError("endsAt", "Конец раньше начала", "endsAt");
+  if (i.paymentBasis === "FLAT_PERIOD" && !i.endsAt && i.billingPeriod === "TERM") throw new DealRuleError("endsAt", "Для флэта за весь срок нужна дата конца", "endsAt");
+  if (!Number.isInteger(i.paymentTermsDays) || i.paymentTermsDays < 0 || i.paymentTermsDays > 180) throw new DealRuleError("terms", "Срок оплаты — от 0 до 180 дней", "paymentTermsDays");
+  const bad = i.geoScope.find((c) => !/^[A-Z]{2}$/.test(c));
+  if (bad) throw new DealRuleError("geo", `Неизвестный код страны: ${bad}`, "geoScope");
+  return { ...i, title: i.title.trim(), advertiser: i.advertiser.trim(), price: price.toString() };
+}
+
+/** Parses "JP, us kr" into ISO codes; tier shortcuts are expanded by the caller. */
+export const parseGeoList = (s: string) => [...new Set(s.toUpperCase().split(/[\s,;]+/).filter(Boolean))];

@@ -7,3 +7,5 @@ next-env.d.ts
 src/generated/
 dist/
 coverage/
+.env.local
+dump.rdb
