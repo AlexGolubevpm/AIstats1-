@@ -1,0 +1,35 @@
+# TubeStat — правила работы в репозитории
+
+Внутренний дашборд маржи по сети тьюб-сайтов. Next.js 16 (App Router), Prisma + PostgreSQL, BullMQ + Redis, Tailwind + shadcn/ui. Деплой — GitHub Actions → Timeweb VPS (`docs/CICD.md`).
+
+## Обязательные правила
+
+1. **Тесты.** Любое изменение поведения приходит с тестами в том же PR. Баг — сначала падающий тест, потом фикс. Политика и что обязано быть покрыто: `docs/engineering/10-testing.md`.
+2. **Документация.** Любое изменение поведения обновляет документацию в том же PR. Карта «что где обновлять»: `docs/engineering/11-documentation.md`. Отклонение от спецификации или выбор между вариантами → ADR в `docs/adr/`.
+3. **Только через PR.** В `main` напрямую не пушим. Merge только при зелёном `check`. Merge в `main` = деплой на прод.
+4. **Секреты** никогда не коммитятся и не попадают в фикстуры. Шаблон переменных — `.env.example`.
+
+## Где что
+
+- Требования: `docs/tubestat-spec.md`, продуктовые документы `docs/product/01…06`.
+- Дизайн-система: `docs/design/07-design-system.md`.
+- Бэкенд и MCP: `docs/architecture/08-backend.md`, `09-mcp.md`.
+- Слои кода: `app` → `server/queries|actions` → `server/domain` → `db`. Формулы только в `src/lib/metrics.ts` и SQL-вьюхах.
+
+## Инварианты, которые легко сломать
+
+- Итог сети считается по сайтам, не суммой бандлов (сайт может быть в нескольких бандлах).
+- Own deals не входят в зонный и форматный разрезы AdSpyglass; не задваивать с `FactFixDeal`.
+- Метрики — отношение сумм, не среднее средних. rCPM в UI не выводим, сравнение сеток — rev / 1000 loads.
+- Ингест идемпотентен (upsert по натуральному ключу), сырой ответ пишется в S3 до трансформации.
+- Деньги — `Prisma.Decimal`, не `number`.
+
+## Команды
+
+```bash
+npm run dev        # локально
+npm run typecheck
+npm test           # unit + компоненты
+npm run build
+bash tests/ci/normalize-ssh-key.test.sh   # требует ssh-keygen
+```
