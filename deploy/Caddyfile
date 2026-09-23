@@ -1,0 +1,5 @@
+# APP_DOMAIN=stats.example.com gives automatic HTTPS; ":80" serves plain HTTP by IP.
+{$APP_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy web:3000
+}

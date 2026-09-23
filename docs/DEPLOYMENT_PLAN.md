@@ -96,18 +96,19 @@ ASG_AUTH_EMAIL=... ASG_AUTH_TOKEN=... ./scripts/asg-probe.sh 2026-09-22 137648
 
 ```
 Timeweb Cloud VPS (Ubuntu 24.04)
-└── Coolify
-    ├── tubestat-web      Next.js (next start), UI + /api/* + /api/mcp   → stats.<домен>
-    ├── tubestat-worker   тот же образ, CMD = node dist/worker.js (BullMQ)
+└── docker compose (/opt/tubestat, deploy/docker-compose.yml)
+    ├── caddy             HTTPS (Let's Encrypt) → web:3000              → stats.<домен>
+    ├── web               Next.js, UI + /api/* + /api/mcp
+    ├── worker            тот же образ, CMD = node dist/worker.js (BullMQ)
     ├── postgres-16       внутренняя сеть, без внешнего порта
-    ├── redis-7           внутренняя сеть, AOF on
-    └── бэкапы Postgres   Coolify scheduled backup → S3
+    └── redis-7           внутренняя сеть, AOF on
+GitHub Actions: PR → проверки; merge в main → образ в GHCR → SSH → deploy.sh (см. CICD.md)
 Объектное хранилище S3 (Timeweb S3 или Cloudflare R2) — сырые ответы API + бэкапы
 ```
 
 Решения:
-- **Один репозиторий, один Dockerfile, два сервиса** в Coolify. Воркер отдельным процессом — чтобы деплой UI не убивал идущий бэкфилл и наоборот.
-- **Миграции** — `prisma migrate deploy` в pre-deploy команде web-сервиса, не в воркере.
+- **Один репозиторий, один Dockerfile, два сервиса** в compose. Воркер отдельным процессом — чтобы деплой UI не убивал идущий бэкфилл и наоборот.
+- **Миграции** — `prisma migrate deploy` в `deploy/deploy.sh` перед рестартом, после бэкапа БД.
 - **Вьюхи и роль `mcp_reader`** — в SQL-миграциях Prisma (`prisma migrate dev --create-only`, дописать SQL руками), чтобы они жили в истории.
 - **Сырьё в S3.** Если оплата Cloudflare с твоей карты проблемна — Timeweb S3 совместим, тот же `@aws-sdk/client-s3`, меняется только endpoint. Переменные называем `S3_*`, а не `R2_*`.
 - **Next.js:** в adkai уже Next 16 — берём его, чтобы переносить компоненты без правок. В 16 `middleware.ts` переименован в `proxy.ts`, учесть при парольной защите.
@@ -121,14 +122,14 @@ Timeweb Cloud VPS (Ubuntu 24.04)
 | Диск | 50 GB NVMe | **80 GB NVMe** |
 | ОС | Ubuntu 24.04 LTS | Ubuntu 24.04 LTS |
 
-Почему 8 GB: сборка Next.js в Coolify съедает 2–3 GB, плюс Postgres, Redis, воркер и сам Coolify. На 4 GB билд будет падать по OOM, если не собирать образ в GitHub Actions.
+Образ собирается в GitHub Actions, а не на сервере, поэтому 4 GB хватит на старте; 8 GB — запас под Postgres на большом бэкфилле.
 
 При покупке:
 - **Локация.** Метрика доступна откуда угодно; важно, чтобы ASG API (`api.adok.ai`) и Cloudflare R2 отвечали без проблем — европейская локация Timeweb (Амстердам/Франкфурт) безопаснее, чем РФ. Проверить `curl` к обоим сразу после покупки.
 - **Публичный IPv4** обязателен (Let's Encrypt, коннектор Claude).
 - **SSH-ключ** добавить при создании, вход по паролю потом отключить.
 - **Бэкапы диска** Timeweb — включить, это дешёвая страховка поверх бэкапов Postgres.
-- Firewall Timeweb: открыть 22, 80, 443; 8000 (панель Coolify) — только на время первичной настройки или по своему IP.
+- Firewall: 22, 80, 443 — настраивает `scripts/server-bootstrap.sh`.
 
 ---
 
@@ -136,9 +137,9 @@ Timeweb Cloud VPS (Ubuntu 24.04)
 
 ### Этап 0 — сервер и спайк API (~1 ч, параллельно)
 **Сервер:**
-1. Купить VPS (см. выше), привязать A-записи `stats.<домен>` и `coolify.<домен>` на IP.
-2. `curl -fsSL https://cdn.coollabs.io/coolify/install.sh | sudo bash`
-3. В Coolify: домен панели, Let's Encrypt, подключить GitHub App к `AIstats1-`.
+1. Купить VPS (см. выше), привязать A-запись `stats.<домен>` на IP.
+2. Запустить `scripts/server-bootstrap.sh`, заполнить `/opt/tubestat/.env`, завести секреты в GitHub — пошагово в [`CICD.md`](./CICD.md).
+3. Включить защиту `main` (обязательный check).
 4. Создать ресурсы Postgres 16 и Redis 7, S3-хранилище для бэкапов, расписание бэкапа (ежедневно, хранить 14).
 5. `curl` с сервера к `api.adok.ai` и `api-metrika.yandex.net` — убедиться, что не режется.
 
@@ -150,7 +151,7 @@ Timeweb Cloud VPS (Ubuntu 24.04)
 - Схема из спецификации с поправками по итогам спайка; `BundleSite` вместо `Site.bundleId`.
 - SQL-миграция: 5 вьюх + роль `mcp_reader`.
 - Сид: 40 сайтов (реальные домены + `adsgSiteId` + `metrikaId` — нужен список), бандлы, страны с тирами, `CountryAlias`, сетки с цветами.
-- Dockerfile (исправленный), `.env.example`, первый деплой пустого приложения в Coolify — проверить, что пайплайн работает, **до** написания логики.
+- Dockerfile (исправленный), `.env.example`, первый деплой пустого приложения (с `/api/health`) через CI — проверить, что пайплайн работает, **до** написания логики.
 
 ### Этап 2 — ингест (~1.5 ч)
 - `lib/asg.ts`: клиент на основе adkai (GET, X-Asg-заголовки), ретраи с backoff, запись сырья в S3 до трансформации.
@@ -182,7 +183,7 @@ Timeweb Cloud VPS (Ubuntu 24.04)
 ## 5. Переменные окружения
 
 ```bash
-# База и очередь (из Coolify, внутренние хосты)
+# База и очередь (внутренние хосты compose)
 DATABASE_URL=postgresql://tubestat:***@postgres:5432/tubestat
 DATABASE_URL_MCP=postgresql://mcp_reader:***@postgres:5432/tubestat
 REDIS_URL=redis://redis:6379
@@ -225,8 +226,8 @@ GOOGLE_PRIVATE_KEY=
 
 ## 7. Что нужно от тебя
 
-1. **IP сервера и доступ по SSH** (или сам ставишь Coolify по шагам этапа 0).
-2. **Домен** для `stats.` и `coolify.`.
+1. **Сервер подготовлен по [`CICD.md`](./CICD.md)** и секреты в GitHub заведены.
+2. **Домен** для `stats.`.
 3. **Документация ASG API** или хотя бы подтверждение, есть ли `group_by` по сеткам и мульти-`group_by`; ещё лучше — выгрузка отчёта «по сеткам» из кабинета, чтобы понять, откуда берётся разрез.
 4. **Токен Метрики** и список: домен → AdSpyGlass ID → ID счётчика по всем ~40 сайтам.
 5. **Где живёт расход сейчас**: только Google Sheets? есть ли там гео?

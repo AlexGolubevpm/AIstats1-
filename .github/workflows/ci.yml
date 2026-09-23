@@ -1,0 +1,111 @@
+name: CI/CD
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/alexgolubevpm/tubestat
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell scripts syntax
+        run: for f in scripts/*.sh deploy/*.sh; do bash -n "$f"; done
+
+      - name: Compose file is valid
+        run: APP_IMAGE=x POSTGRES_PASSWORD=x docker compose -f deploy/docker-compose.yml --env-file /dev/null config -q
+
+      - uses: actions/setup-node@v4
+        if: hashFiles('package.json') != ''
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install
+        if: hashFiles('package.json') != ''
+        run: npm ci
+
+      - name: Prisma generate
+        if: hashFiles('prisma/schema.prisma') != ''
+        run: npx prisma generate
+
+      - name: Typecheck
+        if: hashFiles('tsconfig.json') != ''
+        run: npx tsc --noEmit
+
+      - name: Lint
+        if: hashFiles('package.json') != ''
+        run: npm run lint --if-present
+
+      - name: Test
+        if: hashFiles('package.json') != ''
+        run: npm test --if-present
+
+      - name: Docker build
+        if: hashFiles('Dockerfile') != ''
+        run: docker build -t tubestat:ci .
+
+  deploy:
+    needs: check
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency: { group: deploy-production, cancel-in-progress: false }
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Skip until the app has a Dockerfile
+        id: app
+        run: if [ -f Dockerfile ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; else echo "No Dockerfile yet, nothing to deploy."; fi
+
+      - uses: docker/login-action@v3
+        if: steps.app.outputs.ready == 'true'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        if: steps.app.outputs.ready == 'true'
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:latest
+
+      - name: SSH setup
+        if: steps.app.outputs.ready == 'true'
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DEPLOY_HOST }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+
+      - name: Upload stack files
+        if: steps.app.outputs.ready == 'true'
+        run: scp deploy/docker-compose.yml deploy/Caddyfile deploy/deploy.sh deploy@${{ secrets.DEPLOY_HOST }}:/opt/tubestat/
+
+      - name: Deploy
+        if: steps.app.outputs.ready == 'true'
+        run: |
+          ssh deploy@${{ secrets.DEPLOY_HOST }} \
+            "echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin \
+             && bash /opt/tubestat/deploy.sh '${{ env.IMAGE }}:${{ github.sha }}'; rc=\$?; docker logout ghcr.io >/dev/null; exit \$rc"
