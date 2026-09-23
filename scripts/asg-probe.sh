@@ -17,18 +17,37 @@ mkdir -p "$OUT"
 : "${ASG_AUTH_EMAIL:?set ASG_AUTH_EMAIL}"
 : "${ASG_AUTH_TOKEN:?set ASG_AUTH_TOKEN}"
 
+# Secrets pasted into web forms often carry a trailing newline or spaces, which the API
+# rejects (it answers 302 to a login page). Report it without revealing the values, then strip.
+describe_secret() {
+  local name="$1" value="$2" ws="no"
+  [[ "$value" =~ [[:space:]] ]] && ws="yes"
+  printf '%s: length=%s whitespace=%s\n' "$name" "${#value}" "$ws"
+}
+describe_secret ASG_AUTH_EMAIL "$ASG_AUTH_EMAIL"
+describe_secret ASG_AUTH_TOKEN "$ASG_AUTH_TOKEN"
+ASG_AUTH_EMAIL=$(printf '%s' "$ASG_AUTH_EMAIL" | tr -d '[:space:]')
+ASG_AUTH_TOKEN=$(printf '%s' "$ASG_AUTH_TOKEN" | tr -d '[:space:]')
+
 probe() {
   local label="$1" query="$2"
   local file="$OUT/${label}.json"
-  local code
-  code=$(curl -sS -m 60 -o "$file" -w '%{http_code}' \
+  local code redirect meta
+  meta=$(curl -sS -m 60 -o "$file" -w '%{http_code} %{redirect_url}' \
     -H "X-Asg-Auth-Email: $ASG_AUTH_EMAIL" \
     -H "X-Asg-Auth-Token: $ASG_AUTH_TOKEN" \
     "$BASE/report?from=$DATE&to=$DATE&$query")
+  code=${meta%% *}
+  redirect=${meta#* }
+  [ "$redirect" = "$meta" ] && redirect=""
   local rows first
-  rows=$(jq 'if type=="array" then length else "not-array" end' "$file" 2>/dev/null || echo "?")
+  rows=$(jq 'if type=="array" then length else "not-array" end' "$file" 2>/dev/null) || rows="not-json"
+  [ -n "$rows" ] || rows="empty"
   if [ "$REDACT" = "1" ]; then
-    if [ "$code" != "200" ]; then
+    if [ -n "$redirect" ]; then
+      # Redirect target without query string: tells login page from path change.
+      first="redirect -> ${redirect%%\?*}"
+    elif [ "$code" != "200" ]; then
       # Error bodies carry the API's explanation, not report data.
       first=$(head -c 160 "$file" | tr '\n' ' ')
     elif [ "$rows" = "not-array" ]; then
@@ -38,6 +57,7 @@ probe() {
     fi
   else
     first=$(jq -c 'if type=="array" then .[0].name else . end' "$file" 2>/dev/null | cut -c1-80)
+    [ -n "$redirect" ] && first="redirect -> $redirect $first"
   fi
   printf '%-28s %s rows=%-6s first=%s\n' "$label" "$code" "$rows" "$first"
 }
@@ -70,8 +90,8 @@ if [ "$REDACT" = "1" ]; then
   echo
   echo "== Structure of non-empty responses (values masked)"
   for f in "$OUT"/*.json; do
-    n=$(jq 'if type=="array" then length else 0 end' "$f" 2>/dev/null || echo 0)
-    [ "$n" -gt 0 ] || continue
+    n=$(jq 'if type=="array" then length else 0 end' "$f" 2>/dev/null) || n=0
+    [ "${n:-0}" -gt 0 ] 2>/dev/null || continue
     echo "-- $(basename "$f" .json) ($n rows)"
     echo "   fields: $(jq -r '.[0] | keys | join(",")' "$f")"
     echo "   names:  $(jq -r '.[:3][] | .name // "" | tostring' "$f" | bash "$SHAPE" | paste -sd '|' -)"
