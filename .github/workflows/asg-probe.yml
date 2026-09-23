@@ -48,3 +48,40 @@ jobs:
           fi
           date="${INPUT_DATE:-$(date -u -d yesterday +%F)}"
           bash scripts/asg-probe.sh "$date" "$INPUT_SITE"
+
+  # Same probe, but executed on the production server over SSH: tells an IP allowlist on
+  # the ADOK side (works from the server, fails from GitHub runners) from bad credentials.
+  probe-from-server:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: SSH setup
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s' "$SSH_KEY" | bash scripts/ci/normalize-ssh-key.sh > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' > ~/.ssh/known_hosts
+
+      - name: Probe from server
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          ASG_AUTH_EMAIL: ${{ secrets.ASG_AUTH_EMAIL }}
+          ASG_AUTH_TOKEN: ${{ secrets.ASG_AUTH_TOKEN }}
+          INPUT_DATE: ${{ inputs.date }}
+        run: |
+          date="${INPUT_DATE:-$(date -u -d yesterday +%F)}"
+          dir=/tmp/asg-probe-$GITHUB_RUN_ID
+          ssh deploy@"$HOST" "mkdir -p $dir/scripts/ci"
+          scp -q scripts/asg-probe.sh deploy@"$HOST":$dir/scripts/
+          scp -q scripts/ci/shape.sh deploy@"$HOST":$dir/scripts/ci/
+          # Credentials go over stdin, never on a command line (ps) or in the log.
+          { printf 'ASG_AUTH_EMAIL=%q\n' "$ASG_AUTH_EMAIL"; printf 'ASG_AUTH_TOKEN=%q\n' "$ASG_AUTH_TOKEN"; } |
+            ssh deploy@"$HOST" "set -a; . /dev/stdin; set +a; \
+              ASG_PROBE_REDACT=1 ASG_PROBE_OUT=$dir/out bash $dir/scripts/asg-probe.sh $date; rc=\$?; rm -rf $dir; exit \$rc"
