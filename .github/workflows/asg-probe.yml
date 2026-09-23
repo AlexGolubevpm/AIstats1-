@@ -1,0 +1,39 @@
+name: ASG API probe
+
+# Manually triggered: discovers which groupings/filters the AdSpyglass (ADOK) report
+# API supports. The repository is public, so the log shows structure only
+# (status codes, row counts, field names, masked name shapes) — never values.
+on:
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Report date YYYY-MM-DD (default: yesterday UTC)"
+        required: false
+      website_id:
+        description: "AdSpyglass website id to scope per-site probes (optional)"
+        required: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Probe
+        env:
+          ASG_AUTH_EMAIL: ${{ secrets.ASG_AUTH_EMAIL }}
+          ASG_AUTH_TOKEN: ${{ secrets.ASG_AUTH_TOKEN }}
+          ASG_PROBE_REDACT: "1"
+          ASG_PROBE_OUT: ${{ runner.temp }}/asg-samples
+          INPUT_DATE: ${{ inputs.date }}
+          INPUT_SITE: ${{ inputs.website_id }}
+        run: |
+          if [ -z "$ASG_AUTH_EMAIL" ] || [ -z "$ASG_AUTH_TOKEN" ]; then
+            echo "::error::Add ASG_AUTH_EMAIL and ASG_AUTH_TOKEN to the production environment secrets."
+            exit 1
+          fi
+          date="${INPUT_DATE:-$(date -u -d yesterday +%F)}"
+          bash scripts/asg-probe.sh "$date" "$INPUT_SITE"
