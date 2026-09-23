@@ -28,6 +28,10 @@ describe_secret ASG_AUTH_EMAIL "$ASG_AUTH_EMAIL"
 describe_secret ASG_AUTH_TOKEN "$ASG_AUTH_TOKEN"
 ASG_AUTH_EMAIL=$(printf '%s' "$ASG_AUTH_EMAIL" | tr -d '[:space:]')
 ASG_AUTH_TOKEN=$(printf '%s' "$ASG_AUTH_TOKEN" | tr -d '[:space:]')
+# Character classes only (no values): catches a label like "API access token:" pasted in.
+token_classes=$(printf '%s' "$ASG_AUTH_TOKEN" | tr -d '[:alnum:]' | wc -c | tr -d ' ')
+printf 'after strip: ASG_AUTH_EMAIL length=%s, ASG_AUTH_TOKEN length=%s non-alphanumeric=%s\n' \
+  "${#ASG_AUTH_EMAIL}" "${#ASG_AUTH_TOKEN}" "$token_classes"
 
 probe() {
   local label="$1" query="$2"
