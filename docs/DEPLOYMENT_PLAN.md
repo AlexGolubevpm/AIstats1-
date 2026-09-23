@@ -76,7 +76,7 @@
 
 **Шаг 0 плана — это спайк на полчаса:** запустить `scripts/asg-probe.sh` (перебирает кандидаты `group_by` для партнёров, мульти-группировку и фильтры, ответы кладёт в `docs/asg-samples/`), закрыть A1–A7.
 
-Запуск — вручную из GitHub Actions: workflow **ASG API probe** (Actions → ASG API probe → Run workflow, опционально дата и `website_id`). Нужны секреты `ASG_AUTH_EMAIL` и `ASG_AUTH_TOKEN` в environment `production`. Репозиторий публичный, поэтому в логе только структура: коды ответов, число строк, названия полей и маска имён (`999999. aaaa-aaaa.aaa`), без доменов и денег — это проверяет `tests/ci/asg-probe.test.sh`.
+Запуск — вручную из GitHub Actions: workflow **ASG API probe** (Actions → ASG API probe → Run workflow, опционально дата и `website_id`) или пушем изменения в `.github/asg-probe.request` (строки `DATE=YYYY-MM-DD`, `WEBSITE_ID=123`) — так запускает автоматизация без права на `workflow_dispatch`. Нужны секреты `ASG_AUTH_EMAIL` и `ASG_AUTH_TOKEN` в environment `production`. Репозиторий публичный, поэтому в логе только структура: коды ответов, число строк, названия полей и маска имён (`999999. aaaa-aaaa.aaa`), без доменов и денег — это проверяет `tests/ci/asg-probe.test.sh`.
 
 Локально или на сервере — с полным выводом:
 

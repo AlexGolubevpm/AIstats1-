@@ -4,6 +4,11 @@ name: ASG API probe
 # API supports. The repository is public, so the log shows structure only
 # (status codes, row counts, field names, masked name shapes) — never values.
 on:
+  # Also runs when .github/asg-probe.request changes on a pushed branch: lets automation
+  # without workflow_dispatch permission request a probe. File format: KEY=value lines
+  # (DATE=YYYY-MM-DD, WEBSITE_ID=123), both optional.
+  push:
+    paths: [".github/asg-probe.request"]
   workflow_dispatch:
     inputs:
       date:
@@ -31,6 +36,12 @@ jobs:
           INPUT_DATE: ${{ inputs.date }}
           INPUT_SITE: ${{ inputs.website_id }}
         run: |
+          if [ "${{ github.event_name }}" = "push" ] && [ -f .github/asg-probe.request ]; then
+            req_date=$(sed -n 's/^DATE=\([0-9-]*\)$/\1/p' .github/asg-probe.request | head -n1)
+            req_site=$(sed -n 's/^WEBSITE_ID=\([0-9]*\)$/\1/p' .github/asg-probe.request | head -n1)
+            INPUT_DATE="${req_date:-$INPUT_DATE}"
+            INPUT_SITE="${req_site:-$INPUT_SITE}"
+          fi
           if [ -z "$ASG_AUTH_EMAIL" ] || [ -z "$ASG_AUTH_TOKEN" ]; then
             echo "::error::Add ASG_AUTH_EMAIL and ASG_AUTH_TOKEN to the production environment secrets."
             exit 1
