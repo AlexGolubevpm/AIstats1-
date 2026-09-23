@@ -24,6 +24,8 @@ services:
     environment:
       DATABASE_URL: postgresql://tubestat:${POSTGRES_PASSWORD}@postgres:5432/tubestat
       REDIS_URL: redis://redis:6379
+    volumes:
+      - raw_data:/data/raw
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -34,7 +36,7 @@ services:
       retries: 10
       start_period: 20s
 
-  # Enabled once the BullMQ worker exists: add COMPOSE_PROFILES=worker to .env.
+  # Ingest and nightly jobs. Enable with COMPOSE_PROFILES=worker in .env.
   worker:
     image: ${APP_IMAGE:?APP_IMAGE is set by the deploy script}
     profiles: [worker]
@@ -46,6 +48,8 @@ services:
     environment:
       DATABASE_URL: postgresql://tubestat:${POSTGRES_PASSWORD}@postgres:5432/tubestat
       REDIS_URL: redis://redis:6379
+    volumes:
+      - raw_data:/data/raw
     depends_on:
       postgres: { condition: service_healthy }
       redis: { condition: service_healthy }
@@ -82,3 +86,4 @@ volumes:
   caddy_config:
   pg_data:
   redis_data:
+  raw_data:

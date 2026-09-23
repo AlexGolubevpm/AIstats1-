@@ -16,6 +16,14 @@ env:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env: { POSTGRES_PASSWORD: postgres }
+        ports: ["5432:5432"]
+        options: --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      TEST_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
     steps:
       - uses: actions/checkout@v4
 
@@ -38,10 +46,6 @@ jobs:
         if: hashFiles('package.json') != ''
         run: npm ci
 
-      - name: Prisma generate
-        if: hashFiles('prisma/schema.prisma') != ''
-        run: npx prisma generate
-
       - name: Typecheck
         if: hashFiles('tsconfig.json') != ''
         run: npx tsc --noEmit
@@ -50,9 +54,13 @@ jobs:
         if: hashFiles('package.json') != ''
         run: npm run lint --if-present
 
-      - name: Test
+      - name: Unit and component tests
         if: hashFiles('package.json') != ''
         run: npm test --if-present
+
+      - name: Integration tests (Postgres)
+        if: hashFiles('tests/int/global-setup.ts') != ''
+        run: npm run test:int
 
       - name: Docker build
         if: hashFiles('Dockerfile') != ''

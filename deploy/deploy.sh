@@ -9,6 +9,7 @@ export APP_IMAGE="$IMAGE"
 
 echo "==> Pull $IMAGE"
 docker compose pull web
+[ -n "${COMPOSE_PROFILES:-}" ] || grep -q "^COMPOSE_PROFILES=" .env 2>/dev/null || echo "note: worker is off (COMPOSE_PROFILES=worker not set in .env)"
 
 echo "==> Backup database"
 if docker compose ps --status running postgres | grep -q postgres; then
@@ -20,7 +21,10 @@ echo "==> Start dependencies"
 docker compose up -d postgres redis
 
 echo "==> Migrations"
-docker compose run --rm --no-deps web sh -c 'if [ -d prisma/migrations ]; then npx prisma migrate deploy; else echo "no migrations"; fi'
+docker compose run --rm --no-deps web sh -c 'if [ -d prisma/migrations ]; then npx --no-install prisma migrate deploy; else echo "no migrations"; fi'
+
+echo "==> Reference data"
+docker compose run --rm --no-deps web sh -c 'if [ -f dist/seed.js ]; then node dist/seed.js; fi'
 
 echo "==> Start app"
 docker compose up -d --remove-orphans
