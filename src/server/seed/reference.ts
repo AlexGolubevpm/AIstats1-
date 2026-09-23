@@ -11,6 +11,8 @@ export const NETWORKS = [
   { slug: "exoclick", title: "ExoClick", color: "#FBBF24", kind: "MEDIATED", sortOrder: 40 },
   { slug: "own_deals", title: "Own deals", color: "#22C55E", kind: "DIRECT", sortOrder: 50, isSystem: true },
   { slug: "marketplace", title: "Marketplace", color: "#2DD4BF", kind: "MARKETPLACE", sortOrder: 60 },
+  // Used while the API gives no per-network split: revenue of all networks together.
+  { slug: "asg_all", title: "AdSpyglass (все сетки)", color: "#64748B", kind: "MEDIATED", sortOrder: 90, isSystem: true },
 ] as const;
 
 export const OTHER_COLOR = "#94A3B8";
