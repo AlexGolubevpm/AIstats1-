@@ -1,10 +1,10 @@
 # CI/CD: GitHub → Timeweb
 
 ```
-PR → GitHub Actions: проверки (typecheck, lint, test, docker build)
+PR → GitHub Actions: проверки (typecheck, unit + компоненты, интеграционные на Postgres, docker build)
 merge в main → сборка образа → ghcr.io/alexgolubevpm/tubestat:<sha>
             → SSH на сервер под пользователем deploy
-            → /opt/tubestat/deploy.sh: бэкап БД → миграции → docker compose up → ждём healthcheck
+            → /opt/tubestat/deploy.sh: бэкап БД → миграции → справочники (dist/seed.js) → docker compose up → ждём healthcheck
 ```
 
 На сервере: Docker + `docker compose` со стеком из `deploy/docker-compose.yml`: Caddy (HTTPS), web, worker, Postgres 16, Redis 7. Секреты приложения лежат только в `/opt/tubestat/.env` на сервере; в GitHub — только доступ по SSH.
@@ -37,6 +37,18 @@ nano /opt/tubestat/.env       # шаблон — .env.example в репозит�
 ```
 
 Минимум для первого деплоя: `POSTGRES_PASSWORD` (`openssl rand -hex 24`) и `APP_DOMAIN` — либо `:80`, пока нет домена, либо `stats.<домен>` после того, как A-запись указывает на IP (Caddy сам получит сертификат).
+
+Для приложения добавить:
+
+| Строка | Зачем |
+| --- | --- |
+| `APP_PASSWORD=…` | Пароль входа (потом меняется в Настройки → Доступ) |
+| `COMPOSE_PROFILES=worker` | Включает воркер ингеста |
+| `COOKIE_SECURE=1` | Когда сайт открывается по HTTPS |
+| `ASG_AUTH_EMAIL`, `ASG_AUTH_TOKEN` | AdSpyglass; без них воркер пропускает джобы AdSpyglass |
+| `METRIKA_TOKEN` | Метрика |
+
+После правки `.env` — `cd /opt/tubestat && docker compose up -d` (или дождаться следующего деплоя).
 
 ### 4. Секреты в GitHub
 
@@ -80,7 +92,8 @@ ssh deploy@$IP 'bash /opt/tubestat/deploy.sh ghcr.io/alexgolubevpm/tubestat:<с�
 Чтобы деплой проходил, образ должен:
 - слушать порт `3000`;
 - отвечать `200` на `GET /api/health`;
-- содержать `prisma/migrations` и Prisma CLI, если есть миграции;
-- для воркера — `dist/worker.js`; включается строкой `COMPOSE_PROFILES=worker` в `.env`.
+- содержать `prisma/migrations` и Prisma CLI (`npx --no-install prisma migrate deploy`);
+- содержать `dist/seed.js` (справочники, идемпотентно) и `dist/worker.js`; воркер включается строкой `COMPOSE_PROFILES=worker` в `.env`;
+- собираться без базы: `next build` не должен подключаться к Postgres (клиент Prisma создаётся при первом запросе).
 
-Пока в репозитории нет `Dockerfile`, job `deploy` проходит вхолостую.
+Сырьё API без S3 лежит в томе `raw_data` (`/data/raw` в web и worker).

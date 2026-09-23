@@ -11,7 +11,7 @@
 | Уровень | Инструмент | Что тестируем |
 | --- | --- | --- |
 | Unit | Vitest | `lib/metrics`, `lib/format`, `lib/period`, `server/domain/*`, нормализация, парсеры ответов API |
-| Интеграционные | Vitest + Postgres в Docker (Testcontainers или сервис в CI) | Миграции, вьюхи, upsert ингеста, SQL алертов, server actions, права роли `mcp_reader`, инструменты MCP |
+| Интеграционные | Vitest + Postgres (сервис в CI; локально `TEST_DATABASE_URL`) — на каждый прогон создаётся база `tubestat_test_<pid>` и применяются миграции | Миграции, вьюхи, upsert ингеста, SQL алертов, server actions, права роли `mcp_reader`, инструменты MCP |
 | Компоненты | Vitest + Testing Library | `DataTable` (форматирование по `kind`, сортировка, итоги), `KpiCard`, формы дилов (валидация, авторасчёт) |
 | E2E | Playwright (Chromium) | Ключевые сценарии в браузере против собранного приложения и тестовой базы |
 | Скрипты деплоя | bash-тесты в `tests/ci/*.test.sh` | Нормализация ключа, валидность compose, синтаксис скриптов |
@@ -42,20 +42,37 @@
 
 - Реальные ответы API после спайка кладутся в `tests/fixtures/` с обезличенными доменами. Токены и email не попадают в фикстуры никогда.
 - Фабрики тестовых данных — `tests/factories/*.ts`, по одной на модель.
-- Единая «эталонная сеть» `tests/fixtures/network.ts`: 3 бандла, 6 сайтов (один в двух бандлах), 4 страны, 3 сетки + own deals, 2 дила, 14 дней. На ней проверяются вьюхи, алерты, MCP и E2E.
+- Единая «эталонная сеть» `tests/factories/network.ts`: 2 бандла, 3 сайта (один в двух бандлах), 2 страны, сетка + own deals, дил `DIRECT` и дил `VIA_ASG`, 2 дня. На ней проверяются вьюхи, алерты, сервисы и MCP.
+
+## Что есть сейчас
+
+| Файл | Что проверяет |
+| --- | --- |
+| `tests/unit/metrics`, `format-period`, `charts` | Формулы, форматирование, периоды, топ-N графиков |
+| `tests/unit/normalize`, `asg-client` | Нормализация стран/доменов/зон; лимиты клиента AdSpyglass (интервал, бюджет, стоп на 302/429) |
+| `tests/unit/costs`, `deals` | Выбор ставки, расчёт сумм по моделям, раскладка до цента, статусы оплат, валидация формы дила |
+| `tests/unit/sql-guard` | Защита `query`: таблицы, функции, несколько операторов, писатели в CTE |
+| `tests/unit/db` | Модуль базы импортируется без `DATABASE_URL` (сборка образа) |
+| `tests/components/data-table` | Формат ячеек, heat, пунктир прогноза, CSV; сортировка/фильтры/страницы из URL |
+| `tests/int/views`, `alerts` | Вьюхи и инварианты сети; права `mcp_reader`; правила алертов |
+| `tests/int/asg-ingest`, `metrika-ingest`, `jobs` | Ингест, пауза и бюджет, пересчёт гео из сырья, окна джобов |
+| `tests/int/services`, `finance`, `settings` | Расход и импорт, дилы и периоды, выплаты ASG, отчёт за месяц, сайты/бандлы/ставки/сетки/алиасы |
+| `tests/int/auth`, `mcp` | Пароль, сессии, блокировка; инструменты MCP и route с токеном |
+| `tests/ci/*.test.sh` | Скрипты деплоя и проверки API |
+
+Ещё не сделано: E2E-сценарии Playwright (выше) и порог покрытия в CI — идут следующим PR.
 
 ## Покрытие
 
-- Порог в CI: **80% строк** по `src/lib` и `src/server`. Падение ниже порога валит `check`.
+- Цель: **80% строк** по `src/lib` и `src/server` (`npm run coverage`). В `check` порог пока не включён.
 - Покрытие — индикатор, а не цель: тест без проверки результата не считается тестом.
 
 ## Команды
 
 ```bash
 npm test               # unit + компоненты
-npm run test:int       # интеграционные (поднимает Postgres)
-npm run test:e2e       # Playwright
-npm run test:all       # всё, как в CI
+npm run test:int       # интеграционные (нужен Postgres: TEST_DATABASE_URL)
+npm run test:all       # unit + интеграционные + bash-тесты
 ```
 
 В CI job `check` запускает lint, typecheck, `test`, `test:int`, `test:e2e`, bash-тесты и сборку образа. Merge в `main` возможен только при зелёном `check`.

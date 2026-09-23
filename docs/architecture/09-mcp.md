@@ -36,16 +36,28 @@ Claude ──HTTPS + Bearer──► caddy ──► web /api/mcp
 
 `v_site_geo_daily`, `v_bundle_daily`, `v_zone_daily`, `v_network_geo`, `v_format_daily`, `v_deal_daily`, `v_alerts_active`. Все с суффиксом `_daily` содержат колонку `date`.
 
+Плюс справочные `v_sites` и `v_bundles`.
+
 ```sql
-CREATE ROLE mcp_reader LOGIN PASSWORD '…';
+CREATE ROLE mcp_reader NOLOGIN;
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM mcp_reader;
-GRANT SELECT ON v_site_geo_daily, v_bundle_daily, v_zone_daily, v_network_geo,
+GRANT SELECT ON v_sites, v_bundles, v_site_geo_daily, v_bundle_daily, v_zone_daily, v_network_geo,
                 v_format_daily, v_deal_daily, v_alerts_active TO mcp_reader;
-ALTER ROLE mcp_reader SET statement_timeout = '10s';
-ALTER ROLE mcp_reader SET default_transaction_read_only = on;
+GRANT mcp_reader TO CURRENT_USER;
 ```
 
-Роль и гранты создаются SQL-миграцией; тест проверяет, что `SELECT` из любой таблицы под этой ролью падает.
+Роль без логина ([ADR 0004](../adr/0004-revenue-facts-and-billing.md)): `query` выполняется так —
+
+```sql
+BEGIN;
+SET TRANSACTION READ ONLY;
+SET LOCAL statement_timeout = '10s';
+SET LOCAL ROLE mcp_reader;
+SELECT * FROM (<запрос>) AS _q LIMIT 1000;
+COMMIT;
+```
+
+Роль и гранты создаются SQL-миграцией; тест проверяет, что `SELECT` из таблицы под этой ролью падает с `permission denied`.
 
 ## Что написано в описании сервера
 
@@ -59,10 +71,15 @@ ALTER ROLE mcp_reader SET default_transaction_read_only = on;
 
 ## Защита `query`
 
-- Парсинг SQL (`pgsql-ast-parser`): разрешён ровно один оператор `SELECT` / `WITH … SELECT`; ссылки только на разрешённые вьюхи.
-- Навязанный `LIMIT 1000`.
+- Парсинг SQL (`pgsql-ast-parser`, `server/mcp/sql-guard.ts`): ровно один оператор `SELECT` / `WITH … SELECT` / `UNION`; ссылки только на разрешённые вьюхи и CTE; `INSERT/UPDATE/DELETE` внутри CTE запрещены.
+- Функции — только из белого списка (агрегаты, математика, даты, строки, оконные). `set_config`, `pg_*`, `query_to_xml`, `dblink` и любые схемо-квалифицированные вызовы отклоняются: без этого запрос мог бы вернуть себе права сессии.
+- Навязанный `LIMIT 1000`: запрос оборачивается во внешний `SELECT … LIMIT 1000`; в ответе флаг `truncated`.
 - Второй рубеж — права роли: даже если парсер пропустит лишнее, таблицы недоступны.
-- Каждый вызов логируется: инструмент, параметры, время, число строк.
+- Каждый вызов логируется JSON-строкой в stdout: инструмент, параметры, время, число строк или ошибка.
+
+## Транспорт
+
+Streamable HTTP без сессий: на каждый запрос — новый `McpServer` и `WebStandardStreamableHTTPServerTransport` с JSON-ответом. Без токена — `401`. Токен: выпущенный на `/settings/access` (в базе только sha256) или `MCP_TOKEN` из env. Формованные инструменты используют те же функции `server/queries`, что и страницы, поэтому ответ совпадает с блоком UI; ссылки в `get_alerts` абсолютные, если задан `APP_URL`.
 
 ## Проверка
 
