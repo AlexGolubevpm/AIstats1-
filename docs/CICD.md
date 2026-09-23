@@ -50,6 +50,15 @@ Repo → Settings → Environments → **New environment** `production` → Envi
 
 `GITHUB_TOKEN` для реестра образов создаётся автоматически, отдельный токен не нужен.
 
+Для ручного workflow **ASG API probe** (проверка API AdSpyglass, см. [DEPLOYMENT_PLAN](./DEPLOYMENT_PLAN.md#2-расхождения-спецификации-с-реальным-api--решить-до-кода)) в том же environment нужны ещё:
+
+| Секрет | Значение |
+| --- | --- |
+| `ASG_AUTH_EMAIL` | email аккаунта AdSpyglass |
+| `ASG_AUTH_TOKEN` | API-токен AdSpyglass |
+
+Секреты приложения на сервере (`/opt/tubestat/.env`) задаются отдельно — GitHub их туда не копирует.
+
 ### 5. Защита main
 
 Settings → Branches → Add rule для `main`: *Require a pull request*, *Require status checks* → `check`. После этого в `main` попадает только то, что прошло проверки.
