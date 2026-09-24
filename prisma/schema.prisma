@@ -1,0 +1,485 @@
+// TubeStat data model. Reference: docs/architecture/08-backend.md, docs/tubestat-spec.md.
+// Facts use natural composite keys so ingest is an idempotent upsert.
+// Views (v_*) and the mcp_reader role live in SQL migrations.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ---------- Reference data ----------
+
+enum SiteStatus {
+  ACTIVE
+  PAUSED
+  ARCHIVED
+}
+
+model Site {
+  id         String     @id @default(cuid())
+  domain     String     @unique
+  title      String
+  adsgSiteId Int?       @unique
+  metrikaId  String?
+  status     SiteStatus @default(ACTIVE)
+  launchedAt DateTime?  @db.Date
+  createdAt  DateTime   @default(now())
+
+  bundles    BundleSite[]
+  zones      Zone[]
+  revenueGeo FactRevenueGeo[]
+  revenueZn  FactRevenueZone[]
+  traffic    FactTraffic[]
+  costs      FactCost[]
+  deals      FactFixDeal[]
+  dealSites  DealSite[]
+
+  @@index([status])
+}
+
+model Bundle {
+  id    String       @id @default(cuid())
+  slug  String       @unique
+  title String
+  color String
+  sites BundleSite[]
+}
+
+// A site can belong to several bundles: network totals are computed over sites, never by summing bundles.
+model BundleSite {
+  bundleId String
+  siteId   String
+  bundle   Bundle @relation(fields: [bundleId], references: [id], onDelete: Cascade)
+  site     Site   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@id([bundleId, siteId])
+  @@index([siteId])
+}
+
+model Country {
+  code    String         @id // ISO-3166 alpha-2; XX = unrecognised, ZZ = aggregate (zone cut)
+  nameEn  String
+  nameRu  String
+  tier    Int // 1 | 2 | 3; 0 for XX/ZZ
+  aliases CountryAlias[]
+
+  @@index([tier])
+}
+
+model CountryAlias {
+  raw         String
+  source      String // adspyglass | metrika | csv | * (any)
+  countryCode String
+  country     Country @relation(fields: [countryCode], references: [code])
+
+  @@id([source, raw])
+}
+
+// Raw country names that could not be mapped; rows were written with countryCode = XX.
+model UnresolvedAlias {
+  raw        String
+  source     String
+  rows       Int      @default(0)
+  lastSeenAt DateTime @default(now())
+
+  @@id([source, raw])
+}
+
+enum AdFormat {
+  POPUNDER
+  BANNER
+  NATIVE
+  SLIDER
+  OUTSTREAM
+  INVIDEO
+  INPAGEPUSH
+  OTHER
+}
+
+model Zone {
+  id         String   @id @default(cuid())
+  adsgZoneId Int      @unique
+  siteId     String
+  name       String
+  format     AdFormat
+  position   String?
+  isActive   Boolean  @default(true)
+  site       Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  revenue    FactRevenueZone[]
+  dealSites  DealSite[]
+
+  @@index([siteId, format])
+}
+
+enum NetworkKind {
+  MEDIATED
+  DIRECT
+  MARKETPLACE
+}
+
+model Network {
+  id           String      @id @default(cuid())
+  slug         String      @unique // adpulsar | clickadu | own_deals | ...
+  title        String
+  color        String // fixed colour on every chart
+  kind         NetworkKind @default(MEDIATED)
+  showInLegend Boolean     @default(true)
+  sortOrder    Int         @default(100)
+  isSystem     Boolean     @default(false)
+  revenue      FactRevenueGeo[]
+}
+
+enum Device {
+  DESKTOP
+  MOBILE
+  TABLET
+  TV
+  CONSOLE
+  UNKNOWN
+}
+
+// ---------- Facts ----------
+
+// AdSpyglass geo cut: site × network × country × device. Includes own deals (network own_deals).
+model FactRevenueGeo {
+  date             DateTime @db.Date
+  siteId           String
+  networkId        String
+  countryCode      String
+  device           Device
+  pageLoads        Int      @default(0)
+  impsOwn          Int      @default(0)
+  impsNetwork      Int      @default(0)
+  clicks           Int      @default(0)
+  revenueReported  Decimal  @default(0) @db.Decimal(12, 4)
+  revenueConfirmed Decimal? @db.Decimal(12, 4)
+  site             Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  network          Network  @relation(fields: [networkId], references: [id])
+
+  @@id([date, siteId, networkId, countryCode, device])
+  @@index([date, siteId])
+  @@index([date, countryCode])
+}
+
+// AdSpyglass zone cut: site × zone (format comes with the zone). Own deals are NOT in this cut.
+model FactRevenueZone {
+  date             DateTime @db.Date
+  siteId           String
+  zoneId           String
+  format           AdFormat
+  pageLoads        Int      @default(0)
+  impsOwn          Int      @default(0)
+  impsNetwork      Int      @default(0)
+  views            Int      @default(0) // viewable impressions, BANNER/NATIVE only
+  clicks           Int      @default(0)
+  revenueReported  Decimal  @default(0) @db.Decimal(12, 4)
+  revenueConfirmed Decimal? @db.Decimal(12, 4)
+  site             Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  zone             Zone     @relation(fields: [zoneId], references: [id], onDelete: Cascade)
+
+  @@id([date, zoneId])
+  @@index([date, siteId])
+}
+
+model FactTraffic {
+  date        DateTime @db.Date
+  siteId      String
+  countryCode String
+  device      Device
+  uniques     Int      @default(0)
+  pageviews   Int      @default(0)
+  sessions    Int      @default(0)
+  bounceRate  Decimal? @db.Decimal(5, 2)
+  avgDepth    Decimal? @db.Decimal(6, 2)
+  site        Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@id([date, siteId, countryCode, device])
+  @@index([date, siteId])
+}
+
+model CostSource {
+  slug  String @id // tubetraffic | tubecrown
+  title String
+}
+
+enum RateModel {
+  CPM
+  CPC
+  CPU
+  FLAT
+}
+
+enum CostOrigin {
+  RATE // computed nightly from CostRate × uniques
+  IMPORT // CSV / Google Sheets; always overrides RATE
+}
+
+model FactCost {
+  date          DateTime     @db.Date
+  siteId        String
+  countryCode   String
+  sourceSlug    String
+  uniquesBought Int          @default(0)
+  rateModel     RateModel
+  rate          Decimal      @db.Decimal(10, 5)
+  cost          Decimal      @db.Decimal(12, 4)
+  origin        CostOrigin   @default(RATE)
+  importBatchId String?
+  site          Site         @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  importBatch   ImportBatch? @relation(fields: [importBatchId], references: [id], onDelete: SetNull)
+
+  @@id([date, siteId, countryCode, sourceSlug])
+  @@index([date, siteId])
+  @@index([importBatchId])
+}
+
+model CostRate {
+  id          String    @id @default(cuid())
+  siteId      String? // null = all sites
+  countryCode String? // null = all countries
+  sourceSlug  String
+  rateModel   RateModel
+  rate        Decimal   @db.Decimal(10, 5)
+  validFrom   DateTime  @db.Date
+  validTo     DateTime? @db.Date
+  createdAt   DateTime  @default(now())
+
+  @@index([sourceSlug, validFrom])
+}
+
+// ---------- Fixed deals ----------
+
+model Advertiser {
+  id      String  @id @default(cuid())
+  name    String  @unique
+  contact String?
+  deals   Deal[]
+}
+
+enum PaymentBasis {
+  PER_1000_LOADS // default: the only model where we control the denominator
+  CPM_ADVERTISER // CPM on the advertiser's counter
+  CPM_OWN // CPM on our counter
+  FLAT_DAILY
+  FLAT_PERIOD
+}
+
+enum BillingPeriod {
+  MONTH
+  WEEK
+  TERM
+}
+
+enum CounterSource {
+  ASG_ZONE
+  METRIKA
+  MANUAL
+}
+
+// Where the money shows up. VIA_ASG deals are already in AdSpyglass revenue (network own_deals):
+// their FactFixDeal rows carry counters for discrepancy, but revenue is not added again.
+enum BilledVia {
+  DIRECT
+  VIA_ASG
+}
+
+enum DealStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  ENDED
+}
+
+model Deal {
+  id               String        @id @default(cuid())
+  title            String
+  advertiserId     String
+  format           AdFormat
+  paymentBasis     PaymentBasis  @default(PER_1000_LOADS)
+  price            Decimal       @db.Decimal(12, 5)
+  geoScope         String[] // ISO codes; empty = all
+  geoExclude       Boolean       @default(false) // true = "all except geoScope"
+  startsAt         DateTime      @db.Date
+  endsAt           DateTime?     @db.Date
+  billingPeriod    BillingPeriod @default(MONTH)
+  paymentTermsDays Int           @default(30)
+  counterSource    CounterSource @default(ASG_ZONE)
+  billedVia        BilledVia     @default(DIRECT)
+  status           DealStatus    @default(ACTIVE)
+  notes            String?
+  createdAt        DateTime      @default(now())
+  advertiser       Advertiser    @relation(fields: [advertiserId], references: [id])
+  sites            DealSite[]
+  periods          DealPeriod[]
+  facts            FactFixDeal[]
+}
+
+model DealSite {
+  dealId String
+  siteId String
+  zoneId String?
+  deal   Deal   @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  site   Site   @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  zone   Zone?  @relation(fields: [zoneId], references: [id], onDelete: SetNull)
+
+  @@id([dealId, siteId])
+}
+
+enum DealPeriodStatus {
+  OPEN
+  INVOICED
+  PAID
+  PARTIAL
+  DISPUTED
+  WRITTEN_OFF
+}
+
+// Advertiser numbers, invoice and payment for one billing period. Never updated in place once
+// invoiced: a correction creates a new version and links the old one via supersededById.
+model DealPeriod {
+  id               String           @id @default(cuid())
+  dealId           String
+  siteId           String? // null = whole deal
+  from             DateTime         @db.Date
+  to               DateTime         @db.Date
+  impsReported     Int?
+  amountCalculated Decimal?         @db.Decimal(12, 4)
+  amountInvoiced   Decimal?         @db.Decimal(12, 4)
+  overrideReason   String?
+  invoiceNo        String?
+  dueAt            DateTime?        @db.Date
+  amountPaid       Decimal?         @db.Decimal(12, 4)
+  paidAt           DateTime?        @db.Date
+  writeOffReason   String?
+  status           DealPeriodStatus @default(OPEN)
+  version          Int              @default(1)
+  supersededById   String?          @unique
+  createdAt        DateTime         @default(now())
+  deal             Deal             @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  supersededBy     DealPeriod?      @relation("DealPeriodVersion", fields: [supersededById], references: [id])
+  previous         DealPeriod?      @relation("DealPeriodVersion")
+  facts            FactFixDeal[]
+
+  @@index([dealId, from])
+}
+
+enum RevenueState {
+  FORECAST
+  INVOICED
+  CONFIRMED
+}
+
+model FactFixDeal {
+  date         DateTime     @db.Date
+  dealId       String
+  siteId       String
+  countryCode  String
+  pageLoads    Int          @default(0)
+  impsOwn      Int          @default(0)
+  impsReported Int          @default(0) // advertiser counter
+  revenue      Decimal      @default(0) @db.Decimal(12, 4)
+  revenueState RevenueState @default(FORECAST)
+  dealPeriodId String?
+  deal         Deal         @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  site         Site         @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  dealPeriod   DealPeriod?  @relation(fields: [dealPeriodId], references: [id], onDelete: SetNull)
+
+  @@id([date, dealId, siteId, countryCode])
+  @@index([date, siteId])
+}
+
+// Monthly payout actually received from AdSpyglass; confirms mediated revenue of that month.
+model AsgPayout {
+  month          DateTime @id @db.Date // first day of month
+  amountReported Decimal  @db.Decimal(12, 4)
+  amountReceived Decimal  @db.Decimal(12, 4)
+  receivedAt     DateTime @db.Date
+  note           String?
+}
+
+// ---------- Service ----------
+
+model IngestRun {
+  id         String    @id @default(cuid())
+  source     String // adspyglass | metrika | costs | deals | alerts | demo
+  job        String
+  dateFrom   DateTime  @db.Date
+  dateTo     DateTime  @db.Date
+  status     String // running | ok | failed | partial
+  rowsUpsert Int       @default(0)
+  requests   Int       @default(0)
+  rawKey     String?
+  error      String?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([source, startedAt])
+}
+
+enum AlertLevel {
+  WARNING
+  CRITICAL
+}
+
+model Alert {
+  id           String     @id @default(cuid())
+  rule         String
+  entityKey    String // e.g. site:<id>|country:JP
+  level        AlertLevel
+  title        String
+  message      String
+  link         String // UI path of the slice that produced the alert
+  siteId       String?
+  moneyAtRisk  Decimal    @default(0) @db.Decimal(12, 4)
+  payload      Json
+  firstSeenAt  DateTime   @default(now())
+  lastSeenAt   DateTime   @default(now())
+  snoozedUntil DateTime?
+  snoozedRisk  Decimal?   @db.Decimal(12, 4)
+  resolvedAt   DateTime?
+
+  @@unique([rule, entityKey])
+  @@index([resolvedAt, level])
+}
+
+model ImportBatch {
+  id         String     @id @default(cuid())
+  kind       String // costs | deal_period
+  fileName   String
+  rows       Int
+  total      Decimal    @db.Decimal(14, 4)
+  createdAt  DateTime   @default(now())
+  revertedAt DateTime?
+  costs      FactCost[]
+}
+
+model AuditLog {
+  id       String   @id @default(cuid())
+  entity   String
+  entityId String
+  field    String
+  before   String?
+  after    String?
+  reason   String?
+  at       DateTime @default(now())
+
+  @@index([entity, entityId, at])
+}
+
+model Session {
+  id         String   @id // random token hash
+  createdAt  DateTime @default(now())
+  lastSeenAt DateTime @default(now())
+  ip         String?
+}
+
+// Key/value settings: password hash, MCP token hash, queue pause state.
+model AppSetting {
+  key       String   @id
+  value     String
+  updatedAt DateTime @updatedAt
+}
