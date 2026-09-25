@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AsgClient } from "@/server/ingest/adspyglass/client";
-import { ingestSiteGeo, ingestSiteTotals, ingestSiteZones, rawGeoKeys, reprocessGeoFromRaw } from "@/server/ingest/adspyglass/ingest";
+import { FILTER_IGNORED_KEY, ingestSiteGeo, ingestSiteTotals, ingestSiteZones, rawGeoKeys, reprocessGeoFromRaw, scopedToSite } from "@/server/ingest/adspyglass/ingest";
 import { LocalRawStore, rawKey } from "@/server/ingest/raw-store";
 import { asgPause, asgRequestsToday, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
 import { seedReference } from "@/server/seed/reference";
@@ -91,6 +91,49 @@ describe("AdSpyglass ingest", () => {
     expect(facts.map((f) => f.views)).toEqual([600, 0]);
   });
 
+  it("zones of all sites come from one account-level spot request, split by domain", async () => {
+    const { client, calls } = fakeAsg(() => [
+      { name: "491. Banners_Footer_A (alpha.test)", hits: 100, impressions: 500, broker_income: 0.5 },
+      { name: "492. Popunder (www.beta.test)", hits: 200, impressions: 180, broker_income: 2 },
+      { name: "493. Slider (stranger.test)", hits: 1, broker_income: 9 },
+      { name: "garbage", hits: 1 },
+    ]);
+    const r = await ingestSiteZones({ db, client, raw, runId: "z1" }, [DATE]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].searchParams.get("website_id")).toBeNull();
+    expect(r.rows).toBe(2);
+    const zones = await db.zone.findMany({ orderBy: { adsgZoneId: "asc" } });
+    expect(zones.map((z) => [z.adsgZoneId, z.siteId])).toEqual([[491, "a"], [492, "b"]]);
+    await ingestSiteZones({ db, client, raw, runId: "z2" }, [DATE]); // restate: no duplicates
+    expect(await db.factRevenueZone.count()).toBe(2);
+  });
+
+  it("a per-site cut that is really the whole account is rejected and not retried for a week", async () => {
+    const account = [{ name: "Japan", hits: 4000, broker_income: 30 }];
+    const { client, calls } = fakeAsg((u) => u.searchParams.get("group_by") === "website"
+      ? [{ name: "101. alpha.test", hits: 1000, broker_income: 5 }, { name: "102. beta.test", hits: 3000, broker_income: 25 }]
+      : account); // website_id ignored, like ADOK
+    await ingestSiteTotals({ db, client, raw, runId: "f0" }, [DATE]);
+    const before = await geoRows();
+    const r = await ingestSiteGeo({ db, client, raw, runId: "f1" }, [DATE]);
+    expect(r.rows).toBe(0);
+    expect(r.failed[0]).toContain("игнорирует website_id");
+    expect(await geoRows()).toEqual(before); // site total (ZZ) kept, no account data written
+    expect(calls.filter((c) => c.searchParams.get("group_by") === "country")).toHaveLength(1); // stopped at the first site
+    expect(await db.appSetting.findUnique({ where: { key: FILTER_IGNORED_KEY } })).toBeTruthy();
+    const n = calls.length;
+    const again = await ingestSiteGeo({ db, client, raw, runId: "f2" }, [DATE]);
+    expect(again.skipped).toContain("пропущено");
+    expect(calls).toHaveLength(n); // no requests at all
+  });
+
+  it("scope check", () => {
+    expect(scopedToSite(1000, 1000)).toBe(true);
+    expect(scopedToSite(1040, 1000)).toBe(true);
+    expect(scopedToSite(4210, 1000)).toBe(false);
+    expect(scopedToSite(5, undefined)).toBe(true);
+  });
+
   it("reprocesses geo from raw after an alias is added, without API calls", async () => {
     const { client, calls } = fakeAsg(() => [{ name: "Atlantis", hits: 10, broker_income: 1 }]);
     await ingestSiteGeo({ db, client, raw, runId: "r5" }, [DATE], "a");
@@ -98,7 +141,7 @@ describe("AdSpyglass ingest", () => {
     await db.countryAlias.create({ data: { source: "adspyglass", raw: "Atlantis", countryCode: "GR" } });
     await reprocessGeoFromRaw(db, raw, [{ key: rawKey("adspyglass", "country/101", DATE, "r5"), date: DATE, siteId: "a" }]);
     expect((await geoRows()).map((x) => x.countryCode)).toEqual(["GR"]);
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(2); // website totals + country during ingest; none during reprocess
   });
 
   it("finds the latest raw country response per site and day", async () => {

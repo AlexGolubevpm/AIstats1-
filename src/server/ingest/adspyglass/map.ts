@@ -28,11 +28,15 @@ export function mapWebsiteRows(rows: AsgRow[]): SiteTotal[] {
 }
 
 export interface GeoCell { countryCode: string; m: ReturnType<typeof measures> }
-/** group_by=country rows; several raw names may map to the same code (and to XX) — summed. */
+/**
+ * group_by=country rows; several raw names may map to the same code (and to XX) — summed.
+ * ADOK sends an `iso` field next to the name: a known code wins, the name is the fallback.
+ */
 export function mapCountryRows(rows: AsgRow[], resolver: CountryResolver): GeoCell[] {
   const acc = new Map<string, ReturnType<typeof measures>>();
   for (const r of rows) {
-    const code = resolver.resolve(String(r.name), "adspyglass");
+    const iso = typeof r.iso === "string" ? r.iso : null;
+    const code = resolver.knows(iso) ? iso!.trim().toUpperCase() : resolver.resolve(String(r.name), "adspyglass");
     const m = measures(r), cur = acc.get(code);
     acc.set(code, cur ? { pageLoads: cur.pageLoads + m.pageLoads, impsOwn: cur.impsOwn + m.impsOwn, impsNetwork: cur.impsNetwork + m.impsNetwork,
       clicks: cur.clicks + m.clicks, revenue: cur.revenue + m.revenue } : m);
@@ -40,7 +44,7 @@ export function mapCountryRows(rows: AsgRow[], resolver: CountryResolver): GeoCe
   return [...acc].map(([countryCode, m]) => ({ countryCode, m }));
 }
 
-export interface ZoneCell { adsgZoneId: number; name: string; format: FormatCode; position: string | null; views: number; m: ReturnType<typeof measures> }
+export interface ZoneCell { adsgZoneId: number; name: string; domain: string | null; format: FormatCode; position: string | null; views: number; m: ReturnType<typeof measures> }
 /** group_by=spot rows. Views only for BANNER / NATIVE, from banner_view_rate × impressions. */
 export function mapSpotRows(rows: AsgRow[]): ZoneCell[] {
   const out: ZoneCell[] = [];
@@ -50,7 +54,7 @@ export function mapSpotRows(rows: AsgRow[]): ZoneCell[] {
     const format = normalizeFormat(String(r.ad_type ?? s.name));
     const m = measures(r);
     const views = format === "BANNER" || format === "NATIVE" ? Math.round(m.impsOwn * viewRate(r)) : 0;
-    out.push({ adsgZoneId: s.id, name: s.name, format, position: guessPosition(s.name), views, m });
+    out.push({ adsgZoneId: s.id, name: s.name, domain: s.domain, format, position: guessPosition(s.name), views, m });
   }
   return out;
 }

@@ -27,6 +27,12 @@ export class CountryResolver {
     for (const a of aliases) this.byKey.set(`${a.source}:${key(a.raw)}`, a.countryCode);
   }
 
+  /** True for a known ISO 3166-1 alpha-2 code (any case). */
+  knows(code: string | null | undefined): boolean {
+    const v = (code ?? "").trim();
+    return /^[A-Za-z]{2}$/.test(v) && this.codes.has(v.toUpperCase());
+  }
+
   resolve(raw: string | null | undefined, source: string): string {
     const v = (raw ?? "").trim();
     if (!v) return this.miss("(empty)", source);

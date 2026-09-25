@@ -1,6 +1,10 @@
 // AdSpyglass ingest. Request plan is built for ADOK's limits:
 //  - hourly: ONE account-level request per day (group_by=website) → site totals (country ZZ);
-//  - nightly: per-site country and zone cuts for the restate window.
+//  - nightly: ONE account-level spot cut per day (the spot name carries the domain) → zones,
+//    and per-site country cuts — written only if ADOK really scoped them to the site.
+// Probing showed ADOK ignores website_id (and similar names): a "per-site" country cut is the
+// whole account. Each per-site response is checked against the site's own hits and rejected
+// when it is larger, so account data is never written into a site (docs/architecture/08-backend.md#asg-limits).
 // Country-level rows for a (date, site) replace its site-total row, never add to it,
 // so a day is never counted twice whichever job ran last.
 import Decimal from "decimal.js";
@@ -76,57 +80,103 @@ export async function ingestSiteTotals(deps: AsgIngestDeps, dates: string[]): Pr
   return { rows, unknown: [...unknown] };
 }
 
-/** Nightly: country cut per site. */
-export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFilter?: string): Promise<{ rows: number; failed: string[] }> {
+export const FILTER_IGNORED_KEY = "asg_site_filter_ignored";
+const RECHECK_DAYS = 7;
+
+/** A per-site response larger than the site itself means the filter was ignored. */
+export function scopedToSite(cellsHits: number, siteHits: number | undefined): boolean {
+  if (siteHits == null) return true; // no reference: cannot tell, trust it
+  return cellsHits <= siteHits * 1.05 + 10;
+}
+
+async function filterIgnoredRecently(db: PrismaClient): Promise<string | null> {
+  const s = await db.appSetting.findUnique({ where: { key: FILTER_IGNORED_KEY } });
+  if (!s) return null;
+  return Date.now() - s.updatedAt.getTime() < RECHECK_DAYS * 86_400_000 ? s.value : null;
+}
+
+/**
+ * Nightly: country cut per site. One account-level website request per day gives each site's
+ * hits to check the per-site responses against; the first unscoped response stops the cut
+ * for the whole run (and for a week), since every further request would be wasted.
+ */
+export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFilter?: string): Promise<{ rows: number; failed: string[]; skipped?: string }> {
   const { db, client, raw, runId } = deps;
+  const ignored = await filterIgnoredRecently(db);
+  if (ignored) return { rows: 0, failed: [], skipped: `гео по сайтам пропущено: ${ignored}` };
   const sites = await db.site.findMany({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(siteFilter ? { id: siteFilter } : {}) } });
   const resolver = await loadResolver(db);
   const netId = await networkId(db);
   let rows = 0;
   const failed: string[] = [];
-  for (const date of dates) for (const s of sites) {
-    try {
-      const body = await client.report({ from: date, to: date, groupBy: "country", websiteId: s.adsgSiteId! });
-      await raw.put(rawKey("adspyglass", `country/${s.adsgSiteId}`, date, runId), body);
-      rows += await writeGeo(db, date, s.id, mapCountryRows(body, resolver), "country", netId);
-    } catch (e) {
-      if (e instanceof AsgError && (e.pausesQueue || e.kind === "budget")) throw e; // stop the whole run
-      failed.push(`${s.domain} ${date}: ${(e as Error).message}`);
+  for (const date of dates) {
+    const totals = new Map(mapWebsiteRows(await client.report({ from: date, to: date, groupBy: "website" }))
+      .filter((t) => t.adsgSiteId != null).map((t) => [t.adsgSiteId!, t.m.pageLoads]));
+    for (const s of sites) {
+      try {
+        const body = await client.report({ from: date, to: date, groupBy: "country", websiteId: s.adsgSiteId! });
+        const cells = mapCountryRows(body, resolver);
+        const hits = cells.reduce((a, c) => a + c.m.pageLoads, 0);
+        if (!scopedToSite(hits, totals.get(s.adsgSiteId!))) {
+          const why = `AdSpyglass игнорирует website_id (${s.domain} ${date}: ответ в ${(hits / Math.max(1, totals.get(s.adsgSiteId!) ?? 1)).toFixed(1)}× больше сайта)`;
+          await db.appSetting.upsert({ where: { key: FILTER_IGNORED_KEY }, create: { key: FILTER_IGNORED_KEY, value: why }, update: { value: why } });
+          failed.push(why);
+          return { rows, failed };
+        }
+        await raw.put(rawKey("adspyglass", `country/${s.adsgSiteId}`, date, runId), body);
+        rows += await writeGeo(db, date, s.id, cells, "country", netId);
+      } catch (e) {
+        if (e instanceof AsgError && (e.pausesQueue || e.kind === "budget")) throw e; // stop the whole run
+        failed.push(`${s.domain} ${date}: ${(e as Error).message}`);
+      }
     }
   }
   await saveUnresolved(db, resolver);
   return { rows, failed };
 }
 
-/** Nightly: zone (spot) cut per site. Zones are created on first sight; format guessed from name. */
+/**
+ * Nightly: zones from ONE account-level spot cut per day. "491410. Name (domain.com)": the
+ * domain assigns the zone to a site; spots of unknown domains are skipped.
+ */
 export async function ingestSiteZones(deps: AsgIngestDeps, dates: string[], siteFilter?: string): Promise<{ rows: number; failed: string[] }> {
   const { db, client, raw, runId } = deps;
-  const sites = await db.site.findMany({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(siteFilter ? { id: siteFilter } : {}) } });
+  const sites = await db.site.findMany({ where: { status: "ACTIVE", ...(siteFilter ? { id: siteFilter } : {}) } });
+  const byDomain = new Map(sites.map((s) => [s.domain, s]));
   let rows = 0;
   const failed: string[] = [];
-  for (const date of dates) for (const s of sites) {
+  for (const date of dates) {
     try {
-      const body = await client.report({ from: date, to: date, groupBy: "spot", websiteId: s.adsgSiteId! });
-      await raw.put(rawKey("adspyglass", `spot/${s.adsgSiteId}`, date, runId), body);
-      const cells = mapSpotRows(body);
-      await db.$transaction(async (tx) => {
-        await tx.factRevenueZone.deleteMany({ where: { date: d(date), siteId: s.id } });
-        for (const c of cells) {
-          const zone = await tx.zone.upsert({
-            where: { adsgZoneId: c.adsgZoneId },
-            create: { adsgZoneId: c.adsgZoneId, siteId: s.id, name: c.name, format: c.format, position: c.position },
-            update: { name: c.name },
-          });
-          await tx.factRevenueZone.create({ data: {
-            date: d(date), siteId: s.id, zoneId: zone.id, format: zone.format, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn,
-            impsNetwork: c.m.impsNetwork, views: c.views, clicks: c.m.clicks, revenueReported: dec(c.m.revenue),
-          } });
-          rows++;
-        }
-      });
+      const body = await client.report({ from: date, to: date, groupBy: "spot" });
+      await raw.put(rawKey("adspyglass", "spot", date, runId), body);
+      const bySite = new Map<string, ReturnType<typeof mapSpotRows>>();
+      for (const c of mapSpotRows(body)) {
+        const site = c.domain ? byDomain.get(c.domain) : undefined;
+        if (!site) continue;
+        bySite.set(site.id, [...(bySite.get(site.id) ?? []), c]);
+      }
+      for (const [siteId, cells] of bySite) {
+        await db.$transaction(async (tx) => {
+          await tx.factRevenueZone.deleteMany({ where: { date: d(date), siteId } });
+          for (const c of cells) {
+            const zone = await tx.zone.upsert({
+              where: { adsgZoneId: c.adsgZoneId },
+              create: { adsgZoneId: c.adsgZoneId, siteId, name: c.name, format: c.format, position: c.position },
+              update: { name: c.name },
+            });
+            await tx.factRevenueZone.upsert({
+              where: { date_zoneId: { date: d(date), zoneId: zone.id } },
+              create: { date: d(date), siteId, zoneId: zone.id, format: zone.format, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn,
+                impsNetwork: c.m.impsNetwork, views: c.views, clicks: c.m.clicks, revenueReported: dec(c.m.revenue) },
+              update: { pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork, views: c.views, clicks: c.m.clicks, revenueReported: dec(c.m.revenue) },
+            });
+            rows++;
+          }
+        });
+      }
     } catch (e) {
       if (e instanceof AsgError && (e.pausesQueue || e.kind === "budget")) throw e;
-      failed.push(`${s.domain} ${date}: ${(e as Error).message}`);
+      failed.push(`зоны ${date}: ${(e as Error).message}`);
     }
   }
   return { rows, failed };
