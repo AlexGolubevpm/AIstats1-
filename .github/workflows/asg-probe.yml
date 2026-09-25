@@ -6,7 +6,7 @@ name: ASG API probe
 on:
   # Also runs when .github/asg-probe.request changes on a pushed branch: lets automation
   # without workflow_dispatch permission request a probe. File format: KEY=value lines
-  # (DATE=YYYY-MM-DD, WEBSITE_ID=123, WHERE=server|github, SKIP_PARTNER=1, MODE=filters), all optional.
+  # (DATE=YYYY-MM-DD, WEBSITE_ID=123, WHERE=server|github, SKIP_PARTNER=1, MODE=filters|multi), all optional.
   # ADOK blocks frequent requests, so a run probes from ONE place: the production server
   # by default (that is where the ingest will run), GitHub runners only on request.
   push:
@@ -48,7 +48,7 @@ jobs:
             req_site=$(sed -n 's/^WEBSITE_ID=\([0-9]*\)$/\1/p' .github/asg-probe.request | head -n1)
             req_where=$(sed -n 's/^WHERE=\(server\|github\)$/\1/p' .github/asg-probe.request | head -n1)
             req_skip=$(sed -n 's/^SKIP_PARTNER=\([01]\)$/\1/p' .github/asg-probe.request | head -n1)
-            req_mode=$(sed -n 's/^MODE=\(filters\)$/\1/p' .github/asg-probe.request | head -n1)
+            req_mode=$(sed -n 's/^MODE=\(filters\|multi\)$/\1/p' .github/asg-probe.request | head -n1)
             INPUT_DATE="${req_date:-$INPUT_DATE}"
             INPUT_SITE="${req_site:-$INPUT_SITE}"
             INPUT_WHERE="${req_where:-$INPUT_WHERE}"
@@ -100,7 +100,7 @@ jobs:
             req_site=$(sed -n 's/^WEBSITE_ID=\([0-9]*\)$/\1/p' .github/asg-probe.request | head -n1)
             req_where=$(sed -n 's/^WHERE=\(server\|github\)$/\1/p' .github/asg-probe.request | head -n1)
             req_skip=$(sed -n 's/^SKIP_PARTNER=\([01]\)$/\1/p' .github/asg-probe.request | head -n1)
-            req_mode=$(sed -n 's/^MODE=\(filters\)$/\1/p' .github/asg-probe.request | head -n1)
+            req_mode=$(sed -n 's/^MODE=\(filters\|multi\)$/\1/p' .github/asg-probe.request | head -n1)
             INPUT_DATE="${req_date:-$INPUT_DATE}"
             INPUT_SITE="${req_site:-$INPUT_SITE}"
             INPUT_WHERE="${req_where:-$INPUT_WHERE}"

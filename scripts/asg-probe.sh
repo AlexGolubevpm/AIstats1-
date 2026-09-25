@@ -139,6 +139,26 @@ filter_ratio() {
   fi
 }
 
+if [ "${ASG_PROBE_MODE:-}" = "multi" ]; then
+  # Two dimensions in one report (site x country)? More rows than the country cut = yes.
+  probe mg_comma      "group_by=website,country"
+  probe mg_array      "group_by[]=website&group_by[]=country"
+  probe mg_repeat     "group_by=website&group_by=country"
+  probe mg_reverse    "group_by=country,website"
+  [ -n "$CUT_SITE" ] && for v in "site_id=$CUT_SITE" "site_ids[]=$CUT_SITE" "website_id[]=$CUT_SITE" "sites[]=$CUT_SITE"; do
+    label="fc_$(printf '%s' "${v%%=*}" | tr -c 'a-z_' '_')"
+    probe "$label" "group_by=country&$v"
+    filter_ratio "$label"
+  done
+  for f in "$OUT"/mg_*.json; do
+    [ -s "$f" ] || continue
+    echo "   $(basename "$f" .json): fields=$(jq -r 'if type=="array" and length>0 then (.[0] | keys | join(",")) else "-" end' "$f" 2>/dev/null | cut -c1-200)"
+    echo "   $(basename "$f" .json): names=$(jq -r 'if type=="array" then (.[:2][] | .name // "" | tostring) else empty end' "$f" 2>/dev/null | bash "$SHAPE" | paste -sd '|' -)"
+  done
+  echo; echo "Requests sent: $REQUESTS."
+  exit 0
+fi
+
 if [ "${ASG_PROBE_MODE:-}" = "filters" ]; then
   # Which parameter scopes a report to one site? Each variant is checked by the hits ratio.
   [ -n "$CUT_SITE" ] || stop_run "no site id in the baseline to test filters with"
