@@ -17,6 +17,8 @@ REDACT="${ASG_PROBE_REDACT:-0}"
 SHAPE="$(dirname "$0")/ci/shape.sh"
 DELAY="${ASG_PROBE_DELAY:-5}"
 MAX_REQUESTS="${ASG_PROBE_MAX_REQUESTS:-12}"
+# ADOK has no partner/network grouping (every name answers 422), so the search can be skipped.
+SKIP_PARTNER="${ASG_PROBE_SKIP_PARTNER:-0}"
 REQUESTS=0
 LAST_CODE=""
 LAST_ROWS=""
@@ -79,7 +81,7 @@ probe() {
       first="redirect -> ${redirect%%\?*}"
     elif [ "$code" != "200" ]; then
       # Error bodies carry the API's explanation, not report data.
-      first=$(head -c 160 "$file" | tr '\n' ' ')
+      first=$(head -c 300 "$file" | tr '\n' ' ')
     elif [ "$rows" = "not-array" ]; then
       first="object keys: $(jq -r 'keys | join(",")' "$file" 2>/dev/null | cut -c1-120)"
     else
@@ -106,15 +108,26 @@ echo "Date: $DATE  Site: ${SITE:-all}  delay=${DELAY}s  max_requests=$MAX_REQUES
 # 1. Known-good baseline. If this fails, nothing else will work — stop_run() ends here.
 probe baseline_website "group_by=website"
 
+# Site for per-site cuts: the given one, else the busiest site of the baseline (never printed).
+CUT_SITE="$SITE"
+if [ -z "$CUT_SITE" ] && [ -s "$OUT/baseline_website.json" ]; then
+  CUT_SITE=$(jq -r 'if type=="array" and length>0 then (max_by(.hits // 0) | .name // "" | tostring | split(".")[0]) else "" end' \
+    "$OUT/baseline_website.json" 2>/dev/null | grep -E '^[0-9]+$' || true)
+fi
+cut_q=""
+[ -n "$CUT_SITE" ] && cut_q="&website_id=$CUT_SITE"
+
 # 2. Partner / network dimension: most likely names first, stop at the first that returns rows.
 PARTNER=""
-for g in broker network partner ad_network source; do
-  probe "gb_$g" "group_by=$g$site_q"
-  if [ "$LAST_CODE" = "200" ] && [[ "$LAST_ROWS" =~ ^[0-9]+$ ]] && [ "$LAST_ROWS" -gt 0 ]; then
-    PARTNER="$g"; break
-  fi
-done
-echo "partner dimension: ${PARTNER:-not found}"
+if [ "$SKIP_PARTNER" != "1" ]; then
+  for g in broker network partner ad_network source; do
+    probe "gb_$g" "group_by=$g$site_q"
+    if [ "$LAST_CODE" = "200" ] && [[ "$LAST_ROWS" =~ ^[0-9]+$ ]] && [ "$LAST_ROWS" -gt 0 ]; then
+      PARTNER="$g"; break
+    fi
+  done
+  echo "partner dimension: ${PARTNER:-not found}"
+fi
 
 # 3. Multiple dimensions at once — one syntax at a time, only with a known partner name.
 if [ -n "$PARTNER" ]; then
@@ -123,8 +136,14 @@ if [ -n "$PARTNER" ]; then
   probe filter_country "group_by=$PARTNER&country=US$site_q"
 fi
 
+# 3b. Cuts the ingest is built on: account and per-site country, days, devices.
+probe country      "group_by=country"
+[ -n "$cut_q" ] && probe country_site "group_by=country$cut_q"
+probe date         "group_by=date"
+probe device       "group_by=device$cut_q"
+
 # 4. Cuts the ingest needs regardless.
-probe spot    "group_by=spot$site_q"
+probe spot    "group_by=spot${cut_q:-$site_q}"
 probe ad_type "group_by=ad_type$site_q"
 probe filter_ad_type "group_by=spot&ad_type=banner$site_q"
 
