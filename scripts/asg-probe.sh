@@ -17,6 +17,8 @@ REDACT="${ASG_PROBE_REDACT:-0}"
 SHAPE="$(dirname "$0")/ci/shape.sh"
 DELAY="${ASG_PROBE_DELAY:-5}"
 MAX_REQUESTS="${ASG_PROBE_MAX_REQUESTS:-12}"
+# ADOK has no partner/network grouping (every name answers 422), so the search can be skipped.
+SKIP_PARTNER="${ASG_PROBE_SKIP_PARTNER:-0}"
 REQUESTS=0
 LAST_CODE=""
 LAST_ROWS=""
@@ -59,14 +61,19 @@ probe() {
   local code redirect meta
   if [ "$REQUESTS" -ge "$MAX_REQUESTS" ]; then
     echo "$(printf '%-28s' "$label") skipped (request cap $MAX_REQUESTS reached)"
+    LAST_CODE="skipped"
     return
   fi
   [ "$REQUESTS" -gt 0 ] && sleep "$DELAY"
   REQUESTS=$((REQUESTS + 1))
-  meta=$(curl -sS -m 60 -o "$file" -w '%{http_code} %{redirect_url}' \
+  meta=$(curl -gsS -m 60 -o "$file" -w '%{http_code} %{redirect_url}' \
     -H "X-Asg-Auth-Email: $ASG_AUTH_EMAIL" \
     -H "X-Asg-Auth-Token: $ASG_AUTH_TOKEN" \
-    "$BASE/report?from=$DATE&to=$DATE&$query")
+    "$BASE/report?from=$DATE&to=$DATE&$query" 2>"$OUT/.curl-error")
+  # curl errors echo the URL (with site ids); in redacted mode keep only the curl error code.
+  if [ -s "$OUT/.curl-error" ]; then
+    if [ "$REDACT" = "1" ]; then sed -n 's/^curl: (\([0-9]*\)).*/curl error \1/p' "$OUT/.curl-error" | head -n1 >&2; else cat "$OUT/.curl-error" >&2; fi
+  fi
   code=${meta%% *}
   redirect=${meta#* }
   [ "$redirect" = "$meta" ] && redirect=""
@@ -79,7 +86,7 @@ probe() {
       first="redirect -> ${redirect%%\?*}"
     elif [ "$code" != "200" ]; then
       # Error bodies carry the API's explanation, not report data.
-      first=$(head -c 160 "$file" | tr '\n' ' ')
+      first=$(head -c 300 "$file" | tr '\n' ' ')
     elif [ "$rows" = "not-array" ]; then
       first="object keys: $(jq -r 'keys | join(",")' "$file" 2>/dev/null | cut -c1-120)"
     else
@@ -106,15 +113,77 @@ echo "Date: $DATE  Site: ${SITE:-all}  delay=${DELAY}s  max_requests=$MAX_REQUES
 # 1. Known-good baseline. If this fails, nothing else will work — stop_run() ends here.
 probe baseline_website "group_by=website"
 
+# Site for per-site cuts: the given one, else the busiest site of the baseline (never printed).
+CUT_SITE="$SITE"
+if [ -z "$CUT_SITE" ] && [ -s "$OUT/baseline_website.json" ]; then
+  CUT_SITE=$(jq -r 'if type=="array" and length>0 then (max_by(.hits // 0) | .name // "" | tostring | split(".")[0]) else "" end' \
+    "$OUT/baseline_website.json" 2>/dev/null | grep -E '^[0-9]+$' || true)
+fi
+cut_q=""
+[ -n "$CUT_SITE" ] && cut_q="&website_id=$CUT_SITE"
+
+# Does a per-site filter really filter? Compares summed hits of a response with the site's
+# own hits from the baseline and prints only the ratio (1.00 = filtered, >1 = ignored).
+site_hits() {
+  jq -r --arg id "$CUT_SITE" '[.[] | select((.name // "" | tostring | split(".")[0]) == $id) | (.hits // 0)] | add // 0' \
+    "$OUT/baseline_website.json" 2>/dev/null || echo 0
+}
+filter_ratio() {
+  local label="$1" total own
+  own=$(site_hits)
+  total=$(jq -r 'if type=="array" then ([.[] | (.hits // 0)] | add // 0) else 0 end' "$OUT/${label}.json" 2>/dev/null || echo 0)
+  if [ "${own:-0}" = "0" ] || [ "$LAST_CODE" != "200" ]; then
+    echo "   filter check $label: n/a"
+  else
+    echo "   filter check $label: hits = $(awk -v t="$total" -v o="$own" 'BEGIN { printf "%.2f", t / o }')x site total"
+  fi
+}
+
+if [ "${ASG_PROBE_MODE:-}" = "multi" ]; then
+  # Two dimensions in one report (site x country)? More rows than the country cut = yes.
+  probe mg_comma      "group_by=website,country"
+  probe mg_array      "group_by[]=website&group_by[]=country"
+  probe mg_repeat     "group_by=website&group_by=country"
+  probe mg_reverse    "group_by=country,website"
+  [ -n "$CUT_SITE" ] && for v in "site_id=$CUT_SITE" "site_ids[]=$CUT_SITE" "website_id[]=$CUT_SITE" "sites[]=$CUT_SITE"; do
+    label="fc_$(printf '%s' "${v%%=*}" | tr -c 'a-z_' '_')"
+    probe "$label" "group_by=country&$v"
+    filter_ratio "$label"
+  done
+  for f in "$OUT"/mg_*.json; do
+    [ -s "$f" ] || continue
+    echo "   $(basename "$f" .json): fields=$(jq -r 'if type=="array" and length>0 then (.[0] | keys | join(",")) else "-" end' "$f" 2>/dev/null | cut -c1-200)"
+    echo "   $(basename "$f" .json): names=$(jq -r 'if type=="array" then (.[:2][] | .name // "" | tostring) else empty end' "$f" 2>/dev/null | bash "$SHAPE" | paste -sd '|' -)"
+  done
+  echo; echo "Requests sent: $REQUESTS."
+  exit 0
+fi
+
+if [ "${ASG_PROBE_MODE:-}" = "filters" ]; then
+  # Which parameter scopes a report to one site? Each variant is checked by the hits ratio.
+  [ -n "$CUT_SITE" ] || stop_run "no site id in the baseline to test filters with"
+  for v in "website_id=$CUT_SITE" "website_ids[]=$CUT_SITE" "website_ids=$CUT_SITE" "filter[website_id]=$CUT_SITE" "websites[]=$CUT_SITE" "website=$CUT_SITE"; do
+    label="fc_$(printf '%s' "${v%%=*}" | tr -c 'a-z_' '_')"
+    probe "$label" "group_by=country&$v"
+    filter_ratio "$label"
+  done
+  probe fc_spot "group_by=spot&website_id=$CUT_SITE"
+  filter_ratio fc_spot
+  echo; echo "Requests sent: $REQUESTS."
+  exit 0
+fi
+
 # 2. Partner / network dimension: most likely names first, stop at the first that returns rows.
 PARTNER=""
-for g in broker network partner ad_network source; do
-  probe "gb_$g" "group_by=$g$site_q"
-  if [ "$LAST_CODE" = "200" ] && [[ "$LAST_ROWS" =~ ^[0-9]+$ ]] && [ "$LAST_ROWS" -gt 0 ]; then
-    PARTNER="$g"; break
-  fi
-done
-echo "partner dimension: ${PARTNER:-not found}"
+if [ "$SKIP_PARTNER" != "1" ]; then
+  for g in broker network partner ad_network source; do
+    probe "gb_$g" "group_by=$g$site_q"
+    if [ "$LAST_CODE" = "200" ] && [[ "$LAST_ROWS" =~ ^[0-9]+$ ]] && [ "$LAST_ROWS" -gt 0 ]; then
+      PARTNER="$g"; break
+    fi
+  done
+  echo "partner dimension: ${PARTNER:-not found}"
+fi
 
 # 3. Multiple dimensions at once — one syntax at a time, only with a known partner name.
 if [ -n "$PARTNER" ]; then
@@ -123,8 +192,14 @@ if [ -n "$PARTNER" ]; then
   probe filter_country "group_by=$PARTNER&country=US$site_q"
 fi
 
+# 3b. Cuts the ingest is built on: account and per-site country, days, devices.
+probe country      "group_by=country"
+[ -n "$cut_q" ] && { probe country_site "group_by=country$cut_q"; filter_ratio country_site; }
+probe date         "group_by=date"
+probe device       "group_by=device$cut_q"
+
 # 4. Cuts the ingest needs regardless.
-probe spot    "group_by=spot$site_q"
+probe spot    "group_by=spot${cut_q:-$site_q}"
 probe ad_type "group_by=ad_type$site_q"
 probe filter_ad_type "group_by=spot&ad_type=banner$site_q"
 

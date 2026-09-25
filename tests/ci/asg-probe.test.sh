@@ -20,7 +20,15 @@ class H(BaseHTTPRequestHandler):
             return
         g = q.get("group_by", [""])[0]
         if g == "website":
-            return self.reply(200, [{"name": "137648. secretdomain.com", "hits": 5, "broker_income": 987.65}])
+            return self.reply(200, [{"name": "137648. secretdomain.com", "hits": 5, "broker_income": 987.65},
+                                    {"name": "137649. other.com", "hits": 15, "broker_income": 1.0}])
+        if g == "country":
+            # Honours only website_ids[]: other filter names are ignored, like a real API might.
+            if q.get("website_ids[]"):
+                return self.reply(200, [{"name": "Japan", "hits": 5, "broker_income": 55.5}])
+            return self.reply(200, [{"name": "Japan", "hits": 20, "broker_income": 55.5}])
+        if g == "date":
+            return self.reply(200, [{"name": "2026-09-22", "hits": 5}])
         if g == "broker":
             return self.reply(200, [{"name": "AdPulsar", "hits": 3, "broker_income": 123.45}])
         return self.reply(400, {"error": "Unknown group_by"})
@@ -36,7 +44,7 @@ for _ in $(seq 50); do curl -s --noproxy '*' "http://127.0.0.1:$port/" >/dev/nul
 
 run_probe() {
   NO_PROXY='*' no_proxy='*' ASG_API_URL="http://127.0.0.1:$port" ASG_AUTH_EMAIL=me@example.com ASG_AUTH_TOKEN="$1" \
-    ASG_PROBE_OUT="$tmp/out-$2" ASG_PROBE_REDACT=1 ASG_PROBE_DELAY=0 ASG_PROBE_MAX_REQUESTS="${3:-12}" \
+    ASG_PROBE_OUT="$tmp/out-$2" ASG_PROBE_REDACT=1 ASG_PROBE_DELAY=0 ASG_PROBE_MAX_REQUESTS="${3:-12}" ASG_PROBE_SKIP_PARTNER="${4:-0}" \
     bash scripts/asg-probe.sh 2026-09-22 2>&1
 }
 # Every request the fake API receives is logged, so the tests can count them.
@@ -46,7 +54,7 @@ out=$(run_probe $'tok-SECRET\n' good) || true
 fail=0
 expect()   { if grep -qF -- "$2" <<<"$out"; then echo "ok   $1"; else echo "FAIL $1: missing '$2'"; fail=1; fi; }
 forbid()   { if grep -qF -- "$2" <<<"$out"; then echo "FAIL $1: leaked '$2'"; fail=1; else echo "ok   $1"; fi; }
-expect "baseline status and rows" "baseline_website             200 rows=1"
+expect "baseline status and rows" "baseline_website             200 rows=2"
 expect "masked website name"      "999999. aaaaaaaaaaaa.aaa"
 expect "broker probe detected"    "gb_broker                    200 rows=1"
 expect "fields listed"            "fields: broker_income,hits,name"
@@ -64,6 +72,27 @@ forbid "no shell errors"          "integer expression expected"
 expect "partner dimension found"  "partner dimension: broker"
 forbid "stops at first partner"   "gb_network"
 expect "multi uses found name"    "multi_comma"
+
+expect "account country cut"     "country                      200 rows=1"
+expect "per-site country cut"     "country_site                 200 rows=1"
+expect "date cut"                 "date                         200 rows=1"
+grep -q "group_by=country&website_id=137649" "$tmp/requests.log" && echo "ok   per-site cut uses the busiest site id" || { echo "FAIL per-site cut site id"; fail=1; }
+forbid "no country revenue"       "55.5"
+forbid "site id not printed"      "137649"
+expect "ignored filter detected"  "filter check country_site: hits = 1.33x site total"
+
+# Filter mode finds the parameter that really scopes to one site.
+: > "$tmp/requests.log"
+out=$(ASG_PROBE_MODE=filters run_probe tok-SECRET filters) || true
+expect "working filter found"     "filter check fc_website_ids__: hits = 0.33x site total"
+expect "ignored website_id shown" "filter check fc_website_id: hits = 1.33x site total"
+forbid "no site id in filters"    "137649"
+
+# Partner search can be skipped (ADOK has no such grouping).
+: > "$tmp/requests.log"
+out=$(run_probe tok-SECRET skip 12 1) || true
+if grep -q "group_by=broker" "$tmp/requests.log"; then echo "FAIL partner search not skipped"; fail=1; else echo "ok   partner search skipped"; fi
+expect "ingest cuts still probed" "country_site                 200 rows=1"
 
 # Wrong token: the first request is redirected and the run stops right there.
 : > "$tmp/requests.log"
