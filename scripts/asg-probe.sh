@@ -61,14 +61,19 @@ probe() {
   local code redirect meta
   if [ "$REQUESTS" -ge "$MAX_REQUESTS" ]; then
     echo "$(printf '%-28s' "$label") skipped (request cap $MAX_REQUESTS reached)"
+    LAST_CODE="skipped"
     return
   fi
   [ "$REQUESTS" -gt 0 ] && sleep "$DELAY"
   REQUESTS=$((REQUESTS + 1))
-  meta=$(curl -sS -m 60 -o "$file" -w '%{http_code} %{redirect_url}' \
+  meta=$(curl -gsS -m 60 -o "$file" -w '%{http_code} %{redirect_url}' \
     -H "X-Asg-Auth-Email: $ASG_AUTH_EMAIL" \
     -H "X-Asg-Auth-Token: $ASG_AUTH_TOKEN" \
-    "$BASE/report?from=$DATE&to=$DATE&$query")
+    "$BASE/report?from=$DATE&to=$DATE&$query" 2>"$OUT/.curl-error")
+  # curl errors echo the URL (with site ids); in redacted mode keep only the curl error code.
+  if [ -s "$OUT/.curl-error" ]; then
+    if [ "$REDACT" = "1" ]; then sed -n 's/^curl: (\([0-9]*\)).*/curl error \1/p' "$OUT/.curl-error" | head -n1 >&2; else cat "$OUT/.curl-error" >&2; fi
+  fi
   code=${meta%% *}
   redirect=${meta#* }
   [ "$redirect" = "$meta" ] && redirect=""
@@ -117,6 +122,37 @@ fi
 cut_q=""
 [ -n "$CUT_SITE" ] && cut_q="&website_id=$CUT_SITE"
 
+# Does a per-site filter really filter? Compares summed hits of a response with the site's
+# own hits from the baseline and prints only the ratio (1.00 = filtered, >1 = ignored).
+site_hits() {
+  jq -r --arg id "$CUT_SITE" '[.[] | select((.name // "" | tostring | split(".")[0]) == $id) | (.hits // 0)] | add // 0' \
+    "$OUT/baseline_website.json" 2>/dev/null || echo 0
+}
+filter_ratio() {
+  local label="$1" total own
+  own=$(site_hits)
+  total=$(jq -r 'if type=="array" then ([.[] | (.hits // 0)] | add // 0) else 0 end' "$OUT/${label}.json" 2>/dev/null || echo 0)
+  if [ "${own:-0}" = "0" ] || [ "$LAST_CODE" != "200" ]; then
+    echo "   filter check $label: n/a"
+  else
+    echo "   filter check $label: hits = $(awk -v t="$total" -v o="$own" 'BEGIN { printf "%.2f", t / o }')x site total"
+  fi
+}
+
+if [ "${ASG_PROBE_MODE:-}" = "filters" ]; then
+  # Which parameter scopes a report to one site? Each variant is checked by the hits ratio.
+  [ -n "$CUT_SITE" ] || stop_run "no site id in the baseline to test filters with"
+  for v in "website_id=$CUT_SITE" "website_ids[]=$CUT_SITE" "website_ids=$CUT_SITE" "filter[website_id]=$CUT_SITE" "websites[]=$CUT_SITE" "website=$CUT_SITE"; do
+    label="fc_$(printf '%s' "${v%%=*}" | tr -c 'a-z_' '_')"
+    probe "$label" "group_by=country&$v"
+    filter_ratio "$label"
+  done
+  probe fc_spot "group_by=spot&website_id=$CUT_SITE"
+  filter_ratio fc_spot
+  echo; echo "Requests sent: $REQUESTS."
+  exit 0
+fi
+
 # 2. Partner / network dimension: most likely names first, stop at the first that returns rows.
 PARTNER=""
 if [ "$SKIP_PARTNER" != "1" ]; then
@@ -138,7 +174,7 @@ fi
 
 # 3b. Cuts the ingest is built on: account and per-site country, days, devices.
 probe country      "group_by=country"
-[ -n "$cut_q" ] && probe country_site "group_by=country$cut_q"
+[ -n "$cut_q" ] && { probe country_site "group_by=country$cut_q"; filter_ratio country_site; }
 probe date         "group_by=date"
 probe device       "group_by=device$cut_q"
 

@@ -6,7 +6,7 @@ name: ASG API probe
 on:
   # Also runs when .github/asg-probe.request changes on a pushed branch: lets automation
   # without workflow_dispatch permission request a probe. File format: KEY=value lines
-  # (DATE=YYYY-MM-DD, WEBSITE_ID=123, WHERE=server|github, SKIP_PARTNER=1), all optional.
+  # (DATE=YYYY-MM-DD, WEBSITE_ID=123, WHERE=server|github, SKIP_PARTNER=1, MODE=filters), all optional.
   # ADOK blocks frequent requests, so a run probes from ONE place: the production server
   # by default (that is where the ingest will run), GitHub runners only on request.
   push:
@@ -48,10 +48,12 @@ jobs:
             req_site=$(sed -n 's/^WEBSITE_ID=\([0-9]*\)$/\1/p' .github/asg-probe.request | head -n1)
             req_where=$(sed -n 's/^WHERE=\(server\|github\)$/\1/p' .github/asg-probe.request | head -n1)
             req_skip=$(sed -n 's/^SKIP_PARTNER=\([01]\)$/\1/p' .github/asg-probe.request | head -n1)
+            req_mode=$(sed -n 's/^MODE=\(filters\)$/\1/p' .github/asg-probe.request | head -n1)
             INPUT_DATE="${req_date:-$INPUT_DATE}"
             INPUT_SITE="${req_site:-$INPUT_SITE}"
             INPUT_WHERE="${req_where:-$INPUT_WHERE}"
             export ASG_PROBE_SKIP_PARTNER="${req_skip:-0}"
+            export ASG_PROBE_MODE="${req_mode:-}"
           fi
           if [ "${INPUT_WHERE:-server}" != "github" ]; then
             echo "Probing from the server only (WHERE=${INPUT_WHERE:-server}); skipping the GitHub runner."
@@ -98,10 +100,12 @@ jobs:
             req_site=$(sed -n 's/^WEBSITE_ID=\([0-9]*\)$/\1/p' .github/asg-probe.request | head -n1)
             req_where=$(sed -n 's/^WHERE=\(server\|github\)$/\1/p' .github/asg-probe.request | head -n1)
             req_skip=$(sed -n 's/^SKIP_PARTNER=\([01]\)$/\1/p' .github/asg-probe.request | head -n1)
+            req_mode=$(sed -n 's/^MODE=\(filters\)$/\1/p' .github/asg-probe.request | head -n1)
             INPUT_DATE="${req_date:-$INPUT_DATE}"
             INPUT_SITE="${req_site:-$INPUT_SITE}"
             INPUT_WHERE="${req_where:-$INPUT_WHERE}"
             export ASG_PROBE_SKIP_PARTNER="${req_skip:-0}"
+            export ASG_PROBE_MODE="${req_mode:-}"
           fi
           if [ "${INPUT_WHERE:-server}" = "github" ]; then
             echo "Probing from the GitHub runner only (WHERE=github); skipping the server."
@@ -115,4 +119,4 @@ jobs:
           # Credentials go over stdin, never on a command line (ps) or in the log.
           { printf 'ASG_AUTH_EMAIL=%q\n' "$ASG_AUTH_EMAIL"; printf 'ASG_AUTH_TOKEN=%q\n' "$ASG_AUTH_TOKEN"; } |
             ssh deploy@"$HOST" "set -a; . /dev/stdin; set +a; \
-              ASG_PROBE_REDACT=1 ASG_PROBE_SKIP_PARTNER=${ASG_PROBE_SKIP_PARTNER:-0} ASG_PROBE_OUT=$dir/out bash $dir/scripts/asg-probe.sh $date $INPUT_SITE; rc=\$?; rm -rf $dir; exit \$rc"
+              ASG_PROBE_REDACT=1 ASG_PROBE_SKIP_PARTNER=${ASG_PROBE_SKIP_PARTNER:-0} ASG_PROBE_MODE=${ASG_PROBE_MODE:-} ASG_PROBE_OUT=$dir/out bash $dir/scripts/asg-probe.sh $date $INPUT_SITE; rc=\$?; rm -rf $dir; exit \$rc"
