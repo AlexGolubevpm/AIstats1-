@@ -55,7 +55,7 @@ describe("AdSpyglass ingest", () => {
   it("country cut replaces the site total; a later total does not overwrite it", async () => {
     const { client } = fakeAsg((u) => u.searchParams.get("group_by") === "website"
       ? [{ name: "101. alpha.test", hits: 1000, broker_income: 5 }]
-      : u.searchParams.get("website_id") === "101"
+      : u.searchParams.get("platforms_ids[]") === "101" && u.searchParams.get("group_by") === "country"
         ? [{ name: "Japan", hits: 600, broker_income: 3 }, { name: "United States", hits: 400, broker_income: 2 }, { name: "Atlantis", hits: 1, broker_income: 0.01 }]
         : []);
     const deps = { db, client, raw, runId: "r2" };
@@ -127,6 +127,28 @@ describe("AdSpyglass ingest", () => {
     expect(calls).toHaveLength(n); // no requests at all
   });
 
+  it("network cut per site via platforms_ids[]; the view shows networks instead of the account-wide row", async () => {
+    const { client, calls } = fakeAsg((u) => {
+      const g = u.searchParams.get("group_by"), site = u.searchParams.get("platforms_ids[]");
+      if (g === "website") return [{ name: "101. alpha.test", hits: 1000, broker_income: 5 }];
+      if (g === "country") return site === "101" ? [{ name: "Japan", iso: "JP", hits: 1000, broker_income: 5 }] : [];
+      if (g === "adnetwork_squashed") return site === "101" ? [{ name: "AdPulsar.io", hits: 700, broker_income: 4 }, { name: "NewNet.com", hits: 300, broker_income: 1 }] : [];
+      return [];
+    });
+    const r = await ingestSiteGeo({ db, client, raw, runId: "n1" }, [DATE], "a");
+    expect(r.failed).toEqual([]);
+    expect(calls.some((c) => c.searchParams.get("platforms_ids[]") === "101" && c.searchParams.get("group_by") === "adnetwork_squashed")).toBe(true);
+    expect(calls.some((c) => c.searchParams.has("website_id"))).toBe(false);
+    const nets = await db.factRevenueNetwork.findMany({ include: { network: true }, orderBy: { pageLoads: "desc" } });
+    expect(nets.map((n) => [n.network.slug, n.pageLoads, Number(n.revenueReported)])).toEqual([["adpulsar", 700, 4], ["newnet", 300, 1]]);
+    expect(await db.network.findUniqueOrThrow({ where: { slug: "newnet" } })).toMatchObject({ showInLegend: false, color: "#94A3B8" });
+    const view = await db.$queryRaw<{ network_slug: string; country_code: string; revenue: number }[]>`
+      SELECT network_slug, country_code, revenue::float8 revenue FROM v_network_geo WHERE site_id = 'a' ORDER BY revenue DESC`;
+    expect(view).toEqual([{ network_slug: "adpulsar", country_code: "ZZ", revenue: 4 }, { network_slug: "newnet", country_code: "ZZ", revenue: 1 }]);
+    const [geo] = await db.$queryRaw<{ r: number }[]>`SELECT SUM(revenue)::float8 r FROM v_site_geo_daily WHERE site_id = 'a'`;
+    expect(geo.r).toBe(5); // site revenue from the country cut, not doubled by networks
+  });
+
   it("scope check", () => {
     expect(scopedToSite(1000, 1000)).toBe(true);
     expect(scopedToSite(1040, 1000)).toBe(true);
@@ -141,7 +163,7 @@ describe("AdSpyglass ingest", () => {
     await db.countryAlias.create({ data: { source: "adspyglass", raw: "Atlantis", countryCode: "GR" } });
     await reprocessGeoFromRaw(db, raw, [{ key: rawKey("adspyglass", "country/101", DATE, "r5"), date: DATE, siteId: "a" }]);
     expect((await geoRows()).map((x) => x.countryCode)).toEqual(["GR"]);
-    expect(calls).toHaveLength(2); // website totals + country during ingest; none during reprocess
+    expect(calls).toHaveLength(3); // website totals + country + network during ingest; none during reprocess
   });
 
   it("finds the latest raw country response per site and day", async () => {

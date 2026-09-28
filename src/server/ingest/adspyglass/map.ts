@@ -58,3 +58,20 @@ export function mapSpotRows(rows: AsgRow[]): ZoneCell[] {
   }
   return out;
 }
+
+export interface NetworkCell { slug: string; title: string; m: ReturnType<typeof measures> }
+/** "AdPulsar.io" → slug "adpulsar" (matches seeded networks), title as sent. Duplicates summed. */
+export function networkSlug(name: string): string {
+  return name.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\.[a-z]{2,}$/, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "unknown";
+}
+/** group_by=adnetwork_squashed rows. */
+export function mapNetworkRows(rows: AsgRow[]): NetworkCell[] {
+  const acc = new Map<string, NetworkCell>();
+  for (const r of rows) {
+    const title = String(r.name ?? "").trim() || "unknown";
+    const slug = networkSlug(title), m = measures(r), cur = acc.get(slug);
+    acc.set(slug, cur ? { slug, title: cur.title, m: { pageLoads: cur.m.pageLoads + m.pageLoads, impsOwn: cur.m.impsOwn + m.impsOwn,
+      impsNetwork: cur.m.impsNetwork + m.impsNetwork, clicks: cur.m.clicks + m.clicks, revenue: cur.m.revenue + m.revenue } } : { slug, title, m });
+  }
+  return [...acc.values()];
+}
