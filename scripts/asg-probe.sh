@@ -139,6 +139,25 @@ filter_ratio() {
   fi
 }
 
+if [ "${ASG_PROBE_MODE:-}" = "discover" ]; then
+  # Names from the ADOK UI "Group" list and more spellings of its "Website" filter.
+  probe gb_demand          "group_by=demand"
+  probe gb_adnetwork_type  "group_by=adnetwork_type"
+  probe gb_platform        "group_by=platform"
+  [ -n "$CUT_SITE" ] && for v in "websites=$CUT_SITE" "websiteId=$CUT_SITE" "filter[websites][]=$CUT_SITE" "filters[website_id]=$CUT_SITE" "site=$CUT_SITE" "website_id=$CUT_SITE&group=country"; do
+    label="fc_$(printf '%s' "${v%%=*}" | tr -c 'a-zA-Z_' '_')"
+    probe "$label" "group_by=country&$v"
+    filter_ratio "$label"
+  done
+  for f in "$OUT"/gb_*.json; do
+    [ -s "$f" ] || continue
+    echo "   $(basename "$f" .json): rows=$(jq 'if type=="array" then length else "-" end' "$f" 2>/dev/null) fields=$(jq -r 'if type=="array" and length>0 then (.[0] | keys | join(",")) else "-" end' "$f" 2>/dev/null | cut -c1-240)"
+    echo "   $(basename "$f" .json): names=$(jq -r 'if type=="array" then (.[:4][] | .name // "" | tostring) else empty end' "$f" 2>/dev/null | bash "$SHAPE" | paste -sd '|' -)"
+  done
+  echo; echo "Requests sent: $REQUESTS."
+  exit 0
+fi
+
 if [ "${ASG_PROBE_MODE:-}" = "multi" ]; then
   # Two dimensions in one report (site x country)? More rows than the country cut = yes.
   probe mg_comma      "group_by=website,country"
