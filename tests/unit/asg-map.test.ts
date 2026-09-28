@@ -39,3 +39,11 @@ describe("network rows", async () => {
     expect(cells).toEqual([{ slug: "exoclick", title: "ExoClick.com", m: expect.objectContaining({ pageLoads: 5, revenue: 3 }) }]);
   });
 });
+
+describe("device rows", async () => {
+  const { mapDeviceRows } = await import("@/server/ingest/adspyglass/map");
+  it("normalises names and sums", () => {
+    const cells = mapDeviceRows([{ name: "Desktop", hits: 1 }, { name: "Smartphone", hits: 2 }, { name: "Mobile", hits: 3 }, { name: "Fridge", hits: 4 }]);
+    expect(Object.fromEntries(cells.map((c) => [c.device, c.m.pageLoads]))).toEqual({ DESKTOP: 1, MOBILE: 5, UNKNOWN: 4 });
+  });
+});

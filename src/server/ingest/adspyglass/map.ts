@@ -1,6 +1,6 @@
 // Mapping of ADOK report rows to fact rows. The field mapping lives here in one place:
 // confirm it against real responses (scripts/asg-probe.sh) and adjust only this file.
-import { normalizeFormat, parseSpotName, parseWebsiteName, guessPosition, type CountryResolver, type FormatCode } from "@/server/ingest/normalize";
+import { normalizeDevice, normalizeFormat, parseSpotName, parseWebsiteName, guessPosition, type CountryResolver, type FormatCode } from "@/server/ingest/normalize";
 import type { AsgRow } from "./client";
 
 const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : Number(v) || 0);
@@ -72,6 +72,18 @@ export function mapNetworkRows(rows: AsgRow[]): NetworkCell[] {
     const slug = networkSlug(title), m = measures(r), cur = acc.get(slug);
     acc.set(slug, cur ? { slug, title: cur.title, m: { pageLoads: cur.m.pageLoads + m.pageLoads, impsOwn: cur.m.impsOwn + m.impsOwn,
       impsNetwork: cur.m.impsNetwork + m.impsNetwork, clicks: cur.m.clicks + m.clicks, revenue: cur.m.revenue + m.revenue } } : { slug, title, m });
+  }
+  return [...acc.values()];
+}
+
+export interface DeviceCell { device: ReturnType<typeof normalizeDevice>; m: ReturnType<typeof measures> }
+/** group_by=device rows ("Desktop", "Mobile", …); unknown names land in UNKNOWN, duplicates summed. */
+export function mapDeviceRows(rows: AsgRow[]): DeviceCell[] {
+  const acc = new Map<string, DeviceCell>();
+  for (const r of rows) {
+    const device = normalizeDevice(String(r.name ?? "")), m = measures(r), cur = acc.get(device);
+    acc.set(device, cur ? { device, m: { pageLoads: cur.m.pageLoads + m.pageLoads, impsOwn: cur.m.impsOwn + m.impsOwn,
+      impsNetwork: cur.m.impsNetwork + m.impsNetwork, clicks: cur.m.clicks + m.clicks, revenue: cur.m.revenue + m.revenue } } : { device, m });
   }
   return [...acc.values()];
 }

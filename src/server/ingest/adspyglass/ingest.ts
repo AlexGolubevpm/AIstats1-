@@ -1,7 +1,9 @@
 // AdSpyglass ingest. Request plan is built for ADOK's limits:
 //  - hourly: ONE account-level request per day (group_by=website) → site totals (country ZZ);
 //  - nightly: ONE account-level spot cut per day (the spot name carries the domain) → zones,
-//    and per site: country and network (adnetwork_squashed) cuts.
+//    and per site: country, network (adnetwork_squashed) and device cuts.
+// The country cut is reconciled with the account-level site total: > 2% apart is reported
+// (spec readiness check "revenue matches the AdSpyglass cabinet ±2%").
 // ADOK scopes a report to a site only with platforms_ids[] (website_id is silently ignored).
 // Each per-site response is still checked against the site's own hits and rejected when it is
 // larger, so account data is never written into a site (docs/architecture/08-backend.md#asg-limits).
@@ -12,7 +14,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { CountryResolver } from "@/server/ingest/normalize";
 import { rawKey, type RawStore } from "@/server/ingest/raw-store";
 import { AsgClient, AsgError } from "./client";
-import { mapCountryRows, mapNetworkRows, mapSpotRows, mapWebsiteRows, type GeoCell, type NetworkCell } from "./map";
+import { mapCountryRows, mapDeviceRows, mapNetworkRows, mapSpotRows, mapWebsiteRows, type DeviceCell, type GeoCell, type NetworkCell } from "./map";
 
 export interface AsgIngestDeps { db: PrismaClient; client: AsgClient; raw: RawStore; runId: string }
 
@@ -111,8 +113,9 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
   let rows = 0;
   const failed: string[] = [];
   for (const date of dates) {
-    const totals = new Map(mapWebsiteRows(await client.report({ from: date, to: date, groupBy: "website" }))
-      .filter((t) => t.adsgSiteId != null).map((t) => [t.adsgSiteId!, t.m.pageLoads]));
+    const siteRows = mapWebsiteRows(await client.report({ from: date, to: date, groupBy: "website" })).filter((t) => t.adsgSiteId != null);
+    const totals = new Map(siteRows.map((t) => [t.adsgSiteId!, t.m.pageLoads]));
+    const revenueById = new Map(siteRows.map((t) => [t.adsgSiteId!, t.m.revenue]));
     for (const s of sites) {
       try {
         const body = await client.report({ from: date, to: date, groupBy: "country", websiteId: s.adsgSiteId! });
@@ -132,6 +135,14 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
           await raw.put(rawKey("adspyglass", `network/${s.adsgSiteId}`, date, runId), netBody);
           rows += await writeNetworks(db, date, s.id, nets);
         } else failed.push(`${s.domain} ${date}: сетки не по сайту — пропущены`);
+        const devBody = await client.report({ from: date, to: date, groupBy: "device", websiteId: s.adsgSiteId! });
+        const devs = mapDeviceRows(devBody);
+        if (scopedToSite(devs.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
+          await raw.put(rawKey("adspyglass", `device/${s.adsgSiteId}`, date, runId), devBody);
+          rows += await writeDevices(db, date, s.id, devs);
+        } else failed.push(`${s.domain} ${date}: устройства не по сайту — пропущены`);
+        const gap = reconcile(cells.reduce((a, c) => a + c.m.revenue, 0), revenueById.get(s.adsgSiteId!));
+        if (gap != null) failed.push(`${s.domain} ${date}: сверка с итогом ADOK — выручка по странам расходится на ${(gap * 100).toFixed(1)}%`);
       } catch (e) {
         if (e instanceof AsgError && (e.pausesQueue || e.kind === "budget")) throw e; // stop the whole run
         failed.push(`${s.domain} ${date}: ${(e as Error).message}`);
@@ -140,6 +151,27 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
   }
   await saveUnresolved(db, resolver);
   return { rows, failed };
+}
+
+/** Relative gap between a cut's revenue and the site total, or null when within 2% (or $0.05). */
+export function reconcile(cutRevenue: number, siteRevenue: number | undefined): number | null {
+  if (siteRevenue == null) return null;
+  const diff = Math.abs(cutRevenue - siteRevenue);
+  if (diff <= 0.05 || diff <= Math.abs(siteRevenue) * 0.02) return null;
+  return siteRevenue ? (cutRevenue - siteRevenue) / siteRevenue : 1;
+}
+
+/** Replaces the device rows of (date, site). */
+export async function writeDevices(db: PrismaClient, date: string, siteId: string, cells: DeviceCell[]): Promise<number> {
+  const data = cells.filter((c) => c.m.pageLoads || c.m.impsOwn || c.m.revenue).map((c) => ({
+    date: d(date), siteId, device: c.device, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork,
+    clicks: c.m.clicks, revenueReported: dec(c.m.revenue),
+  }));
+  await db.$transaction([
+    db.factRevenueDevice.deleteMany({ where: { date: d(date), siteId } }),
+    db.factRevenueDevice.createMany({ data }),
+  ]);
+  return data.length;
 }
 
 /** Networks unknown so far are created grey, outside the legend ("Прочее" until coloured). */

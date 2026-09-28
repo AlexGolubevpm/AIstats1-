@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AsgClient } from "@/server/ingest/adspyglass/client";
-import { FILTER_IGNORED_KEY, ingestSiteGeo, ingestSiteTotals, ingestSiteZones, rawGeoKeys, reprocessGeoFromRaw, scopedToSite } from "@/server/ingest/adspyglass/ingest";
+import { FILTER_IGNORED_KEY, ingestSiteGeo, ingestSiteTotals, ingestSiteZones, rawGeoKeys, reconcile, reprocessGeoFromRaw, scopedToSite } from "@/server/ingest/adspyglass/ingest";
 import { LocalRawStore, rawKey } from "@/server/ingest/raw-store";
 import { asgPause, asgRequestsToday, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
 import { seedReference } from "@/server/seed/reference";
@@ -149,6 +149,30 @@ describe("AdSpyglass ingest", () => {
     expect(geo.r).toBe(5); // site revenue from the country cut, not doubled by networks
   });
 
+  it("device cut per site; devices table prefers it; country cut reconciled with the site total", async () => {
+    const { client } = fakeAsg((u) => {
+      const g = u.searchParams.get("group_by");
+      if (g === "website") return [{ name: "101. alpha.test", hits: 1000, broker_income: 10 }];
+      if (g === "country") return [{ name: "Japan", iso: "JP", hits: 1000, broker_income: 9 }]; // 10% below the site total
+      if (g === "device") return [{ name: "Desktop", hits: 600, impressions: 500, broker_income: 6 }, { name: "Mobile", hits: 400, impressions: 300, broker_income: 4 }];
+      return [];
+    });
+    const r = await ingestSiteGeo({ db, client, raw, runId: "d1" }, [DATE], "a");
+    expect(r.failed).toEqual([expect.stringContaining("сверка с итогом ADOK — выручка по странам расходится на -10.0%")]);
+    const devs = await db.factRevenueDevice.findMany({ orderBy: { pageLoads: "desc" } });
+    expect(devs.map((x) => [x.device, Number(x.revenueReported)])).toEqual([["DESKTOP", 6], ["MOBILE", 4]]);
+    const { devicesTable } = await import("@/server/queries/reports");
+    const t = await devicesTable({ from: DATE, to: DATE }, "a");
+    expect(t.map((x) => [x.device, x.revenue])).toEqual([["DESKTOP", 6], ["MOBILE", 4]]); // not the UNKNOWN geo row
+  });
+
+  it("reconcile", () => {
+    expect(reconcile(100, 101)).toBeNull();
+    expect(reconcile(0.03, 0)).toBeNull();
+    expect(reconcile(90, 100)).toBeCloseTo(-0.1);
+    expect(reconcile(5, undefined)).toBeNull();
+  });
+
   it("scope check", () => {
     expect(scopedToSite(1000, 1000)).toBe(true);
     expect(scopedToSite(1040, 1000)).toBe(true);
@@ -163,7 +187,7 @@ describe("AdSpyglass ingest", () => {
     await db.countryAlias.create({ data: { source: "adspyglass", raw: "Atlantis", countryCode: "GR" } });
     await reprocessGeoFromRaw(db, raw, [{ key: rawKey("adspyglass", "country/101", DATE, "r5"), date: DATE, siteId: "a" }]);
     expect((await geoRows()).map((x) => x.countryCode)).toEqual(["GR"]);
-    expect(calls).toHaveLength(3); // website totals + country + network during ingest; none during reprocess
+    expect(calls).toHaveLength(4); // website totals + country + network + device during ingest; none during reprocess
   });
 
   it("finds the latest raw country response per site and day", async () => {

@@ -34,6 +34,7 @@ model Site {
   revenueGeo FactRevenueGeo[]
   revenueZn  FactRevenueZone[]
   revenueNet FactRevenueNetwork[]
+  revenueDev FactRevenueDevice[]
   traffic    FactTraffic[]
   costs      FactCost[]
   deals      FactFixDeal[]
@@ -183,6 +184,22 @@ model FactRevenueNetwork {
 
   @@id([date, siteId, networkId])
   @@index([date, networkId])
+}
+
+// AdSpyglass device cut per site (group_by=device, platforms_ids[]). Like networks, ADOK cannot
+// cross it with countries, so it lives apart from FactRevenueGeo (whose device is UNKNOWN).
+model FactRevenueDevice {
+  date            DateTime @db.Date
+  siteId          String
+  device          Device
+  pageLoads       Int      @default(0)
+  impsOwn         Int      @default(0)
+  impsNetwork     Int      @default(0)
+  clicks          Int      @default(0)
+  revenueReported Decimal  @default(0) @db.Decimal(12, 4)
+  site            Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@id([date, siteId, device])
 }
 
 // AdSpyglass zone cut: site × zone (format comes with the zone). Own deals are NOT in this cut.
