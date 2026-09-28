@@ -60,11 +60,16 @@
 | `tests/int/auth`, `mcp` | Пароль, сессии, блокировка; инструменты MCP и route с токеном |
 | `tests/ci/*.test.sh` | Скрипты деплоя и проверки API |
 
-Ещё не сделано: E2E-сценарии Playwright (выше) и порог покрытия в CI — идут следующим PR.
+| `tests/int/queries`, `demo-probe` | Запросы страниц на эталонной сети; демо-данные; интерактивные проверки AdSpyglass и Метрики |
+| `tests/components/action-form` | Тост успеха доходит, даже если форма сразу размонтируется |
+| `tests/e2e/scenarios.spec.ts` | Пять сценариев выше + MCP с токеном из настроек + страница сайта за 30 дней быстрее секунды |
+| `tests/ci/backup.test.sh` | Ежедневный бэкап: пишет дамп, хранит последние N, пустой дамп — ошибка |
+
+E2E запускаются против собранного приложения (`npm run build`) и отдельной базы `tubestat_e2e`, которую `tests/e2e/global-setup.ts` пересоздаёт и наполняет демо-данными. Локально: `CHROMIUM_PATH=/opt/pw-browsers/chromium npm run test:e2e`.
 
 ## Покрытие
 
-- Цель: **80% строк** по `src/lib` и `src/server` (`npm run coverage`). В `check` порог пока не включён.
+- Порог в CI: **80% строк** по `src/lib` и `src/server` (`npm run coverage` в `check`, сейчас ~96%). Server actions и `session.ts` из подсчёта исключены: это обёртки над cookies/redirect Next.js, их проверяют E2E.
 - Покрытие — индикатор, а не цель: тест без проверки результата не считается тестом.
 
 ## Команды
@@ -72,6 +77,8 @@
 ```bash
 npm test               # unit + компоненты
 npm run test:int       # интеграционные (нужен Postgres: TEST_DATABASE_URL)
+npm run coverage       # всё vitest + порог покрытия, как в CI
+npm run test:e2e       # Playwright против npm run build
 npm run test:all       # unit + интеграционные + bash-тесты
 ```
 

@@ -16,7 +16,8 @@
     "db:migrate": "prisma migrate deploy",
     "db:seed": "tsx prisma/seed.ts",
     "db:demo": "tsx prisma/demo.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "test:e2e": "playwright test"
   },
   "engines": {
     "node": ">=20"

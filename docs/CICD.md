@@ -1,7 +1,7 @@
 # CI/CD: GitHub → Timeweb
 
 ```
-PR → GitHub Actions: проверки (typecheck, unit + компоненты, интеграционные на Postgres, docker build)
+PR → GitHub Actions: проверки (typecheck, тесты с порогом покрытия 80%, сборка, E2E Playwright, docker build)
 merge в main → сборка образа → ghcr.io/alexgolubevpm/tubestat:<sha>
             → SSH на сервер под пользователем deploy
             → /opt/tubestat/deploy.sh: бэкап БД → миграции → справочники (dist/seed.js) → docker compose up → ждём healthcheck
@@ -80,6 +80,8 @@ Settings → Branches → Add rule для `main`: *Require a pull request*, *Req
 1. Работа в ветке, PR в `main` — на PR бегут проверки.
 2. Merge → собирается образ, деплой на сервер. Статус — во вкладке Actions.
 3. Если healthcheck не прошёл, job падает с логами `web`; прошлые контейнеры Postgres/Redis не трогаются, бэкап БД перед деплоем лежит в `/opt/tubestat/backups` (последние 10).
+
+**Бэкапы.** Перед каждым деплоем — `backups/pre-deploy-*.dump` (последние 10). Ежедневно в 03:30 UTC — `backups/daily-YYYYMMDD.dump` (последние 14): `deploy.sh` ставит cron пользователю `deploy`, скрипт — `deploy/backup.sh`, лог — `backups/backup.log`. Восстановление: `docker compose exec -T postgres pg_restore -U tubestat -d tubestat --clean < backups/<файл>.dump`.
 
 Откат на предыдущую версию:
 

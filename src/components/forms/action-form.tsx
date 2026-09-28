@@ -1,7 +1,7 @@
 "use client";
 // Form bound to a server action returning ActionResult: field error under the field,
 // success toast and onDone (close the Sheet) on ok.
-import { createContext, useActionState, useContext, useEffect, useRef, type ReactNode } from "react";
+import { createContext, useActionState, useContext, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
 import { Field } from "@/components/ui/input";
 import { useToast } from "@/components/ui/toast";
@@ -14,15 +14,15 @@ export function ActionForm({ action, children, submit, onDone, className, cancel
   action: (s: ActionResult, f: FormData) => Promise<ActionResult>; children: ReactNode; submit: string; onDone?: (r: ActionResult) => void;
   className?: string; cancel?: () => void;
 }) {
-  const [state, run, pending] = useActionState(action, {});
   const toast = useToast();
-  const seen = useRef<ActionResult>(state);
-  useEffect(() => {
-    if (state === seen.current) return;
-    seen.current = state;
-    if (state.ok) { toast(state.message ?? "Сохранено"); onDone?.(state); }
-    else if (state.error && !state.field) toast(state.error, "error");
-  }, [state, toast, onDone]);
+  // Toast and onDone fire right when the action answers, not in an effect: the action's
+  // revalidation can unmount this form (e.g. the "к вводу" row disappears) before an effect runs.
+  const [state, run, pending] = useActionState(async (prev: ActionResult, f: FormData) => {
+    const r = await action(prev, f);
+    if (r.ok) { toast(r.message ?? "Сохранено"); onDone?.(r); }
+    else if (r.error && !r.field) toast(r.error, "error");
+    return r;
+  }, {});
   return (
     <ErrCtx.Provider value={state}>
       <form action={run} className={className ?? "flex flex-col gap-4"}>
