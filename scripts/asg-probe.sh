@@ -141,13 +141,14 @@ filter_ratio() {
 
 if [ "${ASG_PROBE_MODE:-}" = "discover" ]; then
   # Names from the ADOK UI "Group" list and more spellings of its "Website" filter.
-  probe gb_adnetwork_squashed "group_by=adnetwork_squashed"
-  probe gb_adnetwork          "group_by=adnetwork"
-  [ -n "$CUT_SITE" ] && for v in "website_id=$CUT_SITE"; do
+  # The ADOK UI sends the Website filter as platforms_ids: ["137648", ...].
+  [ -n "$CUT_SITE" ] && for v in "platforms_ids[]=$CUT_SITE" "platforms_ids=$CUT_SITE" "platform_id=$CUT_SITE"; do
     label="fc_$(printf '%s' "${v%%=*}" | tr -c 'a-zA-Z_' '_')"
     probe "$label" "group_by=country&$v"
     filter_ratio "$label"
   done
+  [ -n "$CUT_SITE" ] && { probe fc_net_site "group_by=adnetwork_squashed&platforms_ids[]=$CUT_SITE"; filter_ratio fc_net_site; }
+  [ -n "$CUT_SITE" ] && { probe fc_spot_site "group_by=spot&platforms_ids[]=$CUT_SITE"; filter_ratio fc_spot_site; }
   for f in "$OUT"/gb_*.json; do
     [ -s "$f" ] || continue
     echo "   $(basename "$f" .json): rows=$(jq 'if type=="array" then length else "-" end' "$f" 2>/dev/null) fields=$(jq -r 'if type=="array" and length>0 then (.[0] | keys | join(",")) else "-" end' "$f" 2>/dev/null | cut -c1-240)"
