@@ -56,7 +56,8 @@ export class AsgClient {
     url.searchParams.set("from", p.from);
     url.searchParams.set("to", p.to);
     url.searchParams.set("group_by", p.groupBy);
-    if (p.websiteId) url.searchParams.set("website_id", String(p.websiteId));
+    // ADOK calls sites "platforms"; website_id and similar names are silently ignored.
+    if (p.websiteId) url.searchParams.set("platforms_ids[]", String(p.websiteId));
     for (const [k, v] of Object.entries(p.extra ?? {})) url.searchParams.set(k, v);
 
     const delays = this.o.retryDelaysMs ?? [60_000, 300_000];

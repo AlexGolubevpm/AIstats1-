@@ -33,6 +33,7 @@ model Site {
   zones      Zone[]
   revenueGeo FactRevenueGeo[]
   revenueZn  FactRevenueZone[]
+  revenueNet FactRevenueNetwork[]
   traffic    FactTraffic[]
   costs      FactCost[]
   deals      FactFixDeal[]
@@ -101,14 +102,14 @@ enum AdFormat {
 }
 
 model Zone {
-  id         String   @id @default(cuid())
-  adsgZoneId Int      @unique
+  id         String            @id @default(cuid())
+  adsgZoneId Int               @unique
   siteId     String
   name       String
   format     AdFormat
   position   String?
-  isActive   Boolean  @default(true)
-  site       Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  isActive   Boolean           @default(true)
+  site       Site              @relation(fields: [siteId], references: [id], onDelete: Cascade)
   revenue    FactRevenueZone[]
   dealSites  DealSite[]
 
@@ -122,15 +123,16 @@ enum NetworkKind {
 }
 
 model Network {
-  id           String      @id @default(cuid())
-  slug         String      @unique // adpulsar | clickadu | own_deals | ...
+  id           String               @id @default(cuid())
+  slug         String               @unique // adpulsar | clickadu | own_deals | ...
   title        String
   color        String // fixed colour on every chart
-  kind         NetworkKind @default(MEDIATED)
-  showInLegend Boolean     @default(true)
-  sortOrder    Int         @default(100)
-  isSystem     Boolean     @default(false)
+  kind         NetworkKind          @default(MEDIATED)
+  showInLegend Boolean              @default(true)
+  sortOrder    Int                  @default(100)
+  isSystem     Boolean              @default(false)
   revenue      FactRevenueGeo[]
+  revenueNet   FactRevenueNetwork[]
 }
 
 enum Device {
@@ -163,6 +165,24 @@ model FactRevenueGeo {
   @@id([date, siteId, networkId, countryCode, device])
   @@index([date, siteId])
   @@index([date, countryCode])
+}
+
+// AdSpyglass network cut per site (group_by=adnetwork_squashed, platforms_ids[]). ADOK cannot
+// combine network × country, so networks carry no country; v_network_geo shows them as ZZ.
+model FactRevenueNetwork {
+  date            DateTime @db.Date
+  siteId          String
+  networkId       String
+  pageLoads       Int      @default(0)
+  impsOwn         Int      @default(0)
+  impsNetwork     Int      @default(0)
+  clicks          Int      @default(0)
+  revenueReported Decimal  @default(0) @db.Decimal(12, 4)
+  site            Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  network         Network  @relation(fields: [networkId], references: [id])
+
+  @@id([date, siteId, networkId])
+  @@index([date, networkId])
 }
 
 // AdSpyglass zone cut: site × zone (format comes with the zone). Own deals are NOT in this cut.
@@ -322,9 +342,9 @@ model DealSite {
   dealId String
   siteId String
   zoneId String?
-  deal   Deal   @relation(fields: [dealId], references: [id], onDelete: Cascade)
-  site   Site   @relation(fields: [siteId], references: [id], onDelete: Cascade)
-  zone   Zone?  @relation(fields: [zoneId], references: [id], onDelete: SetNull)
+  deal   Deal    @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  site   Site    @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  zone   Zone?   @relation(fields: [zoneId], references: [id], onDelete: SetNull)
 
   @@id([dealId, siteId])
 }

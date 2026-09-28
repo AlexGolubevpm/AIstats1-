@@ -28,3 +28,14 @@ describe("mapCountryRows", () => {
     expect(r.knows(null)).toBe(false);
   });
 });
+
+describe("network rows", async () => {
+  const { mapNetworkRows, networkSlug } = await import("@/server/ingest/adspyglass/map");
+  it("slug matches seeded networks and sums duplicates", () => {
+    expect(networkSlug("AdPulsar.io")).toBe("adpulsar");
+    expect(networkSlug("Traffic Stars.com")).toBe("traffic_stars");
+    expect(networkSlug("")).toBe("unknown");
+    const cells = mapNetworkRows([{ name: "ExoClick.com", hits: 2, broker_income: 1 }, { name: "exoclick.com", hits: 3, broker_income: 2 }]);
+    expect(cells).toEqual([{ slug: "exoclick", title: "ExoClick.com", m: expect.objectContaining({ pageLoads: 5, revenue: 3 }) }]);
+  });
+});

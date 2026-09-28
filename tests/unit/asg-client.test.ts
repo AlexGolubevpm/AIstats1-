@@ -19,7 +19,7 @@ describe("AsgClient", () => {
     const f = fakeFetch([json([{ name: "1. a.com", hits: 5 }])]);
     const c = new AsgClient(opts(f.fn));
     expect(await c.report({ from: "2026-09-22", to: "2026-09-22", groupBy: "country", websiteId: 7 })).toEqual([{ name: "1. a.com", hits: 5 }]);
-    expect(f.calls[0]).toBe("https://api.test/api/report?from=2026-09-22&to=2026-09-22&group_by=country&website_id=7");
+    expect(f.calls[0]).toBe("https://api.test/api/report?from=2026-09-22&to=2026-09-22&group_by=country&platforms_ids%5B%5D=7"); // ADOK ignores website_id
   });
 
   it("treats a redirect to sign_in as an auth failure that pauses the queue", async () => {

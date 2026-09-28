@@ -1,10 +1,10 @@
 // AdSpyglass ingest. Request plan is built for ADOK's limits:
 //  - hourly: ONE account-level request per day (group_by=website) → site totals (country ZZ);
 //  - nightly: ONE account-level spot cut per day (the spot name carries the domain) → zones,
-//    and per-site country cuts — written only if ADOK really scoped them to the site.
-// Probing showed ADOK ignores website_id (and similar names): a "per-site" country cut is the
-// whole account. Each per-site response is checked against the site's own hits and rejected
-// when it is larger, so account data is never written into a site (docs/architecture/08-backend.md#asg-limits).
+//    and per site: country and network (adnetwork_squashed) cuts.
+// ADOK scopes a report to a site only with platforms_ids[] (website_id is silently ignored).
+// Each per-site response is still checked against the site's own hits and rejected when it is
+// larger, so account data is never written into a site (docs/architecture/08-backend.md#asg-limits).
 // Country-level rows for a (date, site) replace its site-total row, never add to it,
 // so a day is never counted twice whichever job ran last.
 import Decimal from "decimal.js";
@@ -12,7 +12,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { CountryResolver } from "@/server/ingest/normalize";
 import { rawKey, type RawStore } from "@/server/ingest/raw-store";
 import { AsgClient, AsgError } from "./client";
-import { mapCountryRows, mapSpotRows, mapWebsiteRows, type GeoCell } from "./map";
+import { mapCountryRows, mapNetworkRows, mapSpotRows, mapWebsiteRows, type GeoCell, type NetworkCell } from "./map";
 
 export interface AsgIngestDeps { db: PrismaClient; client: AsgClient; raw: RawStore; runId: string }
 
@@ -80,7 +80,8 @@ export async function ingestSiteTotals(deps: AsgIngestDeps, dates: string[]): Pr
   return { rows, unknown: [...unknown] };
 }
 
-export const FILTER_IGNORED_KEY = "asg_site_filter_ignored";
+// Versioned by filter name: a flag raised while website_id was used does not block platforms_ids.
+export const FILTER_IGNORED_KEY = "asg_site_filter_ignored:platforms_ids";
 const RECHECK_DAYS = 7;
 
 /** A per-site response larger than the site itself means the filter was ignored. */
@@ -125,6 +126,12 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
         }
         await raw.put(rawKey("adspyglass", `country/${s.adsgSiteId}`, date, runId), body);
         rows += await writeGeo(db, date, s.id, cells, "country", netId);
+        const netBody = await client.report({ from: date, to: date, groupBy: "adnetwork_squashed", websiteId: s.adsgSiteId! });
+        const nets = mapNetworkRows(netBody);
+        if (scopedToSite(nets.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
+          await raw.put(rawKey("adspyglass", `network/${s.adsgSiteId}`, date, runId), netBody);
+          rows += await writeNetworks(db, date, s.id, nets);
+        } else failed.push(`${s.domain} ${date}: сетки не по сайту — пропущены`);
       } catch (e) {
         if (e instanceof AsgError && (e.pausesQueue || e.kind === "budget")) throw e; // stop the whole run
         failed.push(`${s.domain} ${date}: ${(e as Error).message}`);
@@ -133,6 +140,31 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
   }
   await saveUnresolved(db, resolver);
   return { rows, failed };
+}
+
+/** Networks unknown so far are created grey, outside the legend ("Прочее" until coloured). */
+async function networkIds(db: PrismaClient, cells: NetworkCell[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const c of cells) {
+    const n = await db.network.upsert({ where: { slug: c.slug }, update: {},
+      create: { slug: c.slug, title: c.title, color: "#94A3B8", kind: "MEDIATED", showInLegend: false, sortOrder: 100 } });
+    out.set(c.slug, n.id);
+  }
+  return out;
+}
+
+/** Replaces the network rows of (date, site). */
+export async function writeNetworks(db: PrismaClient, date: string, siteId: string, cells: NetworkCell[]): Promise<number> {
+  const ids = await networkIds(db, cells);
+  const data = cells.filter((c) => c.m.pageLoads || c.m.impsOwn || c.m.revenue).map((c) => ({
+    date: d(date), siteId, networkId: ids.get(c.slug)!, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork,
+    clicks: c.m.clicks, revenueReported: dec(c.m.revenue),
+  }));
+  await db.$transaction([
+    db.factRevenueNetwork.deleteMany({ where: { date: d(date), siteId } }),
+    db.factRevenueNetwork.createMany({ data }),
+  ]);
+  return data.length;
 }
 
 /**

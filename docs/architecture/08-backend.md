@@ -72,6 +72,7 @@ tests/                       см. 10-testing
 | Модель | Изменение | Зачем |
 | --- | --- | --- |
 | `FactCost` | + `origin: RATE \| IMPORT`, + `importBatchId?` | Импорт перекрывает расчёт; откат импорта |
+| `FactRevenueNetwork` | новая: дата × сайт × сетка (разрез `adnetwork_squashed`, без страны — ADOK не отдаёт сетку × страну) | Сравнение сеток и флор по сайту; в `v_network_geo` строки с `country_code = 'ZZ'` заменяют общий `asg_all` за тот же сайт-день |
 | `FactRevenue` → `FactRevenueGeo` + `FactRevenueZone` | Два факта вместо одного с `zoneId = null` / `countryCode = 'ZZ'`, см. [ADR 0004](../adr/0004-revenue-facts-and-billing.md) | Разрезы AdSpyglass не складываются друг с другом |
 | `FactRevenueGeo` | `revenueConfirmed` заполняется выплатой `AsgPayout` пропорционально отчётной выручке | Подтверждение выплат AdSpyglass |
 | `Deal` | + `billedVia: DIRECT \| VIA_ASG` | Дил через AdSpyglass уже внутри `own_deals` и не добавляется второй раз |
@@ -108,7 +109,7 @@ CSV текущей таблицы формируется в браузере и�
 | Джоб | Очередь | Расписание (UTC) | Окно | Что делает |
 | --- | --- | --- | --- | --- |
 | `asg:totals` | `asg` | каждый час, :05 | вчера + сегодня | Один запрос `group_by=website` на день окна → итоги по сайтам (`FactRevenueGeo`, страна `ZZ`) |
-| `asg:sites` | `asg` | 04:00 | T-`ASG_RESTATE_DAYS`…T-1 | Зоны: один запрос `group_by=spot` по аккаунту в день, зона относится к сайту по домену в названии. Гео по сайтам: `group_by=country&website_id=…`, пишется только если ответ действительно по сайту (см. ниже) |
+| `asg:sites` | `asg` | 04:00 | T-`ASG_RESTATE_DAYS`…T-1 | В день: `group_by=website` (итоги для сверки) и `group_by=spot` по аккаунту (зона → сайт по домену в названии). По каждому сайту: `group_by=country` и `group_by=adnetwork_squashed` с `platforms_ids[]=<id>` → `FactRevenueGeo` и `FactRevenueNetwork`. Сайт × день = 2 запроса |
 | `metrika` | `main` | каждый час, :15 | вчера + сегодня | → `FactTraffic` |
 | `derive` | `main` | 04:45 | T-4…T-1 | Расход по ставкам → прогноз дилов → алерты, строго по порядку |
 | `geo:reprocess` | `main` | по кнопке | 90 дней | Переписывает гео-строки из сохранённого сырья после сопоставления страны, затем `derive`. Запросов к API нет |
@@ -142,19 +143,21 @@ ADOK блокирует клиентов за частые запросы (на 
 - Уже закрытые дни (старше T-4) не перезапрашиваются никогда — пересчёт идёт из сырья в S3.
 - Каждый запрос учитывается в `IngestRun.requests`; на `/settings/integrations` виден расход бюджета за сутки.
 
-### Что известно об API ADOK (проверено 2026-09-25 с сервера)
+### Что известно об API ADOK (проверено с сервера, 2026-09-25…28)
 
 | Запрос | Результат |
 | --- | --- |
 | `group_by=website` | 200, строка на сайт: `"137648. domain.com"` |
 | `group_by=country` | 200, строка на страну, есть поле `iso` (маппинг берёт его первым) |
 | `group_by=spot` | 200, строка на зону: `"491410. Name (domain.com)"` — домен даёт сайт |
-| `group_by=date`, `device`, `ad_type` | 200 |
-| `group_by=broker|network|partner|ad_network|source` | 422 — разреза по сеткам/партнёрам в API нет |
+| `group_by=adnetwork_squashed` | 200, строка на сетку (в UI — «Demand»), имя вида `AdPulsar.io` → слаг `adpulsar` |
+| `group_by=date`, `device`, `ad_type`, `platform`, `adnetwork_type` | 200 |
+| `group_by=broker|network|partner|demand|adnetwork` | 422 |
 | Два измерения (`website,country`, `group_by[]`, повтор параметра) | 422 или только одно измерение |
-| Фильтр по сайту: `website_id`, `website_ids[]`, `website_ids`, `filter[website_id]`, `websites[]`, `website`, `site_id`, `site_ids[]`, `website_id[]`, `sites[]` | **игнорируется**: ответ = весь аккаунт (4.21× от итога сайта) |
+| Фильтр по сайту `platforms_ids[]=<id>` | **работает** (ответ = 1.00× итога сайта) для стран, сеток и зон |
+| `website_id`, `website_ids[]`, `websites`, `site_id`, `filter[…]` и др. — 16 вариантов | игнорируются молча: ответ = весь аккаунт |
 
-Поэтому гео по сайту пока недоступно. Защита в ингесте: каждый «посайтовый» ответ сверяется с итогом сайта из `group_by=website`; если ответ больше сайта (> 105%), он отбрасывается, в `AppSetting.asg_site_filter_ignored` пишется причина, и посайтовое гео не запрашивается 7 дней (потом одна проверка снова). У сайтов остаётся итог дня (`ZZ`), зоны и форматы — полные. Правильное имя фильтра нужно узнать у ADOK; проверка — `MODE=filters` в `.github/asg-probe.request`.
+Имя фильтра взято из запроса веб-интерфейса ADOK (`args.platforms_ids`): сайты там называются «платформами». Защита остаётся: каждый посайтовый ответ сверяется с итогом сайта из `group_by=website`; если ответ больше сайта (> 105%), он отбрасывается, причина пишется в `AppSetting` (`asg_site_filter_ignored:platforms_ids`), посайтовые разрезы пропускаются 7 дней. Проверка API — `.github/asg-probe.request` с `MODE=discover|filters|multi`.
 
 Точные значения интервала и бюджета уточняются у ADOK или подбираются по результатам первой недели; до этого — консервативные значения выше.
 
