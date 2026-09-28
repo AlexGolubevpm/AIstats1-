@@ -141,10 +141,9 @@ filter_ratio() {
 
 if [ "${ASG_PROBE_MODE:-}" = "discover" ]; then
   # Names from the ADOK UI "Group" list and more spellings of its "Website" filter.
-  probe gb_demand          "group_by=demand"
-  probe gb_adnetwork_type  "group_by=adnetwork_type"
-  probe gb_platform        "group_by=platform"
-  [ -n "$CUT_SITE" ] && for v in "websites=$CUT_SITE" "websiteId=$CUT_SITE" "filter[websites][]=$CUT_SITE" "filters[website_id]=$CUT_SITE" "site=$CUT_SITE" "website_id=$CUT_SITE&group=country"; do
+  probe gb_adnetwork_squashed "group_by=adnetwork_squashed"
+  probe gb_adnetwork          "group_by=adnetwork"
+  [ -n "$CUT_SITE" ] && for v in "website_id=$CUT_SITE"; do
     label="fc_$(printf '%s' "${v%%=*}" | tr -c 'a-zA-Z_' '_')"
     probe "$label" "group_by=country&$v"
     filter_ratio "$label"
