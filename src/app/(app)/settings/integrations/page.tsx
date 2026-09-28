@@ -19,7 +19,9 @@ const tail = (s: string) => (s ? `задан · …${s.slice(-4)}` : "не за�
 export default async function Integrations() {
   const cfg = config();
   const since = new Date(Date.now() - 7 * 86_400_000);
-  const [pause, used, runs, unresolved, countries, sites, demo, hasData] = await Promise.all([
+  const [[xx], pause, used, runs, unresolved, countries, sites, demo, hasData] = await Promise.all([
+    db.$queryRaw<{ xx: number; all: number }[]>`SELECT count(*) FILTER (WHERE "countryCode" = 'XX')::int xx, count(*) FILTER (WHERE "countryCode" <> 'ZZ')::int "all"
+      FROM "FactRevenueGeo" WHERE date >= ${since}`,
     asgPause(db), asgRequestsToday(db),
     db.ingestRun.findMany({ where: { startedAt: { gte: since } }, orderBy: { startedAt: "desc" }, take: 100 }),
     db.unresolvedAlias.findMany({ orderBy: { rows: "desc" } }),
@@ -99,7 +101,7 @@ export default async function Integrations() {
       </Section>
 
       <section id="geo" className="scroll-mt-6">
-        <Section title="Нераспознанные гео" sub="После сопоставления «Пересчитать» перезапишет строки из сохранённого сырья, без повторного обхода API"
+        <Section title="Нераспознанные гео" sub={<>Строк в XX за 7 дней: <span className={xx.all && xx.xx / xx.all >= 0.01 ? "text-warning" : ""}>{xx.all ? ((xx.xx / xx.all) * 100).toFixed(2) : "0"}%</span> (цель — меньше 1%). После сопоставления «Пересчитать» перезапишет строки из сохранённого сырья, без повторного обхода API</>}
           actions={unresolved.length === 0 ? undefined : <ReprocessButton />}>
           {unresolved.length === 0 ? <p className="text-sm text-muted">Все страны распознаны.</p> : unresolved.map((u) => (
             <AliasRow key={`${u.source}|${u.raw}`} source={u.source} raw={u.raw} rows={u.rows} countries={countries.map((c) => ({ code: c.code, name: c.nameRu }))} />

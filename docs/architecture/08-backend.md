@@ -73,6 +73,7 @@ tests/                       см. 10-testing
 | --- | --- | --- |
 | `FactCost` | + `origin: RATE \| IMPORT`, + `importBatchId?` | Импорт перекрывает расчёт; откат импорта |
 | `FactRevenueNetwork` | новая: дата × сайт × сетка (разрез `adnetwork_squashed`, без страны — ADOK не отдаёт сетку × страну) | Сравнение сеток и флор по сайту; в `v_network_geo` строки с `country_code = 'ZZ'` заменяют общий `asg_all` за тот же сайт-день |
+| `FactRevenueDevice` | новая: дата × сайт × устройство (разрез `device`) | Вкладка «Девайсы» сайта; в `FactRevenueGeo` устройство у реальных данных `UNKNOWN` |
 | `FactRevenue` → `FactRevenueGeo` + `FactRevenueZone` | Два факта вместо одного с `zoneId = null` / `countryCode = 'ZZ'`, см. [ADR 0004](../adr/0004-revenue-facts-and-billing.md) | Разрезы AdSpyglass не складываются друг с другом |
 | `FactRevenueGeo` | `revenueConfirmed` заполняется выплатой `AsgPayout` пропорционально отчётной выручке | Подтверждение выплат AdSpyglass |
 | `Deal` | + `billedVia: DIRECT \| VIA_ASG` | Дил через AdSpyglass уже внутри `own_deals` и не добавляется второй раз |
@@ -109,7 +110,7 @@ CSV текущей таблицы формируется в браузере и�
 | Джоб | Очередь | Расписание (UTC) | Окно | Что делает |
 | --- | --- | --- | --- | --- |
 | `asg:totals` | `asg` | каждый час, :05 | вчера + сегодня | Один запрос `group_by=website` на день окна → итоги по сайтам (`FactRevenueGeo`, страна `ZZ`) |
-| `asg:sites` | `asg` | 04:00 | T-`ASG_RESTATE_DAYS`…T-1 | В день: `group_by=website` (итоги для сверки) и `group_by=spot` по аккаунту (зона → сайт по домену в названии). По каждому сайту: `group_by=country` и `group_by=adnetwork_squashed` с `platforms_ids[]=<id>` → `FactRevenueGeo` и `FactRevenueNetwork`. Сайт × день = 2 запроса |
+| `asg:sites` | `asg` | 04:00 | T-`ASG_RESTATE_DAYS`…T-1 | В день: `group_by=website` (итоги для сверки) и `group_by=spot` по аккаунту (зона → сайт по домену в названии). По каждому сайту с `platforms_ids[]=<id>`: `group_by=country`, `adnetwork_squashed`, `device` → `FactRevenueGeo`, `FactRevenueNetwork`, `FactRevenueDevice`. Сайт × день = 3 запроса. Выручка по странам сверяется с итогом сайта из `group_by=website`: расхождение больше 2% (и больше $0.05) пишется в `IngestRun.error`, прогон — `partial` |
 | `metrika` | `main` | каждый час, :15 | вчера + сегодня | → `FactTraffic` |
 | `derive` | `main` | 04:45 | T-4…T-1 | Расход по ставкам → прогноз дилов → алерты, строго по порядку |
 | `geo:reprocess` | `main` | по кнопке | 90 дней | Переписывает гео-строки из сохранённого сырья после сопоставления страны, затем `derive`. Запросов к API нет |

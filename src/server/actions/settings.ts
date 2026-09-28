@@ -165,7 +165,7 @@ export async function runJobAction(_: ActionResult, f: FormData): Promise<Action
   if (job === "asg:sites" && from && to) {
     const days = Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1;
     const sites = await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(opt(f, "siteId") ? { id: opt(f, "siteId")! } : {}) } });
-    const requests = days * (sites * 2 + 2); // per site: country + network; per day: totals + spots
+    const requests = days * (sites * 3 + 2); // per site: country + network + device; per day: totals + spots
     const budget = config().asg.dailyBudget;
     if (requests > budget && str(f, "confirm") !== "1") {
       return { error: `Бэкфилл потребует ~${requests} запросов к AdSpyglass при дневном бюджете ${budget}. Сократите диапазон или отметьте подтверждение — джоб продолжит на следующий день.`, field: "confirm" };

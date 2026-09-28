@@ -32,7 +32,7 @@ export function RunJobForm({ jobs, sites }: { jobs: { id: string; label: string 
       <FormField name="to" label="По"><Input type="date" name="to" /></FormField>
       <FormField name="siteId" label="Сайт (опционально)"><Select name="siteId" defaultValue=""><option value="">Все</option>{sites.map((s) => <option key={s.id} value={s.id}>{s.domain}</option>)}</Select></FormField>
       {job === "asg:sites" && (
-        <FormField name="confirm" label="Бэкфилл" className="sm:col-span-2 lg:col-span-4" hint="Каждый сайт × день = 2 запроса к AdSpyglass (страны и сетки) плюс 2 на день. Запросы идут по одному с паузой, в пределах дневного бюджета.">
+        <FormField name="confirm" label="Бэкфилл" className="sm:col-span-2 lg:col-span-4" hint="Каждый сайт × день = 3 запроса к AdSpyglass (страны, сетки, устройства) плюс 2 на день. Запросы идут по одному с паузой, в пределах дневного бюджета.">
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="confirm" value="1" /> Понимаю, сколько запросов уйдёт, и что бэкфилл может занять несколько дней</label>
         </FormField>
       )}

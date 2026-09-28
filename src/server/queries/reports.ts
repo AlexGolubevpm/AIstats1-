@@ -144,7 +144,15 @@ export async function zonesTable(p: Period, siteId: string) {
 export async function devicesTable(p: Period, siteId: string) {
   const [traffic, revenue] = await Promise.all([
     db.$queryRaw<Raw[]>`SELECT device::text device, SUM(uniques)::float8 uniques FROM "FactTraffic" WHERE "siteId" = ${siteId} AND date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY 1`,
-    db.$queryRaw<Raw[]>`SELECT device::text device, SUM("impsOwn")::float8 imps, SUM("revenueReported")::float8 revenue FROM "FactRevenueGeo" WHERE "siteId" = ${siteId} AND date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY 1`,
+    // Device cut where ADOK sent one for the site-day; the geo fact (device UNKNOWN or demo devices) otherwise.
+    db.$queryRaw<Raw[]>`SELECT device, SUM(imps)::float8 imps, SUM(revenue)::float8 revenue FROM (
+        SELECT device::text device, "impsOwn" imps, "revenueReported" revenue FROM "FactRevenueDevice"
+        WHERE "siteId" = ${siteId} AND date BETWEEN ${D(p.from)} AND ${D(p.to)}
+        UNION ALL
+        SELECT g.device::text, g."impsOwn", g."revenueReported" FROM "FactRevenueGeo" g
+        WHERE g."siteId" = ${siteId} AND g.date BETWEEN ${D(p.from)} AND ${D(p.to)}
+          AND NOT EXISTS (SELECT 1 FROM "FactRevenueDevice" x WHERE x."siteId" = g."siteId" AND x.date = g.date)
+      ) u GROUP BY 1`,
   ]);
   const devices = new Set([...traffic, ...revenue].map((r) => String(r.device)));
   const total = revenue.reduce((a, r) => a + n(r.revenue), 0);
