@@ -1,0 +1,45 @@
+name: Readiness check
+
+# The readiness checklist of docs/tubestat-spec.md, run against production over SSH:
+# ingest status, unrecognised geo, reconciliation with ADOK, ROMI coverage, bundle totals,
+# site ids, site-page query time, worker and backups. The repository is public: the script
+# prints counts, shares and statuses only (scripts/readiness.sql). Red = something to fix.
+on:
+  schedule:
+    - cron: "10 6 * * *" # after the nightly ingest
+  workflow_dispatch:
+  # Lets automation without workflow_dispatch permission request a run.
+  push:
+    paths: [".github/readiness.request"]
+
+concurrency:
+  group: readiness
+  cancel-in-progress: false
+
+jobs:
+  readiness:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: SSH setup
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s' "$SSH_KEY" | bash scripts/ci/normalize-ssh-key.sh > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$SSH_KNOWN_HOSTS" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep -v '^$' > ~/.ssh/known_hosts
+
+      - name: Checklist
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+        run: |
+          dir=/tmp/readiness-$GITHUB_RUN_ID
+          ssh deploy@"$HOST" "mkdir -p $dir"
+          scp -q scripts/readiness.sh scripts/readiness.sql deploy@"$HOST":$dir/
+          ssh deploy@"$HOST" "bash $dir/readiness.sh $dir/readiness.sql; rc=\$?; rm -rf $dir; exit \$rc"
