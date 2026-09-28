@@ -32,6 +32,23 @@ describe("v_site_geo_daily", () => {
     expect(num(r.cost)).toBe(12);
     expect(num(r.margin)).toBe(-2);
   });
+
+  it("keeps a row for a key that only one source has (cost without revenue)", async () => {
+    await db.factCost.create({ data: { date: new Date("2026-09-19T00:00:00Z"), siteId: "s1", countryCode: "US", sourceSlug: "tubecrown",
+      uniquesBought: 3, rateModel: "CPU", rate: "1", cost: "7" } });
+    const [r] = await db.$queryRaw<{ revenue: unknown; cost: unknown; margin: unknown; uniques: unknown }[]>`
+      SELECT revenue, cost, margin, uniques FROM v_site_geo_daily WHERE site_id = 's1' AND country_code = 'US' AND date = '2026-09-19'`;
+    expect([num(r.revenue), num(r.cost), num(r.margin), num(r.uniques)]).toEqual([0, 7, -7, 0]);
+    await db.factCost.deleteMany({ where: { date: new Date("2026-09-19T00:00:00Z") } });
+  });
+
+  it("pushes a site filter down to the fact tables (site page must render < 1 s)", async () => {
+    const plan = await db.$queryRawUnsafe<{ "QUERY PLAN": string }[]>(
+      `EXPLAIN SELECT SUM(revenue) FROM v_site_geo_daily WHERE site_id = 's1' AND date BETWEEN '2026-09-01' AND '2026-09-30'`);
+    const text = plan.map((r) => r["QUERY PLAN"]).join("\n");
+    expect(text).not.toMatch(/CTE Scan/); // materialised CTEs scan every site, then nested-loop join
+    expect(text).toMatch(/"FactRevenueGeo"[\s\S]*s1|s1[\s\S]*"FactRevenueGeo"/);
+  });
 });
 
 describe("v_bundle_daily", () => {
