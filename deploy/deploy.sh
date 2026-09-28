@@ -37,6 +37,14 @@ for i in $(seq 1 40); do
   sleep 3
 done
 
+echo "==> Daily backup cron (03:30 UTC, keep 14)"
+if command -v crontab >/dev/null 2>&1; then
+  { crontab -l 2>/dev/null | grep -v '# tubestat-backup' || true
+    echo "30 3 * * * bash /opt/tubestat/backup.sh >> /opt/tubestat/backups/backup.log 2>&1 # tubestat-backup"; } | crontab -
+else
+  echo "note: crontab not available, daily backups are not scheduled"
+fi
+
 echo "$IMAGE" > .current-image
 docker image prune -af --filter "until=168h" >/dev/null || true
 echo "==> Deployed $IMAGE"

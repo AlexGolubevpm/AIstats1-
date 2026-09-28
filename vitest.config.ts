@@ -29,7 +29,9 @@ export default defineConfig({
     coverage: {
       provider: "v8",
       include: ["src/lib/**", "src/server/**"],
-      exclude: ["src/generated/**", "src/server/jobs/**"],
+      // Server actions and the session guard are thin Next.js wrappers (cookies, redirect):
+      // they are exercised by the E2E suite (tests/e2e), not by unit/integration tests.
+      exclude: ["src/generated/**", "src/server/jobs/**", "src/server/actions/**", "src/server/session.ts"],
       thresholds: { lines: 80 },
     },
   },

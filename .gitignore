@@ -9,3 +9,5 @@ dist/
 coverage/
 .env.local
 dump.rdb
+test-results
+playwright-report
