@@ -7,6 +7,8 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 sql="${1:-$here/readiness.sql}"
 cd "${TUBESTAT_DIR:-/opt/tubestat}" || { echo "no stack directory"; exit 1; }
+# compose interpolates ${APP_IMAGE:?} even for exec/ps; outside deploy.sh take the deployed one.
+export APP_IMAGE="${APP_IMAGE:-$(cat .current-image 2>/dev/null || echo unset)}"
 
 psql_() { docker compose exec -T postgres psql -U tubestat -d tubestat -X -q -At -F '|' -v ON_ERROR_STOP=1 "$@"; }
 

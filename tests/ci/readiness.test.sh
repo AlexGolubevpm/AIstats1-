@@ -7,6 +7,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/app/backups"
 cat > "$tmp/bin/docker" <<'SH'
 #!/usr/bin/env bash
+[ -n "${APP_IMAGE:-}" ] || { echo 'required variable APP_IMAGE is missing a value' >&2; exit 1; } # like compose
 args="$*"
 case "$args" in
   *"ps --status running worker"*) [ "${WORKER:-up}" = up ] && echo "tubestat-worker-1  running" ;;

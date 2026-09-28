@@ -6,6 +6,7 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 mkdir -p "$tmp/bin" "$tmp/app/backups"
 cat > "$tmp/bin/docker" <<'SH'
 #!/usr/bin/env bash
+[ -n "${APP_IMAGE:-}" ] || { echo 'required variable APP_IMAGE is missing a value' >&2; exit 1; } # like compose
 [ "${EMPTY:-0}" = 1 ] || printf 'PGDMP-fake'
 SH
 chmod +x "$tmp/bin/docker"
