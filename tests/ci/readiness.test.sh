@@ -18,6 +18,7 @@ esac
 SH
 chmod +x "$tmp/bin/docker"
 touch "$tmp/app/backups/daily-20260928.dump"
+printf 'POSTGRES_PASSWORD=x\nAPP_PASSWORD=secret-value\nASG_AUTH_EMAIL=x\nASG_AUTH_TOKEN=x\nMETRIKA_TOKEN=x\nCOMPOSE_PROFILES=worker\n' > "$tmp/app/.env"
 run() { PATH="$tmp/bin:$PATH" TUBESTAT_DIR="$tmp/app" bash scripts/readiness.sh "$PWD/scripts/readiness.sql"; }
 fail=0
 if out=$(run); then echo "ok   all green exits 0"; else echo "FAIL all green exited non-zero"; echo "$out"; fail=1; fi
@@ -28,4 +29,8 @@ grep -q "daily backups: count / newest age h *1 / 0 *PASS" <<<"$out" && echo "ok
 if ASG=failed run >/dev/null; then echo "FAIL a failed check exited 0"; fail=1; else echo "ok   a failed check exits 1"; fi
 if PAGE_MS=450 run >/dev/null; then echo "FAIL slow page accepted"; fail=1; else echo "ok   slow page fails"; fi
 if WORKER=down run >/dev/null; then echo "FAIL stopped worker accepted"; fail=1; else echo "ok   stopped worker fails"; fi
+sed -i 's/^METRIKA_TOKEN=.*/METRIKA_TOKEN=/; /^COMPOSE_PROFILES/d' "$tmp/app/.env"
+out=$(run || true)
+grep -q "server .env: missing keys *METRIKA_TOKEN COMPOSE_PROFILES=worker *FAIL" <<<"$out" && echo "ok   missing .env keys named" || { echo "FAIL env keys: $out"; fail=1; }
+! grep -q "secret-value" <<<"$out" && echo "ok   no .env values printed" || { echo "FAIL leaked a value"; fail=1; }
 exit $fail

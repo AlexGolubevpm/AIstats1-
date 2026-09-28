@@ -25,6 +25,14 @@ else
   out+=$'\n'"site page 30d totals query ms|no data|FAIL"
 fi
 
+# Required keys in .env — names only, the values never leave the server.
+missing=""
+for k in POSTGRES_PASSWORD APP_PASSWORD ASG_AUTH_EMAIL ASG_AUTH_TOKEN METRIKA_TOKEN; do
+  grep -Eq "^$k=.+" .env 2>/dev/null || missing+="${missing:+ }$k"
+done
+grep -Eq '^COMPOSE_PROFILES=.*worker' .env 2>/dev/null || missing+="${missing:+ }COMPOSE_PROFILES=worker"
+out+=$'\n'"server .env: missing keys|${missing:-none}|$([ -z "$missing" ] && echo PASS || echo FAIL)"
+
 # Worker (COMPOSE_PROFILES=worker) and the daily backup cron.
 if docker compose ps --status running worker 2>/dev/null | grep -q worker; then w=running; else w=stopped; fi
 out+=$'\n'"worker container|$w|$([ "$w" = running ] && echo PASS || echo FAIL)"
