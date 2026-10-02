@@ -176,7 +176,30 @@ if [ "${ASG_PROBE_MODE:-}" = "recon" ]; then
     }
     out.sort((x, y) => String(x[0]).localeCompare(String(y[0])));
     for (const o of out) console.log(`   rev=${o[0]} loads=${o[1]} files=${o[2]} rows=${o[3]} distinct_iso=${o[4]} total_or_no_iso_rows=${o[5]}`);
-    if (!out.length) console.log("   no raw country files for this day");' 2>&1 | head -40
+    if (!out.length) console.log("   no raw country files for this day");
+    // Every numeric field of every stored cut, summed per site, as a ratio of the website cut
+    // broker_income (median and max over sites) — shows which field the per-site cuts inflate.
+    const base = "/data/raw/raw/adspyglass";
+    const latest = (cut, id) => { const dir = path.join(base, cut, id, process.env.DAY); if (!fs.existsSync(dir)) return null;
+      return JSON.parse(fs.readFileSync(path.join(dir, fs.readdirSync(dir).sort().at(-1)), "utf8")); };
+    const wsDir = path.join(base, "website", process.env.DAY);
+    const ws = fs.existsSync(wsDir) ? JSON.parse(fs.readFileSync(path.join(wsDir, fs.readdirSync(wsDir).sort().at(-1)), "utf8")) : [];
+    console.log(`== Stored website cut: rows=${ws.length} fields=${ws[0] ? Object.keys(ws[0]).join(",") : "-"}`);
+    const med = (a) => { const s = a.filter(Number.isFinite).sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)].toFixed(3) : "-"; };
+    for (const cut of ["country", "network", "device"]) {
+      const ratios = {}; let fields = "-";
+      for (const [id, a] of api) {
+        const rows = latest(cut, id); if (!rows || !rows.length || !a.broker_income) continue;
+        fields = Object.keys(rows[0]).join(",");
+        for (const k of Object.keys(rows[0])) {
+          if (typeof rows[0][k] !== "number") continue;
+          const site = Number(a[k]) || 0;
+          (ratios[k] ??= []).push(rows.reduce((s, r) => s + (Number(r[k]) || 0), 0) / (site || NaN));
+        }
+      }
+      console.log(`== ${cut}: fields=${fields}`);
+      for (const [k, v] of Object.entries(ratios)) console.log(`   ${k}: cut/site median=${med(v)} max=${Math.max(...v.filter(Number.isFinite)).toFixed(3)} sites=${v.length}`);
+    }' 2>&1 | head -40
   echo; echo "Requests sent: $REQUESTS."
   exit 0
 fi
