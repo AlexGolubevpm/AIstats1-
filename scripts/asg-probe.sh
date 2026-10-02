@@ -141,6 +141,22 @@ filter_ratio() {
   fi
 }
 
+if [ "${ASG_PROBE_MODE:-}" = "traffic" ]; then
+  # Where do traffic sources (and their cost) live? The cabinet has a "Traffic source" list.
+  # Prints status, row counts, field names and masked names only.
+  for g in platform traffic_source traffic_sources source traffic utm_source campaign; do
+    probe "ts_$g" "group_by=$g"
+    if [ "$LAST_CODE" = "200" ] && [[ "$LAST_ROWS" =~ ^[0-9]+$ ]] && [ "$LAST_ROWS" -gt 0 ]; then
+      echo "   fields: $(jq -r '.[0] | keys | join(",")' "$OUT/ts_$g.json" | cut -c1-400)"
+      echo "   names:  $(jq -r '.[:6][] | .name // "" | tostring' "$OUT/ts_$g.json" | bash "$SHAPE" | paste -sd '|' -)"
+      echo "   hits vs website cut: $(jq -r --slurpfile w "$OUT/baseline_website.json" '([.[] | (.hits // 0)] | add) / (([$w[0][] | (.hits // 0)] | add) // 1) * 1000 | round / 1000' "$OUT/ts_$g.json")x"
+      echo "   cost-like fields: $(jq -r '.[0] | keys[] | select(test("cost|spend|expense|price|payout|budget|bid"; "i"))' "$OUT/ts_$g.json" | paste -sd ',' -)"
+    fi
+  done
+  echo; echo "Requests sent: $REQUESTS."
+  exit 0
+fi
+
 if [ "${ASG_PROBE_MODE:-}" = "recon" ]; then
   # Where does TubeStat's revenue for $DATE differ from the API? Uses the stored raw responses,
   # so the only API request is the baseline above. Per-site lines carry ratios only, no names.
