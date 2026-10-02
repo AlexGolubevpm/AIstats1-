@@ -36,6 +36,7 @@ model Site {
   revenueNet FactRevenueNetwork[]
   revenueDev FactRevenueDevice[]
   trafficSrc FactTrafficSource[]
+  placements SitePlacement[]
   traffic    FactTraffic[]
   costs      FactCost[]
   deals      FactFixDeal[]
@@ -104,16 +105,18 @@ enum AdFormat {
 }
 
 model Zone {
-  id         String            @id @default(cuid())
-  adsgZoneId Int               @unique
-  siteId     String
-  name       String
-  format     AdFormat
-  position   String?
-  isActive   Boolean           @default(true)
-  site       Site              @relation(fields: [siteId], references: [id], onDelete: Cascade)
-  revenue    FactRevenueZone[]
-  dealSites  DealSite[]
+  id            String            @id @default(cuid())
+  adsgZoneId    Int               @unique
+  siteId        String
+  name          String
+  format        AdFormat
+  position      String?
+  isActive      Boolean           @default(true)
+  placementSlug String? // which ad place it fills (matched by name, editable)
+  site          Site              @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  placement     Placement?        @relation(fields: [placementSlug], references: [slug], onDelete: SetNull, onUpdate: Cascade)
+  revenue       FactRevenueZone[]
+  dealSites     DealSite[]
 
   @@index([siteId, format])
 }
@@ -373,11 +376,45 @@ model Deal {
   billedVia        BilledVia     @default(DIRECT)
   status           DealStatus    @default(ACTIVE)
   notes            String?
+  placementSlug    String? // the ad place the deal occupies on its sites (inventory)
   createdAt        DateTime      @default(now())
   advertiser       Advertiser    @relation(fields: [advertiserId], references: [id])
+  placement        Placement?    @relation(fields: [placementSlug], references: [slug], onDelete: SetNull, onUpdate: Cascade)
   sites            DealSite[]
   periods          DealPeriod[]
   facts            FactFixDeal[]
+}
+
+/// Ad places on the sites (Tablink 1…3, Underplayer, Welcome bar, …): the inventory grid.
+model Placement {
+  slug      String          @id
+  title     String
+  sortOrder Int             @default(0)
+  zones     Zone[]
+  deals     Deal[]
+  sites     SitePlacement[]
+}
+
+enum PlacementUse {
+  ROTATION // AdSpyglass rotation
+  OWN_DEAL // own deal inside AdSpyglass
+  FIX // fixed deal outside AdSpyglass
+  CPA
+  FREE
+  NONE // the site has no such place
+}
+
+/// Manual state of a place on a site, for what TubeStat cannot see itself (CPA, no place, …).
+model SitePlacement {
+  siteId        String
+  placementSlug String
+  use           PlacementUse
+  note          String?
+  updatedAt     DateTime     @updatedAt
+  site          Site         @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  placement     Placement    @relation(fields: [placementSlug], references: [slug], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([siteId, placementSlug])
 }
 
 model DealSite {

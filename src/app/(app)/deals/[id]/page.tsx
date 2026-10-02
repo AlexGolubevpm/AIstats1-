@@ -19,7 +19,7 @@ import { DealStatusButtons } from "./status";
 const FIELD_LABEL: Record<string, string> = {
   created: "создан", status: "статус", payment: "оплата", correction: "исправление", title: "название", format: "формат", paymentBasis: "модель оплаты",
   price: "цена", geoScope: "гео", geoExclude: "гео: кроме", startsAt: "начало", endsAt: "конец", billingPeriod: "период счёта", paymentTermsDays: "срок оплаты",
-  counterSource: "счётчик", billedVia: "биллинг", notes: "заметки",
+  counterSource: "счётчик", billedVia: "биллинг", notes: "заметки", placementSlug: "место на сайте",
 };
 
 export default async function DealPage({ params }: { params: Promise<{ id: string }> }) {
@@ -37,14 +37,14 @@ export default async function DealPage({ params }: { params: Promise<{ id: strin
     id: deal.id, title: deal.title, advertiser: deal.advertiser.name, format: deal.format, paymentBasis: deal.paymentBasis, price: deal.price.toString(),
     siteIds: deal.sites.map((s) => s.siteId), zoneBySite: Object.fromEntries(deal.sites.map((s) => [s.siteId, s.zoneId])), geoScope: deal.geoScope.join(", "),
     geoExclude: deal.geoExclude, startsAt: iso(deal.startsAt), endsAt: deal.endsAt ? iso(deal.endsAt) : null, billingPeriod: deal.billingPeriod,
-    paymentTermsDays: deal.paymentTermsDays, counterSource: deal.counterSource, billedVia: deal.billedVia, notes: deal.notes, hasPeriods: entered.length > 0,
+    paymentTermsDays: deal.paymentTermsDays, counterSource: deal.counterSource, billedVia: deal.billedVia, notes: deal.notes, hasPeriods: entered.length > 0, placementSlug: deal.placementSlug,
   };
   return (
     <>
       <PageHeader crumbs={[{ href: "/deals", label: "Фикс-дилы" }]} title={`${deal.advertiser.name} · ${deal.title}`}
         badges={<><StatusBadge status={deal.status} />{deal.billedVia === "VIA_ASG" && <Badge>через AdSpyglass</Badge>}</>}
         sub={`${FORMAT_LABEL[deal.format]} · ${BASIS_LABEL[deal.paymentBasis]} · $${deal.price} · ${deal.sites.map((s) => s.site.domain).join(", ")}${deal.geoScope.length ? ` · ${deal.geoExclude ? "кроме " : ""}${deal.geoScope.slice(0, 8).join(", ")}${deal.geoScope.length > 8 ? "…" : ""}` : ""}`}
-        actions={<><DealFormButton sites={opts.sites} advertisers={opts.advertisers} values={values} label="Редактировать условия" variant="secondary" />
+        actions={<><DealFormButton sites={opts.sites} advertisers={opts.advertisers} placements={opts.placements} values={values} label="Редактировать условия" variant="secondary" />
           <DealStatusButtons id={deal.id} status={deal.status} title={deal.title} /></>} />
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 2xl:grid-cols-6">
