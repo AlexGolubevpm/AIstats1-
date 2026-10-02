@@ -66,10 +66,12 @@ probe() {
   fi
   [ "$REQUESTS" -gt 0 ] && sleep "$DELAY"
   REQUESTS=$((REQUESTS + 1))
+  local url="$BASE/report?from=${FROM:-$DATE}&to=$DATE&$query"
+  [ -n "${NO_RANGE:-}" ] && url="$BASE/report?$query"
   meta=$(curl -gsS -m 60 -o "$file" -w '%{http_code} %{redirect_url}' \
     -H "X-Asg-Auth-Email: $ASG_AUTH_EMAIL" \
     -H "X-Asg-Auth-Token: $ASG_AUTH_TOKEN" \
-    "$BASE/report?from=$DATE&to=$DATE&$query" 2>"$OUT/.curl-error")
+    "$url" 2>"$OUT/.curl-error")
   # curl errors echo the URL (with site ids); in redacted mode keep only the curl error code.
   if [ -s "$OUT/.curl-error" ]; then
     if [ "$REDACT" = "1" ]; then sed -n 's/^curl: (\([0-9]*\)).*/curl error \1/p' "$OUT/.curl-error" | head -n1 >&2; else cat "$OUT/.curl-error" >&2; fi
@@ -138,6 +140,34 @@ filter_ratio() {
     echo "   filter check $label: hits = $(awk -v t="$total" -v o="$own" 'BEGIN { printf "%.2f", t / o }')x site total"
   fi
 }
+
+if [ "${ASG_PROBE_MODE:-}" = "dates" ]; then
+  # Does the API honour from/to? group_by=date lists the days a response really covers.
+  # Prints dates (not secret), row counts and revenue RATIOS only — never amounts.
+  list_dates() { jq -r 'if type=="array" then [.[] | .name // .date // "" | tostring] | join(",") else "-" end' "$OUT/$1.json" 2>/dev/null \
+    | sed -E 's/[^0-9,-]/?/g' | cut -c1-200; }
+  probe dt_1d "group_by=date";               echo "   dates: $(list_dates dt_1d)"
+  FROM=$(date -u -d "$DATE -6 days" +%F) probe dt_7d "group_by=date"; echo "   dates: $(list_dates dt_7d)"
+  NO_RANGE=1 probe dt_period "group_by=date&period=${DATE}%20-%20${DATE}"; echo "   dates: $(list_dates dt_period)"
+  NO_RANGE=1 probe dt_none "group_by=date";  echo "   dates: $(list_dates dt_none)"
+  echo
+  echo "== Numeric fields of group_by=website for $DATE, as a ratio of sum(broker_income)"
+  jq -r '([.[] | (.broker_income // 0)] | add) as $b | if ($b // 0) == 0 then "broker_income sum is 0" else
+    (.[0] | keys[]) as $k | [.[] | .[$k]] as $v | select(($v[0] | type) == "number" and ($k | test("income|revenue|profit|earn|payout|amount"))) |
+    "\($k): \(([$v[] // 0] | add) / $b * 1000 | round / 1000)" end' "$OUT/baseline_website.json" 2>/dev/null | sort -u
+  echo "website rows: $(jq 'length' "$OUT/baseline_website.json"), distinct ids: $(jq '[.[] | .name // "" | tostring | split(".")[0]] | unique | length' "$OUT/baseline_website.json")"
+  if [ -f /opt/tubestat/.current-image ]; then
+    api=$(jq '[.[] | (.broker_income // 0)] | add // 0' "$OUT/baseline_website.json")
+    echo
+    echo "== TubeStat database vs this API response (ratios of revenue, by day)"
+    ( cd /opt/tubestat && APP_IMAGE=$(cat .current-image) docker compose exec -T postgres psql -U tubestat -d tubestat -At -F ' ' -c \
+      "SELECT date, count(*), count(DISTINCT \"siteId\"), count(*) FILTER (WHERE \"countryCode\" = 'ZZ'), round(SUM(\"revenueReported\") / NULLIF($api, 0), 3)
+       FROM \"FactRevenueGeo\" WHERE date BETWEEN DATE '$DATE' - 6 AND DATE '$DATE' + 1 GROUP BY 1 ORDER BY 1" 2>/dev/null \
+      | awk '{ printf "   %s rows=%s sites=%s zz_rows=%s db/api=%s\n", $1, $2, $3, $4, $5 }' ) || echo "   database not reachable"
+  fi
+  echo; echo "Requests sent: $REQUESTS."
+  exit 0
+fi
 
 if [ "${ASG_PROBE_MODE:-}" = "discover" ]; then
   # Names from the ADOK UI "Group" list and more spellings of its "Website" filter.
