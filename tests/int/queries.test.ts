@@ -7,7 +7,7 @@ import { dealDetail, dealsList, paymentsRegister, todoQueue } from "@/server/que
 import { asgPayouts, financeKpis, pnlTable, receivables, revenueStructure } from "@/server/queries/finance";
 import {
   bundlesTable, dataExists, devicesTable, formatsTable, geoMatrix, geoTable, networksTable, overlappingSites, revenueSplitDaily,
-  siteGeoWithNetworks, sitesTable, topMovers, zonesTable,
+  siteGeoWithNetworks, sitesTable, sourcesTable, topMovers, zonesTable,
 } from "@/server/queries/reports";
 import { enterPeriod, recordPayment } from "@/server/services/deals";
 import { resetDb, testDb } from "./helpers";
@@ -16,6 +16,23 @@ const db = testDb();
 let net: Awaited<ReturnType<typeof buildNetwork>>;
 const P = { from: "2026-09-20", to: "2026-09-21" };
 beforeEach(async () => { await resetDb(); net = await buildNetwork(db); });
+
+describe("traffic sources", () => {
+  it("volume, revenue their traffic earned and its revshare cost per source", async () => {
+    const date = new Date("2026-09-20T00:00:00Z");
+    await db.factCost.deleteMany(); // the reference network's rate costs
+    await db.costSource.create({ data: { slug: "direct", title: "Direct", asgName: "Direct", revShare: 0 } });
+    await db.factTrafficSource.createMany({ data: [
+      { date, siteId: "s1", sourceSlug: "tubecrown", pageLoads: 750, revenueReported: "6" },
+      { date, siteId: "s1", sourceSlug: "direct", pageLoads: 250, revenueReported: "4" },
+    ] });
+    await db.factCost.create({ data: { date, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", rateModel: "REVSHARE", rate: "1", cost: "6", origin: "ASG" } });
+    const t = await sourcesTable(P, "s1");
+    expect(t.map((r) => [r.source, r.loads, r.revenue, r.cost, r.margin])).toEqual([["TubeCrown", 750, 6, 6, 0], ["Direct", 250, 4, 0, 4]]);
+    expect(t[0].loadsShare).toBeCloseTo(0.75);
+    expect(t[1].revPer1k).toBeCloseTo(16);
+  });
+});
 
 describe("common", () => {
   it("totals by sites: mediated 122 + direct deals 6, cost 102", async () => {

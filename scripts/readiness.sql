@@ -19,9 +19,11 @@ recon AS (
   SELECT count(*) AS runs, count(*) FILTER (WHERE error LIKE '%сверка с итогом ADOK%') AS off
   FROM "IngestRun" WHERE source = 'adspyglass' AND "startedAt" > now() - interval '7 days' AND status <> 'running'
 ),
+-- Site-days, not site-country-days: ADOK traffic source cost has no country (it sits in ZZ).
 romi AS (
   SELECT count(*) FILTER (WHERE revenue > 0) AS with_rev, count(*) FILTER (WHERE revenue > 0 AND cost > 0) AS with_cost
-  FROM v_site_geo_daily WHERE date BETWEEN (SELECT d_from FROM w) AND (SELECT d_to FROM w)
+  FROM (SELECT date, site_id, SUM(revenue) revenue, SUM(cost) cost FROM v_site_geo_daily
+        WHERE date BETWEEN (SELECT d_from FROM w) AND (SELECT d_to FROM w) GROUP BY 1, 2) sd
 ),
 bundle_gap AS (
   SELECT count(*) AS bundles, count(*) FILTER (WHERE abs(b.revenue - s.revenue) > 0.01) AS mismatched
@@ -55,7 +57,7 @@ SELECT c, v, verdict FROM (
   UNION ALL SELECT 5, 'asg runs off ADOK site total >2%, 7d', off || ' of ' || runs,
          CASE WHEN runs > 0 AND off = 0 THEN 'PASS' ELSE 'FAIL' END FROM recon
   UNION ALL SELECT 6, 'active deals direct / via asg', direct || ' / ' || via_asg, 'INFO' FROM deals
-  UNION ALL SELECT 7, 'site-country-days with revenue that have cost, 7d',
+  UNION ALL SELECT 7, 'site-days with revenue that have cost, 7d',
          CASE WHEN with_rev = 0 THEN 'no revenue' ELSE round(with_cost * 100.0 / with_rev, 1) || '%' END,
          CASE WHEN with_cost > 0 THEN 'PASS' ELSE 'FAIL' END FROM romi
   UNION ALL SELECT 8, 'bundles whose total != sum of their sites, 7d', mismatched || ' of ' || bundles,

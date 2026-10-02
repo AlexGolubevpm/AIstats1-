@@ -121,3 +121,18 @@ export function mapDeviceRows(rows: AsgRow[]): DeviceCell[] {
   }
   return [...acc.values()];
 }
+
+export interface TrafficSourceCell { name: string; slug: string; m: Measures }
+/**
+ * group_by=traffic_source rows ("Direct", "TubeCrown", …). Their revenue is what each source's
+ * traffic earned; with revshare sources it is also what the source is paid (ADR 0006).
+ */
+export function mapTrafficSourceRows(rows: AsgRow[]): TrafficSourceCell[] {
+  const acc = new Map<string, TrafficSourceCell>();
+  for (const r of rows) {
+    const name = String(r.name ?? "").trim() || "unknown";
+    const slug = networkSlug(name), m = measures(r), cur = acc.get(slug);
+    acc.set(slug, cur ? { ...cur, m: addMeasures(cur.m, m) } : { name, slug, m });
+  }
+  return [...acc.values()];
+}

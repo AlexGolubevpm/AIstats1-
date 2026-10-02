@@ -14,7 +14,9 @@ function toRate(r: { id: string; siteId: string | null; countryCode: string | nu
 
 /** Recomputes RATE-origin costs in a window. Imported rows are left untouched and win. */
 export async function recalcCosts(db: PrismaClient, from: string, to: string, siteId?: string): Promise<number> {
-  const rates = (await db.costRate.findMany()).map(toRate);
+  // Sources that come from ADOK are costed by revshare (revshareCosts), never by rates as well.
+  const asgSources = new Set((await db.costSource.findMany({ where: { asgName: { not: null } } })).map((s) => s.slug));
+  const rates = (await db.costRate.findMany()).filter((r) => !asgSources.has(r.sourceSlug)).map(toRate);
   const sources = [...new Set(rates.map((r) => r.sourceSlug))];
   const traffic = await db.factTraffic.groupBy({
     by: ["date", "siteId", "countryCode"], _sum: { uniques: true },
@@ -33,6 +35,32 @@ export async function recalcCosts(db: PrismaClient, from: string, to: string, si
       date: d(r.date), siteId: r.siteId, countryCode: r.countryCode, sourceSlug: r.sourceSlug, uniquesBought: r.uniquesBought,
       rateModel: r.rateModel, rate: r.rate.toString(), cost: r.cost.toString(), origin: "RATE" as const,
     })) });
+  });
+  return rows.length;
+}
+
+/**
+ * ADOK traffic sources: cost = revenue the source's traffic earned × its revShare, per site and
+ * day, country ZZ (ADOK has no source × country cut). Recomputed for a window; imported rows win.
+ */
+export async function revshareCosts(db: PrismaClient, from: string, to: string, siteId?: string): Promise<number> {
+  const where = { date: { gte: d(from), lte: d(to) }, ...(siteId ? { siteId } : {}) };
+  const [facts, sources, imported] = await Promise.all([
+    db.factTrafficSource.findMany({ where }),
+    db.costSource.findMany(),
+    db.factCost.findMany({ where: { ...where, origin: "IMPORT" }, select: { date: true, siteId: true, countryCode: true, sourceSlug: true } }),
+  ]);
+  const share = new Map(sources.map((s) => [s.slug, new Decimal(s.revShare.toString())]));
+  const skip = new Set(imported.map((c) => `${isoOf(c.date)}|${c.siteId}|${c.countryCode}|${c.sourceSlug}`));
+  const rows = facts.flatMap((f) => {
+    const k = share.get(f.sourceSlug) ?? new Decimal(0);
+    if (k.lte(0) || skip.has(`${isoOf(f.date)}|${f.siteId}|ZZ|${f.sourceSlug}`)) return [];
+    return [{ date: f.date, siteId: f.siteId, countryCode: "ZZ", sourceSlug: f.sourceSlug, uniquesBought: f.pageLoads,
+      rateModel: "REVSHARE" as const, rate: k.toString(), cost: new Decimal(f.revenueReported.toString()).mul(k).toDecimalPlaces(4).toString(), origin: "ASG" as const }];
+  });
+  await db.$transaction(async (tx) => {
+    await tx.factCost.deleteMany({ where: { ...where, origin: "ASG" } });
+    if (rows.length) await tx.factCost.createMany({ data: rows });
   });
   return rows.length;
 }

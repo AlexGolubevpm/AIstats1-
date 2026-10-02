@@ -1,7 +1,7 @@
 // AdSpyglass ingest. Request plan is built for ADOK's limits:
 //  - hourly: ONE account-level request per day (group_by=website) → site totals (country ZZ);
 //  - nightly: ONE account-level spot cut per day (the spot name carries the domain) → zones,
-//    and per site: country, network (adnetwork_squashed) and device cuts.
+//    and per site: country, network (adnetwork_squashed), device and traffic source cuts.
 // In the per-site country and device cuts ADOK scopes only the site's own fields; the ad network
 // side (broker_income, broker_hits) is not per site there, so the site total from the website cut
 // is spread over the cells instead (map.ts allocateBroker). The network cut is per site as is.
@@ -17,7 +17,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { CountryResolver } from "@/server/ingest/normalize";
 import { rawKey, type RawStore } from "@/server/ingest/raw-store";
 import { AsgClient, AsgError } from "./client";
-import { allocateBroker, mapCountryRows, mapDeviceRows, mapNetworkRows, mapSpotRows, mapWebsiteRows, type DeviceCell, type GeoCell, type Measures, type NetworkCell } from "./map";
+import { allocateBroker, mapCountryRows, mapDeviceRows, mapNetworkRows, mapSpotRows, mapTrafficSourceRows, mapWebsiteRows, type DeviceCell, type GeoCell, type Measures, type NetworkCell, type TrafficSourceCell } from "./map";
 
 export interface AsgIngestDeps { db: PrismaClient; client: AsgClient; raw: RawStore; runId: string }
 
@@ -147,6 +147,12 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
           await raw.put(rawKey("adspyglass", `device/${s.adsgSiteId}`, date, runId), devBody);
           rows += await writeDevices(db, date, s.id, devs);
         } else failed.push(`${s.domain} ${date}: устройства не по сайту — пропущены`);
+        const srcBody = await client.report({ from: date, to: date, groupBy: "traffic_source", websiteId: s.adsgSiteId! });
+        const srcs = mapTrafficSourceRows(srcBody);
+        if (scopedToSite(srcs.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
+          await raw.put(rawKey("adspyglass", `traffic_source/${s.adsgSiteId}`, date, runId), srcBody);
+          rows += await writeTrafficSources(db, date, s.id, srcs);
+        } else failed.push(`${s.domain} ${date}: источники трафика не по сайту — пропущены`);
         const gap = reconcile(rawCells.reduce((a, c) => a + c.m.predicted, 0), siteTotal.get(s.adsgSiteId!)?.predicted);
         if (gap != null) failed.push(`${s.domain} ${date}: сверка с итогом ADOK — выручка по странам расходится на ${(gap * 100).toFixed(1)}%`);
       } catch (e) {
@@ -176,6 +182,35 @@ export async function writeDevices(db: PrismaClient, date: string, siteId: strin
   await db.$transaction([
     db.factRevenueDevice.deleteMany({ where: { date: d(date), siteId } }),
     db.factRevenueDevice.createMany({ data }),
+  ]);
+  return data.length;
+}
+
+/**
+ * ADOK traffic sources map to CostSource by their ADOK name; a seeded source with the same slug
+ * is linked. New ones are created paid (revShare 1), except Direct (free traffic).
+ */
+export async function sourceSlugs(db: PrismaClient, cells: TrafficSourceCell[]): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  for (const c of cells) {
+    const byName = await db.costSource.findUnique({ where: { asgName: c.name } });
+    if (byName) { out.set(c.slug, byName.slug); continue; }
+    const s = await db.costSource.upsert({ where: { slug: c.slug }, update: { asgName: c.name },
+      create: { slug: c.slug, title: c.name, asgName: c.name, revShare: c.slug === "direct" ? 0 : 1 } });
+    out.set(c.slug, s.slug);
+  }
+  return out;
+}
+
+/** Replaces the traffic source rows of (date, site). */
+export async function writeTrafficSources(db: PrismaClient, date: string, siteId: string, cells: TrafficSourceCell[]): Promise<number> {
+  const slugs = await sourceSlugs(db, cells);
+  const data = cells.filter((c) => c.m.pageLoads || c.m.impsOwn || c.m.revenue).map((c) => ({
+    date: d(date), siteId, sourceSlug: slugs.get(c.slug)!, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, clicks: c.m.clicks, revenueReported: dec(c.m.revenue),
+  }));
+  await db.$transaction([
+    db.factTrafficSource.deleteMany({ where: { date: d(date), siteId } }),
+    db.factTrafficSource.createMany({ data }),
   ]);
   return data.length;
 }
