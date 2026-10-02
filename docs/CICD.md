@@ -50,6 +50,8 @@ nano /opt/tubestat/.env       # шаблон — .env.example в репозит�
 
 После правки `.env` — `cd /opt/tubestat && docker compose up -d` (или дождаться следующего деплоя).
 
+**Без ручной правки.** Воркфлоу `Sync server .env` (`.github/workflows/sync-env.yml`, вручную или при изменении `.github/sync-env.request`) переносит `ASG_AUTH_EMAIL`, `ASG_AUTH_TOKEN` и `METRIKA_TOKEN` из секретов окружения `production` в `/opt/tubestat/.env`, один раз генерирует `APP_PASSWORD`, если его нет, включает `COMPOSE_PROFILES=worker`, убирает `COOKIE_SECURE=1`, пока сайт открыт по HTTP (`APP_DOMAIN` пустой или `:80`), и перезапускает стек. Значения идут через stdin SSH и в лог не попадают; другие ключи скрипт не трогает. Пароль читается только на сервере: `grep APP_PASSWORD /opt/tubestat/.env`.
+
 ### 4. Секреты в GitHub
 
 Repo → Settings → Environments → **New environment** `production` → Environment secrets:
