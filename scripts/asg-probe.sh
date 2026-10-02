@@ -148,6 +148,11 @@ if [ "${ASG_PROBE_MODE:-}" = "recon" ]; then
   OUT=$(cd "$OUT" && pwd); cd /opt/tubestat; export APP_IMAGE; APP_IMAGE=$(cat .current-image)
   psql_() { docker compose exec -T postgres psql -U tubestat -d tubestat -X -At -F ' ' -c "$1"; }
   values=$(jq -r '[.[] | "(\(.name // "" | tostring | split(".")[0] | tonumber? // 0), \(.broker_income // 0), \(.hits // 0))"] | join(",")' "$OUT/baseline_website.json")
+  # The cabinet's network report is account-level: compare its totals with the website cut.
+  probe acct_net "group_by=adnetwork_squashed"
+  jq -r --slurpfile w "$OUT/baseline_website.json" '([$w[0][] | (.broker_income // 0)] | add) as $b |
+    "   account network cut / website cut: broker_income=\(([.[] | (.broker_income // 0)] | add) / $b * 1000 | round / 1000) predicted_income=\(([.[] | (.predicted_income // 0)] | add) / $b * 1000 | round / 1000) (website predicted/broker=\(([$w[0][] | (.predicted_income // 0)] | add) / $b * 1000 | round / 1000))"' \
+    "$OUT/acct_net.json" 2>/dev/null || echo "   account network cut: n/a"
   echo "== Per site, $DATE: db revenue / api revenue, db loads / api loads, db rows (sorted)"
   psql_ "WITH api(adsg, rev, hits) AS (VALUES $values),
     db AS (SELECT s.\"adsgSiteId\" adsg, SUM(f.\"revenueReported\") rev, SUM(f.\"pageLoads\") hits, count(*) n,
@@ -199,7 +204,7 @@ if [ "${ASG_PROBE_MODE:-}" = "recon" ]; then
       }
       console.log(`== ${cut}: fields=${fields}`);
       for (const [k, v] of Object.entries(ratios)) console.log(`   ${k}: cut/site median=${med(v)} max=${Math.max(...v.filter(Number.isFinite)).toFixed(3)} sites=${v.length}`);
-    }' 2>&1 | head -40
+    }' 2>&1 | grep -v '^   rev=' | head -80
   echo; echo "Requests sent: $REQUESTS."
   exit 0
 fi
