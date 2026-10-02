@@ -162,6 +162,44 @@ if [ "${ASG_PROBE_MODE:-}" = "traffic" ]; then
   exit 0
 fi
 
+if [ "${ASG_PROBE_MODE:-}" = "costs" ]; then
+  # Why is there no cost? Traffic source facts, cost sources, cost rows, ingest runs — counts only.
+  [ -f /opt/tubestat/.current-image ] || stop_run "costs runs on the server only"
+  cd /opt/tubestat; export APP_IMAGE; APP_IMAGE=$(cat .current-image)
+  psql_() { docker compose exec -T postgres psql -U tubestat -d tubestat -X -At -F ' ' -c "$1"; }
+  echo "== FactTrafficSource by day: rows, sites, sources, sum(revenue)/site revenue of that day"
+  psql_ "SELECT f.date, count(*), count(DISTINCT f.\"siteId\"), count(DISTINCT f.\"sourceSlug\"),
+           round(SUM(f.\"revenueReported\") / NULLIF((SELECT SUM(g.\"revenueReported\") FROM \"FactRevenueGeo\" g WHERE g.date = f.date), 0), 3)
+         FROM \"FactTrafficSource\" f GROUP BY 1 ORDER BY 1 DESC LIMIT 10" | awk '{ printf "   %s rows=%s sites=%s sources=%s src/site_rev=%s\n", $1, $2, $3, $4, $5 }'
+  [ -z "$(psql_ 'SELECT 1 FROM "FactTrafficSource" LIMIT 1')" ] && echo "   (none)"
+  echo "== CostSource: slug, asgName set?, revShare"
+  psql_ "SELECT slug, (\"asgName\" IS NOT NULL), \"revShare\" FROM \"CostSource\" ORDER BY slug" | awk '{ printf "   %s asg=%s share=%s\n", $1, $2, $3 }'
+  echo "== FactCost by day and origin: rows, sum(cost)/site revenue"
+  psql_ "SELECT c.date, c.origin, count(*), round(SUM(c.cost) / NULLIF((SELECT SUM(g.\"revenueReported\") FROM \"FactRevenueGeo\" g WHERE g.date = c.date), 0), 3)
+         FROM \"FactCost\" c WHERE c.date > current_date - 10 GROUP BY 1, 2 ORDER BY 1 DESC, 2" | awk '{ printf "   %s %s rows=%s cost/rev=%s\n", $1, $2, $3, $4 }'
+  [ -z "$(psql_ 'SELECT 1 FROM "FactCost" WHERE date > current_date - 10 LIMIT 1')" ] && echo "   (none)"
+  echo "== Ingest runs, last 3 days (error = category only)"
+  psql_ "SELECT job, \"dateFrom\", \"dateTo\", status, \"rowsUpsert\", requests, to_char(\"startedAt\", 'MM-DD_HH24:MI'),
+           CASE WHEN error IS NULL THEN 'none' WHEN error ~* 'budget|бюджет' THEN 'budget' WHEN error ~* 'пауз|paused|auth|429|sign_in' THEN 'paused' ELSE 'other' END,
+           COALESCE(array_length(regexp_split_to_array(error, 'источники трафика'), 1) - 1, 0), COALESCE(array_length(regexp_split_to_array(error, 'сверка'), 1) - 1, 0)
+         FROM \"IngestRun\" WHERE \"startedAt\" > now() - interval '3 days' ORDER BY \"startedAt\" DESC LIMIT 25" \
+    | awk '{ printf "   %-13s %s..%s %-8s rows=%-5s req=%-3s %s err=%s src_skipped=%s recon=%s\n", $1, $2, $3, $4, $5, $6, $7, $8, $9, $10 }'
+  echo "== ADOK requests used today (UTC) vs budget"
+  psql_ "SELECT COALESCE(SUM(requests), 0) FROM \"IngestRun\" WHERE source = 'adspyglass' AND \"startedAt\" >= date_trunc('day', now())" | awk '{ printf "   used=%s\n", $1 }'
+  grep -E '^ASG_DAILY_BUDGET=' .env 2>/dev/null | sed 's/^/   /' || echo "   ASG_DAILY_BUDGET not set (default 300)"
+  echo "== AppSetting keys (names only)"
+  psql_ "SELECT key, left(value, 12) ~ '^[0-9T:-]+' FROM \"AppSetting\" ORDER BY key" | awk '{ printf "   %s datelike=%s\n", $1, $2 }'
+  echo "== Zones: total, with a place, sites having any mapped zone"
+  psql_ "SELECT count(*), count(\"placementSlug\"), count(DISTINCT \"siteId\") FILTER (WHERE \"placementSlug\" IS NOT NULL) FROM \"Zone\"" | awk '{ printf "   zones=%s mapped=%s sites_with_mapped=%s\n", $1, $2, $3 }'
+  echo "== Zone name shapes (first 8, masked)"
+  psql_ "SELECT name FROM \"Zone\" ORDER BY name LIMIT 8" | bash "$SHAPE" | sed 's/^/   /'
+  echo "== Deployed image tag"; sed 's/.*://' .current-image | cut -c1-12
+  echo "== Worker log lines mentioning traffic/cost/budget/error (masked)"
+  docker compose logs --tail 500 worker 2>/dev/null | grep -iE "traffic|cost|budget|error|fail" | tail -30 | bash "$SHAPE" || true
+  echo; echo "Requests sent: $REQUESTS."
+  exit 0
+fi
+
 if [ "${ASG_PROBE_MODE:-}" = "recon" ]; then
   # Where does TubeStat's revenue for $DATE differ from the API? Uses the stored raw responses,
   # so the only API request is the baseline above. Per-site lines carry ratios only, no names.
