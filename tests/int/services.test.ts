@@ -126,13 +126,58 @@ describe("deals service", () => {
     expect(await sumRevenue(net.direct.id)).toBe("40");
   });
 
-  it("per-site periods, and deals without counters land on the last day", async () => {
+  it("an entered flat period is spread evenly over its days, even without counters", async () => {
     const manual = await db.deal.create({ data: { title: "Flat", advertiserId: net.direct.advertiserId, format: "BANNER", price: "100",
-      paymentBasis: "FLAT_PERIOD", counterSource: "MANUAL", startsAt: D1, endsAt: D2, sites: { create: [{ siteId: "s1" }] } } });
+      paymentBasis: "FLAT_PERIOD", billingPeriod: "TERM", counterSource: "MANUAL", startsAt: D1, endsAt: D2, sites: { create: [{ siteId: "s1" }] } } });
     await enterPeriod(db, manual.id, { from: "2026-09-20", to: "2026-09-21", amountInvoiced: "100" });
-    const rows = await db.factFixDeal.findMany({ where: { dealId: manual.id } });
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ countryCode: "ZZ", siteId: "s1" });
-    expect(rows[0].date.toISOString().slice(0, 10)).toBe("2026-09-21");
+    const rows = await db.factFixDeal.findMany({ where: { dealId: manual.id }, orderBy: { date: "asc" } });
+    expect(rows.map((r) => [r.date.toISOString().slice(0, 10), r.siteId, r.countryCode, Number(r.revenue)])).toEqual([
+      ["2026-09-20", "s1", "ZZ", 50], ["2026-09-21", "s1", "ZZ", 50]]);
+  });
+});
+
+describe("flat deals: evenly per site and day", () => {
+  const D = (s: string) => new Date(`${s}T00:00:00Z`);
+  async function sites(n: number) {
+    const ids: string[] = [];
+    for (let i = 0; i < n; i++) { const s = await db.site.create({ data: { domain: `flat${i}.test`, title: `F${i}` } }); ids.push(s.id); }
+    return ids;
+  }
+
+  it("$1000 a month on 10 sites = 1000 / 10 / 30 per site per day, whatever the traffic", async () => {
+    const ids = await sites(10);
+    const deal = await db.deal.create({ data: { title: "Sponsor", advertiserId: net.direct.advertiserId, format: "BANNER", price: "1000",
+      paymentBasis: "FLAT_PERIOD", billingPeriod: "MONTH", startsAt: D("2026-09-01"), endsAt: D("2027-08-31"), sites: { create: ids.map((siteId) => ({ siteId })) } } });
+    await forecastDeals(db, "2026-09-01", "2026-09-30");
+    const rows = await db.factFixDeal.findMany({ where: { dealId: deal.id } });
+    expect(rows).toHaveLength(300); // 10 sites × 30 days, none of them has traffic
+    expect(new Set(rows.map((r) => Number(r.revenue)))).toEqual(new Set([3.3333]));
+    expect(new Set(rows.map((r) => r.countryCode))).toEqual(new Set(["ZZ"]));
+    const total = rows.reduce((a, r) => a.add(r.revenue.toString()), new Decimal(0));
+    expect(total.toNumber()).toBeCloseTo(1000, 1);
+  });
+
+  it("flat per day is split between sites; a weekly price covers 7 days", async () => {
+    const ids = await sites(4);
+    const daily = await db.deal.create({ data: { title: "Daily", advertiserId: net.direct.advertiserId, format: "OTHER", price: "20",
+      paymentBasis: "FLAT_DAILY", startsAt: D("2026-09-20"), endsAt: D("2026-09-21"), sites: { create: ids.map((siteId) => ({ siteId })) } } });
+    const weekly = await db.deal.create({ data: { title: "Weekly", advertiserId: net.direct.advertiserId, format: "OTHER", price: "70",
+      paymentBasis: "FLAT_PERIOD", billingPeriod: "WEEK", startsAt: D("2026-09-20"), sites: { create: [{ siteId: ids[0] }, { siteId: ids[1] }] } } });
+    await forecastDeals(db, "2026-09-20", "2026-09-21");
+    const by = async (dealId: string) => (await db.factFixDeal.findMany({ where: { dealId } })).map((r) => Number(r.revenue));
+    expect(await by(daily.id)).toEqual(Array(8).fill(5)); // $20 a day / 4 sites, 2 days
+    expect(await by(weekly.id)).toEqual(Array(4).fill(5)); // $70 / 7 days / 2 sites
+  });
+
+  it("an entered flat period of several sites is spread evenly per site and day", async () => {
+    const ids = await sites(2);
+    const deal = await db.deal.create({ data: { title: "Two", advertiserId: net.direct.advertiserId, format: "OTHER", price: "100",
+      paymentBasis: "FLAT_PERIOD", billingPeriod: "MONTH", startsAt: D("2026-09-01"), sites: { create: ids.map((siteId) => ({ siteId })) } } });
+    await enterPeriod(db, deal.id, { from: "2026-09-01", to: "2026-09-30", amountInvoiced: "100" });
+    const rows = await db.factFixDeal.findMany({ where: { dealId: deal.id } });
+    expect(rows).toHaveLength(60);
+    const total = rows.reduce((a, r) => a.add(r.revenue.toString()), new Decimal(0));
+    expect(total.toString()).toBe("100"); // exact: the rounding remainder lands on the last day
+    expect(Math.max(...rows.map((r) => Number(r.revenue))) - Math.min(...rows.map((r) => Number(r.revenue)))).toBeLessThan(0.01);
   });
 });

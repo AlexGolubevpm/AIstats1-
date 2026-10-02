@@ -24,6 +24,23 @@ export function calcAmount(basis: PaymentBasis, price: Decimal.Value, c: Counter
   }
 }
 
+/**
+ * Days a FLAT_PERIOD price covers: a month is always 30 days (owner's rule: $1000 a month on
+ * 10 sites = 1000 / 10 / 30 per site per day), a week 7, a term its own length.
+ */
+export function flatPeriodDays(billing: BillingPeriod, termDays: number | null): number {
+  if (billing === "WEEK") return 7;
+  if (billing === "TERM" && termDays) return termDays;
+  return 30;
+}
+
+/** Flat deals: the deal's amount per day (before splitting between its sites). */
+export function flatPerDay(basis: PaymentBasis, price: Decimal.Value, billing: BillingPeriod, termDays: number | null): Decimal {
+  return basis === "FLAT_DAILY" ? new Decimal(price) : new Decimal(price).div(flatPeriodDays(billing, termDays));
+}
+
+export const isFlat = (basis: PaymentBasis) => basis === "FLAT_DAILY" || basis === "FLAT_PERIOD";
+
 /** Which counter the amount is proportional to: used to spread a period amount over days. */
 export function weightOf(basis: PaymentBasis, c: { pageLoads: number; impsOwn: number }): number {
   switch (basis) {
