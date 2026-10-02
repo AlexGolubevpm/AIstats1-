@@ -1,7 +1,7 @@
 import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
 import {
-  DealRuleError, calcAmount, checkInvoiceAmount, closedPeriods, distribute, effectiveAmount, inGeoScope,
+  DealRuleError, calcAmount, checkInvoiceAmount, closedPeriods, distribute, effectiveAmount, flatPerDay, flatPeriodDays, inGeoScope, isFlat,
   periodsOverlap, revenueStateOf, statusAfterPayment, weightOf,
 } from "@/server/domain/deals";
 
@@ -114,5 +114,19 @@ describe("deal form validation", async () => {
     expect(parseDecimal("abc").isNaN()).toBe(true);
     expect(parseDecimal("").isNaN()).toBe(true);
     expect(parseDecimal("1.5").toString()).toBe("1.5");
+  });
+});
+
+describe("flat deals", () => {
+  it("a month is 30 days, a week 7, a term its length", () => {
+    expect(flatPeriodDays("MONTH", 365)).toBe(30);
+    expect(flatPeriodDays("WEEK", null)).toBe(7);
+    expect(flatPeriodDays("TERM", 45)).toBe(45);
+    expect(flatPeriodDays("TERM", null)).toBe(30);
+  });
+  it("amount per day before the split between sites", () => {
+    expect(flatPerDay("FLAT_PERIOD", "1000", "MONTH", null).div(10).toDecimalPlaces(4).toString()).toBe("3.3333");
+    expect(flatPerDay("FLAT_DAILY", "20", "MONTH", null).toString()).toBe("20");
+    expect(isFlat("FLAT_PERIOD") && isFlat("FLAT_DAILY") && !isFlat("CPM_OWN")).toBe(true);
   });
 });

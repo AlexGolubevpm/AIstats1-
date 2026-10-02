@@ -4,8 +4,8 @@
 import Decimal from "decimal.js";
 import type { PrismaClient } from "@/generated/prisma/client";
 import {
-  DealRuleError, calcAmount, checkInvoiceAmount, distribute, effectiveAmount, inGeoScope, periodsOverlap,
-  revenueStateOf, statusAfterPayment, validateDeal, weightOf, type DealInput, type PaymentBasis, type PeriodStatus,
+  DealRuleError, calcAmount, checkInvoiceAmount, distribute, effectiveAmount, flatPerDay, flatPeriodDays, inGeoScope, isFlat, periodsOverlap,
+  revenueStateOf, statusAfterPayment, validateDeal, weightOf, type BillingPeriod, type DealInput, type PaymentBasis, type PeriodStatus,
 } from "@/server/domain/deals";
 
 const d = (s: string) => new Date(`${s}T00:00:00Z`);
@@ -37,6 +37,23 @@ export async function dealCounters(db: PrismaClient, dealId: string, from: strin
   return out;
 }
 
+const eachDay = (from: string, to: string) => Array.from({ length: Math.max(0, daysIn(from, to)) }, (_, i) => isoOf(new Date(d(from).getTime() + i * DAY)));
+
+/**
+ * Flat deals are not tied to traffic: every day of the window × every site of the deal gets an
+ * equal share, in country ZZ. Our counters are attached to the cells for reference only.
+ */
+function flatCells(siteIds: string[], from: string, to: string, counters: Counter[]): Counter[] {
+  const sum = new Map<string, { pageLoads: number; impsOwn: number }>();
+  for (const c of counters) {
+    const k = `${c.date}|${c.siteId}`, cur = sum.get(k) ?? { pageLoads: 0, impsOwn: 0 };
+    sum.set(k, { pageLoads: cur.pageLoads + c.pageLoads, impsOwn: cur.impsOwn + c.impsOwn });
+  }
+  return eachDay(from, to).flatMap((date) => siteIds.map((siteId) => ({ date, siteId, countryCode: "ZZ", ...(sum.get(`${date}|${siteId}`) ?? { pageLoads: 0, impsOwn: 0 }) })));
+}
+
+const termDaysOf = (deal: { startsAt: Date; endsAt: Date | null }) => (deal.endsAt ? daysIn(isoOf(deal.startsAt), isoOf(deal.endsAt)) : null);
+
 /** Active (non-superseded, entered) periods of a deal. */
 async function enteredPeriods(db: PrismaClient, dealId: string) {
   return db.dealPeriod.findMany({ where: { dealId, supersededById: null, status: { not: "OPEN" } } });
@@ -47,16 +64,17 @@ async function enteredPeriods(db: PrismaClient, dealId: string) {
  * Days inside entered periods keep their distributed amounts; only counters are refreshed.
  */
 export async function forecastDeals(db: PrismaClient, from: string, to: string): Promise<number> {
-  const deals = await db.deal.findMany({ where: { status: { in: ["ACTIVE", "PAUSED", "ENDED"] }, startsAt: { lte: d(to) } } });
+  const deals = await db.deal.findMany({ where: { status: { in: ["ACTIVE", "PAUSED", "ENDED"] }, startsAt: { lte: d(to) } }, include: { sites: true } });
   let rows = 0;
   for (const deal of deals) {
     const start = isoOf(deal.startsAt) > from ? isoOf(deal.startsAt) : from;
     const end = deal.endsAt && isoOf(deal.endsAt) < to ? isoOf(deal.endsAt) : to;
     if (start > end) continue;
-    const counters = await dealCounters(db, deal.id, start, end);
+    const basis = deal.paymentBasis as PaymentBasis;
+    const raw = await dealCounters(db, deal.id, start, end);
+    const counters = isFlat(basis) ? flatCells(deal.sites.map((s) => s.siteId), start, end, raw) : raw;
     const periods = await enteredPeriods(db, deal.id);
     const covered = (date: string) => periods.some((p) => isoOf(p.from) <= date && isoOf(p.to) >= date);
-    const basis = deal.paymentBasis as PaymentBasis;
     const byDay = new Map<string, Counter[]>();
     for (const c of counters) byDay.set(c.date, [...(byDay.get(c.date) ?? []), c]);
     await db.$transaction(async (tx) => {
@@ -64,10 +82,9 @@ export async function forecastDeals(db: PrismaClient, from: string, to: string):
       for (const [date, cells] of byDay) {
         const inPeriod = covered(date);
         let amounts: Decimal[];
-        if (basis === "FLAT_DAILY" || basis === "FLAT_PERIOD") {
-          const perDay = basis === "FLAT_DAILY" ? new Decimal(deal.price.toString())
-            : new Decimal(deal.price.toString()).div(deal.endsAt ? daysIn(isoOf(deal.startsAt), isoOf(deal.endsAt)) : 30);
-          amounts = distribute(perDay, cells.map((c) => ({ ...c, weight: c.pageLoads }))).map((x) => x.amount);
+        if (isFlat(basis)) {
+          const perDay = flatPerDay(basis, deal.price.toString(), deal.billingPeriod as BillingPeriod, termDaysOf(deal));
+          amounts = cells.map(() => perDay.div(cells.length).toDecimalPlaces(4)); // evenly between the deal's sites
         } else {
           amounts = cells.map((c) => calcAmount(basis, deal.price.toString(), { ...c, days: 1 }));
         }
@@ -94,9 +111,10 @@ export async function forecastDeals(db: PrismaClient, from: string, to: string):
 export async function distributePeriod(db: PrismaClient, periodId: string): Promise<void> {
   const p = await db.dealPeriod.findUniqueOrThrow({ where: { id: periodId }, include: { deal: { include: { sites: true } } } });
   const from = isoOf(p.from), to = isoOf(p.to);
-  let counters = await dealCounters(db, p.dealId, from, to);
-  if (p.siteId) counters = counters.filter((c) => c.siteId === p.siteId);
   const basis = p.deal.paymentBasis as PaymentBasis;
+  let counters = await dealCounters(db, p.dealId, from, to);
+  if (isFlat(basis)) counters = flatCells(p.siteId ? [p.siteId] : p.deal.sites.map((s) => s.siteId), from, to, counters);
+  if (p.siteId) counters = counters.filter((c) => c.siteId === p.siteId);
   const amount = effectiveAmount({ status: p.status as PeriodStatus, amountInvoiced: p.amountInvoiced?.toString() ?? null,
     amountPaid: p.amountPaid?.toString() ?? null, amountCalculated: p.amountCalculated?.toString() ?? null });
   const state = revenueStateOf(p.status as PeriodStatus);
@@ -133,7 +151,7 @@ export async function calculatePeriodAmount(db: PrismaClient, dealId: string, fr
   if (siteId) counters = counters.filter((c) => c.siteId === siteId);
   const sum = counters.reduce((a, c) => ({ pageLoads: a.pageLoads + c.pageLoads, impsOwn: a.impsOwn + c.impsOwn }), { pageLoads: 0, impsOwn: 0 });
   const days = daysIn(from, to);
-  const periodDays = deal.endsAt ? daysIn(isoOf(deal.startsAt), isoOf(deal.endsAt)) : days;
+  const periodDays = flatPeriodDays(deal.billingPeriod as BillingPeriod, termDaysOf(deal) ?? days);
   const amount = calcAmount(deal.paymentBasis as PaymentBasis, deal.price.toString(), { ...sum, impsReported, days }, periodDays);
   const forecast = await db.factFixDeal.aggregate({ _sum: { revenue: true }, where: { dealId, date: { gte: d(from), lte: d(to) }, ...(siteId ? { siteId } : {}) } });
   return { ...sum, days, amount: amount.toString(), forecast: (forecast._sum.revenue ?? 0).toString() };
