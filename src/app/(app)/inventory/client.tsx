@@ -7,22 +7,41 @@ import { Input, Select } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
 import { cn } from "@/lib/cn";
 import { addPlacementAction, setPlacementUseAction } from "@/server/actions/inventory";
-import { USE_LABEL, type PlaceUse } from "@/server/domain/inventory";
+import { USE_LABEL, daysLeft, type PlaceDeal, type PlaceUse } from "@/server/domain/inventory";
 
 const BY: Record<string, string> = { deal: "занято дилом", manual: "отмечено вручную", zone: "зона AdSpyglass", default: "нет дила, зоны и отметки" };
 
-export function PlaceButton({ siteId, domain, slug, place, use, by, label, dealId, className, text }: {
-  siteId: string; domain: string; slug: string; place: string; use: PlaceUse; by: string; label: string | null; dealId: string | null; className: string; text: string;
+const left = (d: PlaceDeal, today: string) => {
+  const n = daysLeft(d.endsAt, today);
+  return n == null ? "бессрочно" : n < 0 ? `закончился ${-n} дн. назад` : `осталось ${n} дн.`;
+};
+
+export function PlaceButton({ siteId, domain, slug, place, use, by, label, deals, today, ending, className, text }: {
+  siteId: string; domain: string; slug: string; place: string; use: PlaceUse; by: string; label: string | null; deals: PlaceDeal[]; today: string;
+  ending: boolean; className: string; text: string;
 }) {
   const [open, setOpen] = useState(false);
+  const tip = deals.length
+    ? deals.map((d) => `${d.advertiser} — ${d.title}: $${d.price} ${d.basis}, с ${d.startsAt} по ${d.endsAt ?? "бессрочно"}, ${left(d, today)}`).join("\n")
+    : `${USE_LABEL[use]} · ${BY[by]}${label ? `: ${label}` : ""}`;
   return (
     <>
-      <button type="button" onClick={() => setOpen(true)} title={`${USE_LABEL[use]} · ${BY[by]}${label ? `: ${label}` : ""}`}
-        className={cn("block h-7 w-full truncate rounded px-2 text-left text-[11px] font-medium", className)}>{text}</button>
+      <button type="button" onClick={() => setOpen(true)} title={tip}
+        className={cn("relative block h-7 w-full truncate rounded px-2 text-left text-[11px] font-medium", className)}>
+        {text}{ending && <span aria-label="заканчивается в течение недели" className="absolute right-1 top-1 size-1.5 rounded-full bg-warning" />}
+      </button>
       <Sheet open={open} onOpenChange={setOpen} title={`${place} · ${domain}`} description={`Сейчас: ${USE_LABEL[use]} (${BY[by]}${label ? `: ${label}` : ""})`}>
         {by === "deal" ? (
-          <p className="text-sm">Место занято дилом — чтобы освободить, уберите место в условиях дила или завершите его.{" "}
-            {dealId && <Link className="text-accent hover:underline" href={`/deals/${dealId}`}>Открыть дил</Link>}</p>
+          <div className="flex flex-col gap-3 text-sm">
+            <ul className="divide-y divide-border">{deals.map((d) => (
+              <li key={d.id} className="flex flex-col gap-0.5 py-2">
+                <Link className="font-medium text-accent hover:underline" href={`/deals/${d.id}`}>{d.advertiser} — {d.title}</Link>
+                <span className="num text-muted">${d.price} {d.basis} · {d.billedVia === "DIRECT" ? "напрямую нам" : "через AdSpyglass"}</span>
+                <span className="num text-muted">с {d.startsAt} по {d.endsAt ?? "бессрочно"} · {left(d, today)}</span>
+              </li>
+            ))}</ul>
+            <p className="text-muted">Чтобы освободить место, уберите его в условиях дила или завершите дил.</p>
+          </div>
         ) : (
           <ActionForm action={setPlacementUseAction} submit="Сохранить" onDone={() => setOpen(false)} cancel={() => setOpen(false)}>
             <input type="hidden" name="siteId" value={siteId} />

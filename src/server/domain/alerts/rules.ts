@@ -206,7 +206,45 @@ async function ingestDown({ db, configuredSources }: RuleContext): Promise<Candi
   return out;
 }
 
-export const RULES = { lossGeo, waterfallInversion, discrepancyRule, invisibleZone, deadZone, lowFill, dealNoNumbers, overduePayment, ingestDown };
+/**
+ * 10. A deal with an end date is about to end: 7, 3 and 1 day(s) before, and once the date has
+ * passed while the deal is still active. `payload.stage` (7 / 3 / 1 / 0) changes at each
+ * threshold; evaluateAlerts treats a stage change as a new notification (fresh firstSeenAt,
+ * snooze cleared). Money at risk = the deal's revenue over the last 30 days.
+ */
+async function dealEnding({ db, asOf }: RuleContext): Promise<Candidate[]> {
+  const deals = await db.deal.findMany({
+    where: { status: { in: ["ACTIVE", "PAUSED"] }, endsAt: { not: null, lte: day(addDays(asOf, 7)) } },
+    include: { advertiser: true, placement: true, sites: true },
+  });
+  const out: Candidate[] = [];
+  for (const d of deals) {
+    const endsAt = d.endsAt!.toISOString().slice(0, 10);
+    const daysLeft = Math.round((day(endsAt).getTime() - day(asOf).getTime()) / 86_400_000);
+    const stage = daysLeft < 0 ? 0 : daysLeft <= 1 ? 1 : daysLeft <= 3 ? 3 : 7;
+    const recent = await db.factFixDeal.aggregate({ _sum: { revenue: true }, where: { dealId: d.id, date: { gte: day(addDays(asOf, -30)), lt: day(asOf) } } });
+    const risk = n(recent._sum.revenue);
+    const where = `${d.placement ? `${d.placement.title}, ` : ""}${d.sites.length} ${d.sites.length === 1 ? "сайт" : "сайтов"}`;
+    const terms = `${d.advertiser.name}, $${d.price.toString()} ${BASIS_WORD[d.paymentBasis] ?? d.paymentBasis}`;
+    const ended = stage === 0;
+    out.push({
+      rule: "deal_ending", entityKey: `deal:${d.id}|end:${endsAt}`, level: stage === 7 ? "WARNING" : "CRITICAL",
+      title: ended
+        ? `Фикс-дил «${d.title}» закончился ${-daysLeft} дн. назад, статус всё ещё активен`
+        : `Фикс-дил «${d.title}» заканчивается через ${daysLeft} дн.`,
+      message: `${terms} · ${where} · до ${endsAt}. ${ended ? "Продлить (новая дата конца) или завершить дил." : "Договориться о продлении или освободить место."}${risk > 0 ? ` За 30 дней принёс ${money(risk)}.` : ""}`,
+      link: `/deals/${d.id}`, siteId: null, moneyAtRisk: risk,
+      payload: { dealId: d.id, stage, daysLeft, endsAt, advertiser: d.advertiser.name, placement: d.placement?.title ?? null },
+    });
+  }
+  return out;
+}
+
+const BASIS_WORD: Record<string, string> = {
+  PER_1000_LOADS: "за 1000 загрузок", CPM_ADVERTISER: "CPM по счётчику рекл.", CPM_OWN: "CPM по нашему", FLAT_DAILY: "в сутки", FLAT_PERIOD: "за период",
+};
+
+export const RULES = { lossGeo, waterfallInversion, discrepancyRule, invisibleZone, deadZone, lowFill, dealNoNumbers, overduePayment, ingestDown, dealEnding };
 
 export async function collectCandidates(ctx: RuleContext): Promise<Candidate[]> {
   const all = await Promise.all(Object.values(RULES).map((r) => r(ctx)));
@@ -226,6 +264,9 @@ export async function evaluateAlerts(ctx: RuleContext): Promise<{ active: number
     seen.add(`${c.rule}|${c.entityKey}`);
     const existing = await db.alert.findUnique({ where: { rule_entityKey: { rule: c.rule, entityKey: c.entityKey } } });
     const wake = existing?.snoozedUntil && existing.snoozedRisk != null && c.moneyAtRisk > 2 * Number(existing.snoozedRisk) && c.moneyAtRisk > 0;
+    // A rule that moves through stages (deal_ending: 7 → 3 → 1 → 0) is a new notification at each one.
+    const prevStage = (existing?.payload as Record<string, unknown> | null)?.stage;
+    const restage = existing != null && c.payload.stage !== undefined && prevStage !== c.payload.stage;
     const data = {
       level: c.level, title: c.title, message: c.message, link: c.link, siteId: c.siteId,
       moneyAtRisk: c.moneyAtRisk.toFixed(4), payload: c.payload as object, lastSeenAt: now,
@@ -233,8 +274,8 @@ export async function evaluateAlerts(ctx: RuleContext): Promise<{ active: number
     if (!existing) await db.alert.create({ data: { rule: c.rule, entityKey: c.entityKey, ...data } });
     else await db.alert.update({
       where: { id: existing.id },
-      data: { ...data, resolvedAt: null, firstSeenAt: existing.resolvedAt ? now : existing.firstSeenAt,
-        ...(wake ? { snoozedUntil: null, snoozedRisk: null } : {}) },
+      data: { ...data, resolvedAt: null, firstSeenAt: existing.resolvedAt || restage ? now : existing.firstSeenAt,
+        ...(wake || restage ? { snoozedUntil: null, snoozedRisk: null } : {}) },
     });
   }
   const open = await db.alert.findMany({ where: { resolvedAt: null }, select: { id: true, rule: true, entityKey: true } });

@@ -2,7 +2,15 @@
 // Reference: docs/product/03-pages.md#inventory.
 
 export type PlaceUse = "ROTATION" | "OWN_DEAL" | "FIX" | "CPA" | "FREE" | "NONE";
-export interface PlaceCell { use: PlaceUse; by: "deal" | "manual" | "zone" | "default"; label: string | null; dealIds: string[] }
+/** A deal as the grid shows it: who, for how much, from when to when. */
+export interface PlaceDeal { id: string; title: string; advertiser: string; price: string; basis: string; startsAt: string; endsAt: string | null; billedVia: "DIRECT" | "VIA_ASG" }
+export interface PlaceCell { use: PlaceUse; by: "deal" | "manual" | "zone" | "default"; label: string | null; deals: PlaceDeal[] }
+
+/** Whole days from `today` to `endsAt`; null for an open-ended deal. */
+export function daysLeft(endsAt: string | null, today: string): number | null {
+  if (!endsAt) return null;
+  return Math.round((new Date(`${endsAt}T00:00:00Z`).getTime() - new Date(`${today}T00:00:00Z`).getTime()) / 86_400_000);
+}
 
 export const USE_LABEL: Record<PlaceUse, string> = {
   ROTATION: "Ротация ASG", OWN_DEAL: "Own deal ASG", FIX: "Фикс", CPA: "CPA", FREE: "Свободно", NONE: "Нет места",
@@ -41,15 +49,15 @@ export function matchPlacement(zoneName: string, places: { slug: string; title: 
  * mapped to the place → rotation; otherwise the place is free.
  */
 export function resolvePlace(i: {
-  deals: { id: string; title: string; billedVia: "DIRECT" | "VIA_ASG" }[];
+  deals: PlaceDeal[];
   manual?: { use: PlaceUse; note: string | null } | null;
   zones: { name: string }[];
 }): PlaceCell {
   if (i.deals.length) {
     const fix = i.deals.filter((d) => d.billedVia === "DIRECT");
-    return { use: fix.length ? "FIX" : "OWN_DEAL", by: "deal", label: i.deals.map((d) => d.title).join(", "), dealIds: i.deals.map((d) => d.id) };
+    return { use: fix.length ? "FIX" : "OWN_DEAL", by: "deal", label: i.deals.map((d) => `${d.advertiser} — ${d.title}`).join(", "), deals: i.deals };
   }
-  if (i.manual) return { use: i.manual.use, by: "manual", label: i.manual.note, dealIds: [] };
-  if (i.zones.length) return { use: "ROTATION", by: "zone", label: i.zones.map((z) => z.name).join(", "), dealIds: [] };
-  return { use: "FREE", by: "default", label: null, dealIds: [] };
+  if (i.manual) return { use: i.manual.use, by: "manual", label: i.manual.note, deals: [] };
+  if (i.zones.length) return { use: "ROTATION", by: "zone", label: i.zones.map((z) => z.name).join(", "), deals: [] };
+  return { use: "FREE", by: "default", label: null, deals: [] };
 }

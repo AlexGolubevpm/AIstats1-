@@ -91,6 +91,65 @@ describe("alert rules", () => {
   });
 });
 
+describe("10: deal ending", () => {
+  const D = (s: string) => new Date(`${s}T00:00:00Z`);
+  const ending = (endsAt: string | null, status: "ACTIVE" | "PAUSED" | "ENDED" = "ACTIVE") =>
+    db.deal.update({ where: { id: net.direct.id }, data: { endsAt: endsAt ? D(endsAt) : null, status, placementSlug: "welcome_bar" } });
+  const only = async () => (await RULES.dealEnding(ctx())).filter((c) => c.payload.dealId === net.direct.id);
+
+  it("warns at 7 days, critical at 3 and 1, critical when ended but still active", async () => {
+    await ending("2026-09-29");
+    let c = await only();
+    expect(c).toHaveLength(1);
+    expect([c[0].level, c[0].payload.stage, c[0].payload.daysLeft, c[0].entityKey]).toEqual(["WARNING", 7, 7, `deal:${net.direct.id}|end:2026-09-29`]);
+    expect(c[0].title).toContain("через 7 дн.");
+    expect(c[0].message).toContain("Acme Ads");
+    expect(c[0].message).toContain("Welcome bar");
+    expect(c[0].link).toBe(`/deals/${net.direct.id}`);
+    await ending("2026-09-25");
+    c = await only();
+    expect([c[0].level, c[0].payload.stage]).toEqual(["CRITICAL", 3]);
+    await ending("2026-09-23");
+    c = await only();
+    expect([c[0].level, c[0].payload.stage, c[0].payload.daysLeft]).toEqual(["CRITICAL", 1, 1]);
+    await ending("2026-09-20");
+    c = await only();
+    expect([c[0].level, c[0].payload.stage]).toEqual(["CRITICAL", 0]);
+    expect(c[0].title).toContain("закончился 2 дн. назад");
+  });
+
+  it("nothing for open-ended, far-off or ended deals; money at risk is the last 30 days of revenue", async () => {
+    await ending(null);
+    expect(await only()).toHaveLength(0);
+    await ending("2026-09-30");
+    expect(await only()).toHaveLength(0);
+    await ending("2026-09-25", "ENDED");
+    expect(await only()).toHaveLength(0);
+    await ending("2026-09-25", "PAUSED");
+    const [c] = await only();
+    expect(c.moneyAtRisk).toBe(6); // the direct deal's facts: $3 × 2 days in the factory
+  });
+
+  it("evaluateAlerts: a new stage re-surfaces a snoozed alert with a fresh firstSeenAt; same stage keeps it", async () => {
+    await ending("2026-09-29");
+    await evaluateAlerts(ctx());
+    const a = await db.alert.findFirstOrThrow({ where: { rule: "deal_ending" } });
+    await snoozeAlert(db, a.id);
+    await evaluateAlerts(ctx({ asOf: "2026-09-23" })); // 6 days left: still stage 7
+    const same = await db.alert.findUniqueOrThrow({ where: { id: a.id } });
+    expect(same.snoozedUntil).not.toBeNull();
+    expect(same.firstSeenAt.getTime()).toBe(a.firstSeenAt.getTime());
+    await evaluateAlerts(ctx({ asOf: "2026-09-26" })); // 3 days left: stage 3
+    const woke = await db.alert.findUniqueOrThrow({ where: { id: a.id } });
+    expect(woke.snoozedUntil).toBeNull();
+    expect(woke.level).toBe("CRITICAL");
+    expect(woke.firstSeenAt.getTime()).toBeGreaterThan(a.firstSeenAt.getTime());
+    await ending("2026-10-29"); // prolonged: the old key resolves
+    await evaluateAlerts(ctx({ asOf: "2026-09-26" }));
+    expect((await db.alert.findUniqueOrThrow({ where: { id: a.id } })).resolvedAt).not.toBeNull();
+  });
+});
+
 describe("evaluateAlerts", () => {
   it("upserts by key, resolves alerts that disappear", async () => {
     const r1 = await evaluateAlerts(ctx());
