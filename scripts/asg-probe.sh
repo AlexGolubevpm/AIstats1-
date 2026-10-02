@@ -141,6 +141,46 @@ filter_ratio() {
   fi
 }
 
+if [ "${ASG_PROBE_MODE:-}" = "recon" ]; then
+  # Where does TubeStat's revenue for $DATE differ from the API? Uses the stored raw responses,
+  # so the only API request is the baseline above. Per-site lines carry ratios only, no names.
+  [ -f /opt/tubestat/.current-image ] || stop_run "recon runs on the server only"
+  OUT=$(cd "$OUT" && pwd); cd /opt/tubestat; export APP_IMAGE; APP_IMAGE=$(cat .current-image)
+  psql_() { docker compose exec -T postgres psql -U tubestat -d tubestat -X -At -F ' ' -c "$1"; }
+  values=$(jq -r '[.[] | "(\(.name // "" | tostring | split(".")[0] | tonumber? // 0), \(.broker_income // 0), \(.hits // 0))"] | join(",")' "$OUT/baseline_website.json")
+  echo "== Per site, $DATE: db revenue / api revenue, db loads / api loads, db rows (sorted)"
+  psql_ "WITH api(adsg, rev, hits) AS (VALUES $values),
+    db AS (SELECT s.\"adsgSiteId\" adsg, SUM(f.\"revenueReported\") rev, SUM(f.\"pageLoads\") hits, count(*) n,
+             count(*) FILTER (WHERE f.\"countryCode\" = 'ZZ') zz
+           FROM \"FactRevenueGeo\" f JOIN \"Site\" s ON s.id = f.\"siteId\" WHERE f.date = DATE '$DATE' GROUP BY 1)
+    SELECT COALESCE(round(db.rev / NULLIF(api.rev, 0), 3)::text, 'n/a'), COALESCE(round(db.hits::numeric / NULLIF(api.hits, 0), 3)::text, 'n/a'),
+           COALESCE(db.n, 0), COALESCE(db.zz, 0), CASE WHEN api.adsg IS NULL THEN 'not-in-api' WHEN db.adsg IS NULL THEN 'not-in-db' ELSE '' END
+    FROM api FULL JOIN db ON db.adsg = api.adsg ORDER BY 1" | awk '{ printf "   rev=%s loads=%s rows=%s zz=%s %s\n", $1, $2, $3, $4, $5 }'
+  echo "== Ingest runs, last 2 days (no error texts)"
+  psql_ "SELECT job, \"dateFrom\", \"dateTo\", status, \"rowsUpsert\", requests, to_char(\"startedAt\", 'MM-DD HH24:MI'),
+           COALESCE(to_char(\"finishedAt\", 'HH24:MI'), '-'), (error IS NOT NULL), COALESCE(array_length(regexp_split_to_array(error, 'сверка'), 1) - 1, 0)
+         FROM \"IngestRun\" WHERE \"startedAt\" > now() - interval '2 days' ORDER BY \"startedAt\" DESC LIMIT 30" \
+    | awk '{ printf "   %-11s %s..%s %-8s rows=%s req=%s %s-%s err=%s recon_fails=%s\n", $1, $2, $3, $4, $5, $6, $7, $8, $9, $10 }'
+  echo "== Stored raw country responses for $DATE vs the api site total (ratios, sorted)"
+  docker compose exec -T -e API_JSON="$(cat "$OUT/baseline_website.json")" -e DAY="$DATE" web node -e '
+    const fs = require("fs"), path = require("path");
+    const api = new Map(JSON.parse(process.env.API_JSON).map((r) => [String(r.name).split(".")[0], r]));
+    const root = "/data/raw/raw/adspyglass/country"; const out = [];
+    for (const id of fs.existsSync(root) ? fs.readdirSync(root) : []) {
+      const dir = path.join(root, id, process.env.DAY); if (!fs.existsSync(dir)) continue;
+      const files = fs.readdirSync(dir).sort(); const rows = JSON.parse(fs.readFileSync(path.join(dir, files.at(-1)), "utf8"));
+      const sum = (k) => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0); const a = api.get(id);
+      const named = rows.filter((r) => /total|итог|all/i.test(String(r.name)) || r.iso == null || r.iso === "").length;
+      const isos = new Set(rows.map((r) => r.iso)).size;
+      out.push([a ? (sum("broker_income") / (a.broker_income || NaN)).toFixed(3) : "n/a", a ? (sum("hits") / (a.hits || NaN)).toFixed(3) : "n/a", files.length, rows.length, isos, named]);
+    }
+    out.sort((x, y) => String(x[0]).localeCompare(String(y[0])));
+    for (const o of out) console.log(`   rev=${o[0]} loads=${o[1]} files=${o[2]} rows=${o[3]} distinct_iso=${o[4]} total_or_no_iso_rows=${o[5]}`);
+    if (!out.length) console.log("   no raw country files for this day");' 2>&1 | head -40
+  echo; echo "Requests sent: $REQUESTS."
+  exit 0
+fi
+
 if [ "${ASG_PROBE_MODE:-}" = "dates" ]; then
   # Does the API honour from/to? group_by=date lists the days a response really covers.
   # Prints dates (not secret), row counts and revenue RATIOS only — never amounts.
