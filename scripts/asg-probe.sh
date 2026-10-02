@@ -191,7 +191,22 @@ if [ "${ASG_PROBE_MODE:-}" = "recon" ]; then
     const ws = fs.existsSync(wsDir) ? JSON.parse(fs.readFileSync(path.join(wsDir, fs.readdirSync(wsDir).sort().at(-1)), "utf8")) : [];
     console.log(`== Stored website cut: rows=${ws.length} fields=${ws[0] ? Object.keys(ws[0]).join(",") : "-"}`);
     const med = (a) => { const s = a.filter(Number.isFinite).sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)].toFixed(3) : "-"; };
-    for (const cut of ["country", "network", "device"]) {
+    // Zones: one account-level spot cut, "id. Name (domain)" — summed per domain vs the site total.
+    const spotDir = path.join(base, "spot", process.env.DAY);
+    if (fs.existsSync(spotDir)) {
+      const spots = JSON.parse(fs.readFileSync(path.join(spotDir, fs.readdirSync(spotDir).sort().at(-1)), "utf8"));
+      const byDomain = new Map();
+      for (const r of spots) { const d = /\(([^()]+)\)\s*$/.exec(String(r.name))?.[1]?.trim().toLowerCase(); if (!d) continue;
+        const cur = byDomain.get(d) ?? { b: 0, p: 0, h: 0 }; cur.b += Number(r.broker_income) || 0; cur.p += Number(r.predicted_income) || 0; cur.h += Number(r.hits) || 0; byDomain.set(d, cur); }
+      const rb = [], rp = [], rh = []; let missing = 0;
+      for (const a of api.values()) { const dom = String(a.name).replace(/^\d+\.\s*/, "").trim().toLowerCase(); const z = byDomain.get(dom);
+        if (!z) { missing++; continue; } if (a.broker_income) rb.push(z.b / a.broker_income); if (a.predicted_income) rp.push(z.p / a.predicted_income); if (a.hits) rh.push(z.h / a.hits); }
+      console.log(`== spot (zones): rows=${spots.length} domains=${byDomain.size} sites_without_zones=${missing}`);
+      console.log(`   broker_income: zones/site median=${med(rb)} min=${Math.min(...rb).toFixed(3)} max=${Math.max(...rb).toFixed(3)}`);
+      console.log(`   predicted_income: zones/site median=${med(rp)} min=${Math.min(...rp).toFixed(3)} max=${Math.max(...rp).toFixed(3)}`);
+      console.log(`   hits: zones/site median=${med(rh)} min=${Math.min(...rh).toFixed(3)} max=${Math.max(...rh).toFixed(3)}`);
+    } else console.log("== spot (zones): no raw spot file for this day");
+    for (const cut of ["network"]) {
       const ratios = {}; let fields = "-";
       for (const [id, a] of api) {
         const rows = latest(cut, id); if (!rows || !rows.length || !a.broker_income) continue;
