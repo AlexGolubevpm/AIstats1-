@@ -142,17 +142,22 @@ filter_ratio() {
 }
 
 if [ "${ASG_PROBE_MODE:-}" = "traffic" ]; then
-  # Where do traffic sources (and their cost) live? The cabinet has a "Traffic source" list.
-  # Prints status, row counts, field names and masked names only.
-  for g in platform traffic_source traffic_sources source traffic utm_source campaign; do
-    probe "ts_$g" "group_by=$g"
-    if [ "$LAST_CODE" = "200" ] && [[ "$LAST_ROWS" =~ ^[0-9]+$ ]] && [ "$LAST_ROWS" -gt 0 ]; then
-      echo "   fields: $(jq -r '.[0] | keys | join(",")' "$OUT/ts_$g.json" | cut -c1-400)"
-      echo "   names:  $(jq -r '.[:6][] | .name // "" | tostring' "$OUT/ts_$g.json" | bash "$SHAPE" | paste -sd '|' -)"
-      echo "   hits vs website cut: $(jq -r --slurpfile w "$OUT/baseline_website.json" '([.[] | (.hits // 0)] | add) / (([$w[0][] | (.hits // 0)] | add) // 1) * 1000 | round / 1000' "$OUT/ts_$g.json")x"
-      echo "   cost-like fields: $(jq -r '.[0] | keys[] | select(test("cost|spend|expense|price|payout|budget|bid"; "i"))' "$OUT/ts_$g.json" | paste -sd ',' -)"
-    fi
-  done
+  # group_by=traffic_source: is its income the site revenue split by source, or something else
+  # (spend)? Compares sums with the website cut, account-wide and for the busiest site.
+  # Ratios, counts and field names only.
+  ratios() { # $1 = file, $2 = reference jq filter over the website baseline
+    jq -r --slurpfile w "$OUT/baseline_website.json" "( $2 ) as \$ref | [\"broker_income\",\"predicted_income\",\"hits\"][] as \$k |
+      \"   \(\$k): sources/\(\"$3\") = \(([.[] | (.[\$k] // 0)] | add) / ((\$ref | map(.[\$k] // 0) | add) // 1) * 1000 | round / 1000)\"" "$1"; }
+  probe ts_all "group_by=traffic_source"
+  [ "$LAST_CODE" = "200" ] && ratios "$OUT/ts_all.json" '$w[0]' account
+  echo "   fields: $(jq -r '.[0] | keys | join(",")' "$OUT/ts_all.json" 2>/dev/null | cut -c1-400)"
+  echo "   numeric non-zero per source (masked names): "
+  jq -r '.[] | "\(.name // "" | tostring)\t\((.hits // 0) > 0)\t\((.broker_income // 0) > 0)\t\((.predicted_income // 0) > 0)"' "$OUT/ts_all.json" 2>/dev/null \
+    | while IFS=$'\t' read -r n h b p; do echo "     $(printf '%s' "$n" | bash "$SHAPE") hits>0=$h broker>0=$b predicted>0=$p"; done
+  if [ -n "$CUT_SITE" ]; then
+    probe ts_site "group_by=traffic_source&platforms_ids[]=$CUT_SITE"
+    [ "$LAST_CODE" = "200" ] && ratios "$OUT/ts_site.json" "\$w[0] | map(select((.name // \"\" | tostring | split(\".\")[0]) == \"$CUT_SITE\"))" busiest-site
+  fi
   echo; echo "Requests sent: $REQUESTS."
   exit 0
 fi
