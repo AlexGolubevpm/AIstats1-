@@ -73,8 +73,8 @@ tests/                       см. 10-testing
 | --- | --- | --- |
 | `FactCost` | + `origin: RATE \| IMPORT`, + `importBatchId?` | Импорт перекрывает расчёт; откат импорта |
 | `FactRevenueNetwork` | новая: дата × сайт × сетка (разрез `adnetwork_squashed`, без страны — ADOK не отдаёт сетку × страну) | Сравнение сеток и флор по сайту; в `v_network_geo` строки с `country_code = 'ZZ'` заменяют общий `asg_all` за тот же сайт-день |
-| `FactTrafficSource` | новая: дата × сайт × источник трафика (разрез `traffic_source`): загрузки, показы, клики, выручка трафика источника | Вкладка «Источники» сайта; база расхода по ревшаре ([ADR 0006](../adr/0006-traffic-source-cost-revshare.md)) |
-| `CostSource` | + `revShare` (доля выручки трафика, отдаваемая источнику; Direct — 0), + `asgName` (имя в ADOK) | Расход = выручка трафика × `revShare`; ставки `CostRate` к источникам из ADOK не применяются |
+| `FactTrafficSource` | новая: дата × сайт × источник трафика (разрез `traffic_source`): загрузки, показы, клики, сумма, которую ADOK называет выручкой (= сколько заплачено источнику) | Вкладка «Источники» сайта; база расхода по ревшаре ([ADR 0006](../adr/0006-traffic-source-cost-revshare.md)) |
+| `CostSource` | + `revShare` (доля этой суммы, идущая в расход; Direct — 0), + `asgName` (имя в ADOK) | Расход = сумма ADOK × `revShare`; ставки `CostRate` к источникам из ADOK не применяются |
 | `FactCost` | + `origin = ASG`, `rateModel = REVSHARE`; страна `ZZ` (разреза источник × страна в ADOK нет) | Маржа и ROMI по сайту и бандлу; по странам расход источников не раскладывается |
 | `FactRevenueDevice` | новая: дата × сайт × устройство (разрез `device`) | Вкладка «Девайсы» сайта; в `FactRevenueGeo` устройство у реальных данных `UNKNOWN` |
 | `FactRevenue` → `FactRevenueGeo` + `FactRevenueZone` | Два факта вместо одного с `zoneId = null` / `countryCode = 'ZZ'`, см. [ADR 0004](../adr/0004-revenue-facts-and-billing.md) | Разрезы AdSpyglass не складываются друг с другом |
@@ -158,7 +158,7 @@ ADOK блокирует клиентов за частые запросы (на 
 | `group_by=spot` | 200, строка на зону: `"491410. Name (domain.com)"` — домен даёт сайт |
 | `group_by=adnetwork_squashed` | 200, строка на сетку (в UI — «Demand»), имя вида `AdPulsar.io` → слаг `adpulsar` |
 | `group_by=date`, `device`, `ad_type`, `platform`, `adnetwork_type`, `campaign` | 200 |
-| `group_by=traffic_source` | 200, строка на источник трафика (Direct, TubeCrown, …), с `platforms_ids[]` — по сайту. Сумма выручки по источникам = выручка сайта (1.000×) — это выручка трафика источника; у источников на ревшаре она же расход ([ADR 0006](../adr/0006-traffic-source-cost-revshare.md)). Полей стоимости нет |
+| `group_by=traffic_source` | 200, строка на источник трафика (Direct, TubeCrown, …), с `platforms_ids[]` — по сайту. Поле `broker_income` у источника ADOK называет выручкой; по словам владельца это сколько заплачено источнику — берётся расходом. Сумма по источникам = выручка сайта (1.000×) ([ADR 0006](../adr/0006-traffic-source-cost-revshare.md)). Полей стоимости нет |
 | `group_by=broker|network|partner|demand|adnetwork` | 422 |
 | Два измерения (`website,country`, `group_by[]`, повтор параметра) | 422 или только одно измерение |
 | Фильтр по сайту `platforms_ids[]=<id>` | **работает** (ответ = 1.00× итога сайта) для стран, сеток и зон |

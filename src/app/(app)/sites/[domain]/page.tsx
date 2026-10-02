@@ -28,8 +28,8 @@ const ZONE_COLS: Column[] = [
 ];
 const SOURCE_COLS: Column[] = [
   { id: "source", header: "Источник трафика", kind: "text" }, { id: "loads", header: "Page loads", kind: "int" }, { id: "loadsShare", header: "Доля трафика", kind: "share" },
-  { id: "revenue", header: "Выручка", kind: "money", tooltip: "Сколько заработал трафик источника (ADOK)" }, { id: "revPer1k", header: "Rev/1000 loads", kind: "cpm" },
-  { id: "cost", header: "Расход", kind: "money", tooltip: "Выручка трафика × доля источника (Настройки → Расход)" }, { id: "margin", header: "Маржа", kind: "money" },
+  { id: "cost", header: "Расход", kind: "money", tooltip: "Сколько заплачено источнику: сумма из ADOK (там поле называется «выручка») × доля источника из Настройки → Расход" },
+  { id: "costPer1k", header: "Цена 1000 loads", kind: "cpm" }, { id: "share", header: "Доля расхода", kind: "share" },
 ];
 const NESTED_NET: Column[] = [
   { id: "network", header: "Сетка в этой стране", kind: "text" }, { id: "pageLoads", header: "Page loads", kind: "int" }, { id: "volShare", header: "Доля объёма", kind: "share" },
