@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapCountryRows } from "@/server/ingest/adspyglass/map";
+import { allocateBroker, apportion, mapCountryRows, measures, type Measures } from "@/server/ingest/adspyglass/map";
 import { CountryResolver } from "@/server/ingest/normalize";
 
 const resolver = () => new CountryResolver([{ code: "JP", nameEn: "Japan" }, { code: "US", nameEn: "United States" }, { code: "XK", nameEn: "Kosovo" }], []);
@@ -45,5 +45,29 @@ describe("device rows", async () => {
   it("normalises names and sums", () => {
     const cells = mapDeviceRows([{ name: "Desktop", hits: 1 }, { name: "Smartphone", hits: 2 }, { name: "Mobile", hits: 3 }, { name: "Fridge", hits: 4 }]);
     expect(Object.fromEntries(cells.map((c) => [c.device, c.m.pageLoads]))).toEqual({ DESKTOP: 1, MOBILE: 5, UNKNOWN: 4 });
+  });
+});
+
+describe("network side of per-site cuts", () => {
+  const m = (o: Partial<Measures>): Measures => ({ pageLoads: 0, impsOwn: 0, impsNetwork: 0, clicks: 0, revenue: 0, predicted: 0, ...o });
+  it("apportion splits an integer exactly by weights, largest remainder first", () => {
+    expect(apportion(10, [1, 1, 1])).toEqual([4, 3, 3]);
+    expect(apportion(100, [3, 1])).toEqual([75, 25]);
+    expect(apportion(5, [0, 0])).toEqual([3, 2]); // no weights: even split
+    expect(apportion(7, [])).toEqual([]);
+    expect(apportion(3, [-1, 2])).toEqual([0, 3]);
+  });
+  it("allocateBroker spreads the site total by own revenue, then impressions, then loads", () => {
+    const cells = [{ k: "a", m: m({ pageLoads: 10, impsOwn: 1, predicted: 3, revenue: 999 }) }, { k: "b", m: m({ pageLoads: 30, impsOwn: 3, predicted: 1, revenue: 1 }) }];
+    const site = m({ revenue: 2, impsNetwork: 8 });
+    expect(allocateBroker(cells, site).map((c) => [c.k, c.m.revenue, c.m.impsNetwork, c.m.pageLoads])).toEqual([["a", 1.5, 2, 10], ["b", 0.5, 6, 30]]);
+    const noPredicted = cells.map((c) => ({ ...c, m: { ...c.m, predicted: 0 } }));
+    expect(allocateBroker(noPredicted, site).map((c) => c.m.revenue)).toEqual([0.5, 1.5]);
+    const sum = allocateBroker([1, 1, 1].map((p) => ({ m: m({ predicted: p }) })), m({ revenue: 0.01 })).reduce((a, c) => a + c.m.revenue, 0);
+    expect(sum).toBeCloseTo(0.01, 10); // 4-decimal units add up exactly
+    expect(allocateBroker(cells, undefined).map((c) => c.m.revenue)).toEqual([0, 0]); // ADOK has no total for the site
+  });
+  it("measures carries predicted_income", () => {
+    expect(measures({ predicted_income: 1.25 } as never).predicted).toBe(1.25);
   });
 });

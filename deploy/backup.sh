@@ -3,6 +3,8 @@
 # Keeps the last ${KEEP:-14} daily dumps in /opt/tubestat/backups (pre-deploy dumps are separate).
 set -euo pipefail
 cd "${TUBESTAT_DIR:-/opt/tubestat}"
+# compose interpolates ${APP_IMAGE:?} even for exec/ps; outside deploy.sh take the deployed one.
+export APP_IMAGE="${APP_IMAGE:-$(cat .current-image 2>/dev/null || echo unset)}"
 KEEP="${KEEP:-14}"
 mkdir -p backups
 file="backups/daily-$(date -u +%Y%m%d).dump"

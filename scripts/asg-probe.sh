@@ -66,10 +66,12 @@ probe() {
   fi
   [ "$REQUESTS" -gt 0 ] && sleep "$DELAY"
   REQUESTS=$((REQUESTS + 1))
+  local url="$BASE/report?from=${FROM:-$DATE}&to=$DATE&$query"
+  [ -n "${NO_RANGE:-}" ] && url="$BASE/report?$query"
   meta=$(curl -gsS -m 60 -o "$file" -w '%{http_code} %{redirect_url}' \
     -H "X-Asg-Auth-Email: $ASG_AUTH_EMAIL" \
     -H "X-Asg-Auth-Token: $ASG_AUTH_TOKEN" \
-    "$BASE/report?from=$DATE&to=$DATE&$query" 2>"$OUT/.curl-error")
+    "$url" 2>"$OUT/.curl-error")
   # curl errors echo the URL (with site ids); in redacted mode keep only the curl error code.
   if [ -s "$OUT/.curl-error" ]; then
     if [ "$REDACT" = "1" ]; then sed -n 's/^curl: (\([0-9]*\)).*/curl error \1/p' "$OUT/.curl-error" | head -n1 >&2; else cat "$OUT/.curl-error" >&2; fi
@@ -138,6 +140,117 @@ filter_ratio() {
     echo "   filter check $label: hits = $(awk -v t="$total" -v o="$own" 'BEGIN { printf "%.2f", t / o }')x site total"
   fi
 }
+
+if [ "${ASG_PROBE_MODE:-}" = "recon" ]; then
+  # Where does TubeStat's revenue for $DATE differ from the API? Uses the stored raw responses,
+  # so the only API request is the baseline above. Per-site lines carry ratios only, no names.
+  [ -f /opt/tubestat/.current-image ] || stop_run "recon runs on the server only"
+  OUT=$(cd "$OUT" && pwd); cd /opt/tubestat; export APP_IMAGE; APP_IMAGE=$(cat .current-image)
+  psql_() { docker compose exec -T postgres psql -U tubestat -d tubestat -X -At -F ' ' -c "$1"; }
+  values=$(jq -r '[.[] | "(\(.name // "" | tostring | split(".")[0] | tonumber? // 0), \(.broker_income // 0), \(.hits // 0))"] | join(",")' "$OUT/baseline_website.json")
+  # The cabinet's network report is account-level: compare its totals with the website cut.
+  probe acct_net "group_by=adnetwork_squashed"
+  jq -r --slurpfile w "$OUT/baseline_website.json" '([$w[0][] | (.broker_income // 0)] | add) as $b |
+    "   account network cut / website cut: broker_income=\(([.[] | (.broker_income // 0)] | add) / $b * 1000 | round / 1000) predicted_income=\(([.[] | (.predicted_income // 0)] | add) / $b * 1000 | round / 1000) (website predicted/broker=\(([$w[0][] | (.predicted_income // 0)] | add) / $b * 1000 | round / 1000))"' \
+    "$OUT/acct_net.json" 2>/dev/null || echo "   account network cut: n/a"
+  echo "== Per site, $DATE: db revenue / api revenue, db loads / api loads, db rows (sorted)"
+  psql_ "WITH api(adsg, rev, hits) AS (VALUES $values),
+    db AS (SELECT s.\"adsgSiteId\" adsg, SUM(f.\"revenueReported\") rev, SUM(f.\"pageLoads\") hits, count(*) n,
+             count(*) FILTER (WHERE f.\"countryCode\" = 'ZZ') zz
+           FROM \"FactRevenueGeo\" f JOIN \"Site\" s ON s.id = f.\"siteId\" WHERE f.date = DATE '$DATE' GROUP BY 1)
+    SELECT COALESCE(round(db.rev / NULLIF(api.rev, 0), 3)::text, 'n/a'), COALESCE(round(db.hits::numeric / NULLIF(api.hits, 0), 3)::text, 'n/a'),
+           COALESCE(db.n, 0), COALESCE(db.zz, 0), CASE WHEN api.adsg IS NULL THEN 'not-in-api' WHEN db.adsg IS NULL THEN 'not-in-db' ELSE '' END
+    FROM api FULL JOIN db ON db.adsg = api.adsg ORDER BY 1" | awk '{ printf "   rev=%s loads=%s rows=%s zz=%s %s\n", $1, $2, $3, $4, $5 }'
+  echo "== Ingest runs, last 2 days (no error texts)"
+  psql_ "SELECT job, \"dateFrom\", \"dateTo\", status, \"rowsUpsert\", requests, to_char(\"startedAt\", 'MM-DD HH24:MI'),
+           COALESCE(to_char(\"finishedAt\", 'HH24:MI'), '-'), (error IS NOT NULL), COALESCE(array_length(regexp_split_to_array(error, 'сверка'), 1) - 1, 0)
+         FROM \"IngestRun\" WHERE \"startedAt\" > now() - interval '2 days' ORDER BY \"startedAt\" DESC LIMIT 30" \
+    | awk '{ printf "   %-11s %s..%s %-8s rows=%s req=%s %s-%s err=%s recon_fails=%s\n", $1, $2, $3, $4, $5, $6, $7, $8, $9, $10 }'
+  echo "== Stored raw country responses for $DATE vs the api site total (ratios, sorted)"
+  docker compose exec -T -e API_JSON="$(cat "$OUT/baseline_website.json")" -e DAY="$DATE" web node -e '
+    const fs = require("fs"), path = require("path");
+    const api = new Map(JSON.parse(process.env.API_JSON).map((r) => [String(r.name).split(".")[0], r]));
+    const root = "/data/raw/raw/adspyglass/country"; const out = [];
+    for (const id of fs.existsSync(root) ? fs.readdirSync(root) : []) {
+      const dir = path.join(root, id, process.env.DAY); if (!fs.existsSync(dir)) continue;
+      const files = fs.readdirSync(dir).sort(); const rows = JSON.parse(fs.readFileSync(path.join(dir, files.at(-1)), "utf8"));
+      const sum = (k) => rows.reduce((a, r) => a + (Number(r[k]) || 0), 0); const a = api.get(id);
+      const named = rows.filter((r) => /total|итог|all/i.test(String(r.name)) || r.iso == null || r.iso === "").length;
+      const isos = new Set(rows.map((r) => r.iso)).size;
+      out.push([a ? (sum("broker_income") / (a.broker_income || NaN)).toFixed(3) : "n/a", a ? (sum("hits") / (a.hits || NaN)).toFixed(3) : "n/a", files.length, rows.length, isos, named]);
+    }
+    out.sort((x, y) => String(x[0]).localeCompare(String(y[0])));
+    for (const o of out) console.log(`   rev=${o[0]} loads=${o[1]} files=${o[2]} rows=${o[3]} distinct_iso=${o[4]} total_or_no_iso_rows=${o[5]}`);
+    if (!out.length) console.log("   no raw country files for this day");
+    // Every numeric field of every stored cut, summed per site, as a ratio of the website cut
+    // broker_income (median and max over sites) — shows which field the per-site cuts inflate.
+    const base = "/data/raw/raw/adspyglass";
+    const latest = (cut, id) => { const dir = path.join(base, cut, id, process.env.DAY); if (!fs.existsSync(dir)) return null;
+      return JSON.parse(fs.readFileSync(path.join(dir, fs.readdirSync(dir).sort().at(-1)), "utf8")); };
+    const wsDir = path.join(base, "website", process.env.DAY);
+    const ws = fs.existsSync(wsDir) ? JSON.parse(fs.readFileSync(path.join(wsDir, fs.readdirSync(wsDir).sort().at(-1)), "utf8")) : [];
+    console.log(`== Stored website cut: rows=${ws.length} fields=${ws[0] ? Object.keys(ws[0]).join(",") : "-"}`);
+    const med = (a) => { const s = a.filter(Number.isFinite).sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)].toFixed(3) : "-"; };
+    // Zones: one account-level spot cut, "id. Name (domain)" — summed per domain vs the site total.
+    const spotDir = path.join(base, "spot", process.env.DAY);
+    if (fs.existsSync(spotDir)) {
+      const spots = JSON.parse(fs.readFileSync(path.join(spotDir, fs.readdirSync(spotDir).sort().at(-1)), "utf8"));
+      const byDomain = new Map();
+      for (const r of spots) { const d = /\(([^()]+)\)\s*$/.exec(String(r.name))?.[1]?.trim().toLowerCase(); if (!d) continue;
+        const cur = byDomain.get(d) ?? { b: 0, p: 0, h: 0 }; cur.b += Number(r.broker_income) || 0; cur.p += Number(r.predicted_income) || 0; cur.h += Number(r.hits) || 0; byDomain.set(d, cur); }
+      const rb = [], rp = [], rh = []; let missing = 0;
+      for (const a of api.values()) { const dom = String(a.name).replace(/^\d+\.\s*/, "").trim().toLowerCase(); const z = byDomain.get(dom);
+        if (!z) { missing++; continue; } if (a.broker_income) rb.push(z.b / a.broker_income); if (a.predicted_income) rp.push(z.p / a.predicted_income); if (a.hits) rh.push(z.h / a.hits); }
+      console.log(`== spot (zones): rows=${spots.length} domains=${byDomain.size} sites_without_zones=${missing}`);
+      console.log(`   broker_income: zones/site median=${med(rb)} min=${Math.min(...rb).toFixed(3)} max=${Math.max(...rb).toFixed(3)}`);
+      console.log(`   predicted_income: zones/site median=${med(rp)} min=${Math.min(...rp).toFixed(3)} max=${Math.max(...rp).toFixed(3)}`);
+      console.log(`   hits: zones/site median=${med(rh)} min=${Math.min(...rh).toFixed(3)} max=${Math.max(...rh).toFixed(3)}`);
+    } else console.log("== spot (zones): no raw spot file for this day");
+    for (const cut of ["network"]) {
+      const ratios = {}; let fields = "-";
+      for (const [id, a] of api) {
+        const rows = latest(cut, id); if (!rows || !rows.length || !a.broker_income) continue;
+        fields = Object.keys(rows[0]).join(",");
+        for (const k of Object.keys(rows[0])) {
+          if (typeof rows[0][k] !== "number") continue;
+          const site = Number(a[k]) || 0;
+          (ratios[k] ??= []).push(rows.reduce((s, r) => s + (Number(r[k]) || 0), 0) / (site || NaN));
+        }
+      }
+      console.log(`== ${cut}: fields=${fields}`);
+      for (const [k, v] of Object.entries(ratios)) console.log(`   ${k}: cut/site median=${med(v)} max=${Math.max(...v.filter(Number.isFinite)).toFixed(3)} sites=${v.length}`);
+    }' 2>&1 | grep -v '^   rev=' | head -80
+  echo; echo "Requests sent: $REQUESTS."
+  exit 0
+fi
+
+if [ "${ASG_PROBE_MODE:-}" = "dates" ]; then
+  # Does the API honour from/to? group_by=date lists the days a response really covers.
+  # Prints dates (not secret), row counts and revenue RATIOS only — never amounts.
+  list_dates() { jq -r 'if type=="array" then [.[] | .name // .date // "" | tostring] | join(",") else "-" end' "$OUT/$1.json" 2>/dev/null \
+    | sed -E 's/[^0-9,-]/?/g' | cut -c1-200; }
+  probe dt_1d "group_by=date";               echo "   dates: $(list_dates dt_1d)"
+  FROM=$(date -u -d "$DATE -6 days" +%F) probe dt_7d "group_by=date"; echo "   dates: $(list_dates dt_7d)"
+  NO_RANGE=1 probe dt_period "group_by=date&period=${DATE}%20-%20${DATE}"; echo "   dates: $(list_dates dt_period)"
+  NO_RANGE=1 probe dt_none "group_by=date";  echo "   dates: $(list_dates dt_none)"
+  echo
+  echo "== Numeric fields of group_by=website for $DATE, as a ratio of sum(broker_income)"
+  jq -r '([.[] | (.broker_income // 0)] | add) as $b | if ($b // 0) == 0 then "broker_income sum is 0" else
+    (.[0] | keys[]) as $k | [.[] | .[$k]] as $v | select(($v[0] | type) == "number" and ($k | test("income|revenue|profit|earn|payout|amount"))) |
+    "\($k): \(([$v[] // 0] | add) / $b * 1000 | round / 1000)" end' "$OUT/baseline_website.json" 2>/dev/null | sort -u
+  echo "website rows: $(jq 'length' "$OUT/baseline_website.json"), distinct ids: $(jq '[.[] | .name // "" | tostring | split(".")[0]] | unique | length' "$OUT/baseline_website.json")"
+  if [ -f /opt/tubestat/.current-image ]; then
+    api=$(jq '[.[] | (.broker_income // 0)] | add // 0' "$OUT/baseline_website.json")
+    echo
+    echo "== TubeStat database vs this API response (ratios of revenue, by day)"
+    ( cd /opt/tubestat && APP_IMAGE=$(cat .current-image) docker compose exec -T postgres psql -U tubestat -d tubestat -At -F ' ' -c \
+      "SELECT date, count(*), count(DISTINCT \"siteId\"), count(*) FILTER (WHERE \"countryCode\" = 'ZZ'), round(SUM(\"revenueReported\") / NULLIF($api, 0), 3)
+       FROM \"FactRevenueGeo\" WHERE date BETWEEN DATE '$DATE' - 6 AND DATE '$DATE' + 1 GROUP BY 1 ORDER BY 1" 2>/dev/null \
+      | awk '{ printf "   %s rows=%s sites=%s zz_rows=%s db/api=%s\n", $1, $2, $3, $4, $5 }' ) || echo "   database not reachable"
+  fi
+  echo; echo "Requests sent: $REQUESTS."
+  exit 0
+fi
 
 if [ "${ASG_PROBE_MODE:-}" = "discover" ]; then
   # Names from the ADOK UI "Group" list and more spellings of its "Website" filter.

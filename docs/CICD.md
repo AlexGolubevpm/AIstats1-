@@ -50,6 +50,8 @@ nano /opt/tubestat/.env       # шаблон — .env.example в репозит�
 
 После правки `.env` — `cd /opt/tubestat && docker compose up -d` (или дождаться следующего деплоя).
 
+**Без ручной правки.** Воркфлоу `Sync server .env` (`.github/workflows/sync-env.yml`, вручную или при изменении `.github/sync-env.request`) переносит `ASG_AUTH_EMAIL`, `ASG_AUTH_TOKEN` и `METRIKA_TOKEN` из секретов окружения `production` в `/opt/tubestat/.env`, один раз генерирует `APP_PASSWORD`, если его нет, включает `COMPOSE_PROFILES=worker`, убирает `COOKIE_SECURE=1`, пока сайт открыт по HTTP (`APP_DOMAIN` пустой или `:80`), и перезапускает стек. Значения идут через stdin SSH и в лог не попадают; другие ключи скрипт не трогает. Пароль читается только на сервере: `grep APP_PASSWORD /opt/tubestat/.env`.
+
 ### 4. Секреты в GitHub
 
 Repo → Settings → Environments → **New environment** `production` → Environment secrets:
@@ -82,6 +84,8 @@ Settings → Branches → Add rule для `main`: *Require a pull request*, *Req
 3. Если healthcheck не прошёл, job падает с логами `web`; прошлые контейнеры Postgres/Redis не трогаются, бэкап БД перед деплоем лежит в `/opt/tubestat/backups` (последние 10).
 
 **Бэкапы.** Перед каждым деплоем — `backups/pre-deploy-*.dump` (последние 10). Ежедневно в 03:30 UTC — `backups/daily-YYYYMMDD.dump` (последние 14): `deploy.sh` ставит cron пользователю `deploy`, скрипт — `deploy/backup.sh`, лог — `backups/backup.log`. Восстановление: `docker compose exec -T postgres pg_restore -U tubestat -d tubestat --clean < backups/<файл>.dump`.
+
+**Проверка готовности прода.** Воркфлоу `Readiness check` (`.github/workflows/readiness.yml`) каждый день в 06:10 UTC, вручную или при изменении `.github/readiness.request` заходит на сервер по SSH и прогоняет чеклист готовности из спецификации: ингест ADOK и Метрики за вчера, задержку данных, долю нераспознанных гео (< 1%), сверку с итогом ADOK (±2%), долю сайт-страна-дней с расходом, равенство бандла сумме сайтов, заполненность ID сайтов, время запроса страницы сайта за 30 дней (< 300 мс), воркер, ежедневные бэкапы и какие ключи не заданы в `/opt/tubestat/.env` (только имена). В лог попадают только счётчики, доли и статусы (`scripts/readiness.sql`, `scripts/readiness.sh`), без доменов и денег. Красный запуск — есть что чинить; GitHub присылает письмо о падении.
 
 Откат на предыдущую версию:
 

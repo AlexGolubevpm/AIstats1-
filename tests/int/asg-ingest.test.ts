@@ -69,7 +69,9 @@ describe("AdSpyglass ingest", () => {
 
   it("restating a day overwrites instead of duplicating", async () => {
     let rev = 3;
-    const { client } = fakeAsg(() => [{ name: "Japan", hits: 600, broker_income: rev }]);
+    const { client } = fakeAsg((u) => u.searchParams.get("group_by") === "website"
+      ? [{ name: "101. alpha.test", hits: 600, broker_income: rev }]
+      : [{ name: "Japan", hits: 600, broker_income: rev }]);
     const deps = { db, client, raw, runId: "r3" };
     await ingestSiteGeo(deps, [DATE], "a");
     rev = 3.5;
@@ -152,18 +154,50 @@ describe("AdSpyglass ingest", () => {
   it("device cut per site; devices table prefers it; country cut reconciled with the site total", async () => {
     const { client } = fakeAsg((u) => {
       const g = u.searchParams.get("group_by");
-      if (g === "website") return [{ name: "101. alpha.test", hits: 1000, broker_income: 10 }];
-      if (g === "country") return [{ name: "Japan", iso: "JP", hits: 1000, broker_income: 9 }]; // 10% below the site total
-      if (g === "device") return [{ name: "Desktop", hits: 600, impressions: 500, broker_income: 6 }, { name: "Mobile", hits: 400, impressions: 300, broker_income: 4 }];
+      if (g === "website") return [{ name: "101. alpha.test", hits: 1000, broker_income: 10, predicted_income: 10 }];
+      if (g === "country") return [{ name: "Japan", iso: "JP", hits: 1000, broker_income: 9, predicted_income: 9 }]; // own estimate 10% below the site's
+      if (g === "device") return [{ name: "Desktop", hits: 600, impressions: 500, broker_income: 0.5, predicted_income: 6 }, { name: "Mobile", hits: 400, impressions: 300, broker_income: 0, predicted_income: 4 }];
       return [];
     });
     const r = await ingestSiteGeo({ db, client, raw, runId: "d1" }, [DATE], "a");
     expect(r.failed).toEqual([expect.stringContaining("сверка с итогом ADOK — выручка по странам расходится на -10.0%")]);
     const devs = await db.factRevenueDevice.findMany({ orderBy: { pageLoads: "desc" } });
-    expect(devs.map((x) => [x.device, Number(x.revenueReported)])).toEqual([["DESKTOP", 6], ["MOBILE", 4]]);
+    expect(devs.map((x) => [x.device, Number(x.revenueReported)])).toEqual([["DESKTOP", 6], ["MOBILE", 4]]); // site total split by own revenue
     const { devicesTable } = await import("@/server/queries/reports");
     const t = await devicesTable({ from: DATE, to: DATE }, "a");
     expect(t.map((x) => [x.device, x.revenue])).toEqual([["DESKTOP", 6], ["MOBILE", 4]]); // not the UNKNOWN geo row
+  });
+
+  it("network revenue of the country and device cuts comes from the site total, not from the cut (2026-10-01: 2.58x)", async () => {
+    // Real ADOK behaviour: per-site cuts scope hits and predicted_income, but broker_income is
+    // inflated in the country cut and mostly missing in the device cut.
+    const website = [{ name: "101. alpha.test", hits: 1000, impressions: 900, broker_hits: 800, broker_income: 10, predicted_income: 11 }];
+    const country = [{ name: "Japan", iso: "JP", hits: 700, impressions: 600, broker_hits: 9000, broker_income: 600, predicted_income: 8.25 },
+      { name: "United States", iso: "US", hits: 300, impressions: 300, broker_hits: 4000, broker_income: 400, predicted_income: 2.75 }];
+    const device = [{ name: "Desktop", hits: 500, impressions: 450, broker_hits: 30, broker_income: 0.4, predicted_income: 5.5 },
+      { name: "Mobile", hits: 500, impressions: 450, broker_hits: 0, broker_income: 0, predicted_income: 5.5 }];
+    const { client } = fakeAsg((u) => ({ website, country, device } as Record<string, unknown>)[u.searchParams.get("group_by")!] ?? []);
+    const r = await ingestSiteGeo({ db, client, raw, runId: "b1" }, [DATE], "a");
+    expect(r.failed).toEqual([]);
+    const geo = await geoRows();
+    expect(geo.map((x) => [x.countryCode, Number(x.revenueReported), x.impsNetwork])).toEqual([["JP", 7.5, 533], ["US", 2.5, 267]]);
+    const [total] = await db.$queryRaw<{ r: number }[]>`SELECT SUM(revenue)::float8 r FROM v_site_geo_daily WHERE site_id = 'a'`;
+    expect(total.r).toBe(10); // equals the ADOK site total
+    const devs = await db.factRevenueDevice.findMany({ orderBy: { device: "asc" } });
+    expect(devs.map((x) => [x.device, Number(x.revenueReported), x.impsNetwork])).toEqual([["DESKTOP", 5, 400], ["MOBILE", 5, 400]]);
+  });
+
+  it("reprocessing re-applies the split to days stored before it, from raw only", async () => {
+    const own = new LocalRawStore(mkdtempSync(path.join(tmpdir(), "raw-")));
+    await own.put(rawKey("adspyglass", "website", DATE, "old"), [{ name: "101. alpha.test", hits: 1000, broker_income: 4, predicted_income: 4 }]);
+    await own.put(rawKey("adspyglass", "country/101", DATE, "old"), [{ name: "Japan", iso: "JP", hits: 1000, broker_income: 40, predicted_income: 3 },
+      { name: "Chile", iso: "CL", hits: 0, impressions: 0, broker_income: 9, predicted_income: 1 }]);
+    await own.put(rawKey("adspyglass", "device/101", DATE, "old"), [{ name: "Mobile", hits: 1000, broker_income: 0, predicted_income: 4 }]);
+    await db.factRevenueGeo.create({ data: { date: new Date(`${DATE}T00:00:00Z`), siteId: "a", networkId: (await db.network.findUniqueOrThrow({ where: { slug: "asg_all" } })).id,
+      countryCode: "JP", device: "UNKNOWN", pageLoads: 1000, revenueReported: "40" } });
+    await reprocessGeoFromRaw(db, own, await rawGeoKeys(db, own, DATE, DATE));
+    expect((await geoRows()).map((x) => [x.countryCode, Number(x.revenueReported)])).toEqual([["CL", 1], ["JP", 3]]);
+    expect((await db.factRevenueDevice.findMany()).map((x) => [x.device, Number(x.revenueReported)])).toEqual([["MOBILE", 4]]);
   });
 
   it("reconcile", () => {
@@ -185,7 +219,7 @@ describe("AdSpyglass ingest", () => {
     await ingestSiteGeo({ db, client, raw, runId: "r5" }, [DATE], "a");
     expect((await geoRows()).map((x) => x.countryCode)).toEqual(["XX"]);
     await db.countryAlias.create({ data: { source: "adspyglass", raw: "Atlantis", countryCode: "GR" } });
-    await reprocessGeoFromRaw(db, raw, [{ key: rawKey("adspyglass", "country/101", DATE, "r5"), date: DATE, siteId: "a" }]);
+    await reprocessGeoFromRaw(db, raw, [{ key: rawKey("adspyglass", "country/101", DATE, "r5"), date: DATE, siteId: "a", adsgSiteId: 101, cut: "country" }]);
     expect((await geoRows()).map((x) => x.countryCode)).toEqual(["GR"]);
     expect(calls).toHaveLength(4); // website totals + country + network + device during ingest; none during reprocess
   });
@@ -196,7 +230,10 @@ describe("AdSpyglass ingest", () => {
     await ingestSiteGeo({ db, client, raw: own, runId: "c1" }, [DATE], "a");
     await ingestSiteGeo({ db, client, raw: own, runId: "c2" }, [DATE], "a");
     const keys = await rawGeoKeys(db, own, DATE, DATE);
-    expect(keys).toEqual([{ key: rawKey("adspyglass", "country/101", DATE, "c2"), date: DATE, siteId: "a" }]);
+    expect(keys).toEqual([
+      { key: rawKey("adspyglass", "country/101", DATE, "c2"), date: DATE, siteId: "a", adsgSiteId: 101, cut: "country" },
+      { key: rawKey("adspyglass", "device/101", DATE, "c2"), date: DATE, siteId: "a", adsgSiteId: 101, cut: "device" },
+    ]);
     expect(await rawGeoKeys(db, own, "2026-01-01", "2026-01-02")).toEqual([]);
   });
 
