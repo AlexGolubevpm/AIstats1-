@@ -124,3 +124,35 @@ test("formats: the inventory grid lists places; a free place can be marked CPA",
   await deals.getByRole("button", { name: "Без места" }).click();
   await expect(deals.getByRole("cell", { name: /Sakura Media/ }).first()).toBeVisible(); // demo deals have no place yet
 });
+
+test("formats: period in the URL, bundle filter and grouping, a zone mapped by hand brings its revenue into the cell", async ({ page }) => {
+  await login(page, "/inventory");
+  // Period picker writes ?preset=; the sub-line carries the network revenue for it.
+  await page.locator("button[aria-haspopup=dialog]", { hasText: "7 дней" }).click();
+  await page.getByRole("button", { name: "30 дней", exact: true }).click();
+  await expect(page).toHaveURL(/preset=30d/);
+  // Bundle filter keeps only the bundle's sites; grouping adds a subtotal row per bundle.
+  await page.getByLabel("Бандл", { exact: true }).selectOption("jav");
+  await expect(page).toHaveURL(/bundle=jav/);
+  await expect(page.locator("tbody a[href^='/sites/']")).toHaveCount(4);
+  await page.getByLabel("Бандл", { exact: true }).selectOption("");
+  await expect(page).not.toHaveURL(/bundle=/); // links on the page carry the current filters, so wait for the reset to render
+  await expect(page.locator("tbody a[href^='/sites/']")).not.toHaveCount(4);
+  await page.getByRole("link", { name: "Группировать по бандлам" }).click();
+  await expect(page).toHaveURL(/group=bundle/);
+  await expect(page.getByRole("cell", { name: /^JAV · 4 сайтов/ })).toBeVisible();
+  await expect(page.getByRole("cell", { name: /^Топ-сайты · 3 сайтов/ })).toBeVisible();
+  await page.getByRole("link", { name: "Без группировки" }).click();
+  // Demo zones carry no place name, so every site shows "N зон без формата"; mapping one moves its money into the column.
+  const row = page.locator("tbody tr").first();
+  await expect(row.getByRole("button", { name: /зон без формата/ })).toBeVisible();
+  const freeBefore = await row.getByRole("button", { name: "свободно" }).count(); // an earlier test may have marked one CPA
+  await row.getByRole("button", { name: /зон без формата/ }).click();
+  const sheet = page.getByRole("dialog");
+  await expect(sheet.getByRole("cell", { name: "Banners_Sidebar" })).toBeVisible();
+  await sheet.getByLabel("Формат зоны Banners_Sidebar").selectOption("under_bar");
+  await expect(page.getByText("Формат зоны сохранён")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(row.getByRole("button", { name: "свободно" })).toHaveCount(freeBefore - 1);
+  await expect(row.getByRole("button", { name: /^\$[\d,.]+/ }).first()).toBeVisible();
+});

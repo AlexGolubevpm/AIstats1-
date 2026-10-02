@@ -3,9 +3,12 @@ import { DataTable } from "@/components/data/data-table";
 import type { Column } from "@/components/data/format-cell";
 import { PageHeader } from "@/components/layout/page-header";
 import { Section } from "@/components/ui/card";
+import { fmtMoney } from "@/lib/format";
+import { periodFromParams } from "@/lib/period";
+import { db } from "@/server/db";
 import { USE_LABEL, daysLeft } from "@/server/domain/inventory";
-import { inventoryDeals, inventoryGrid } from "@/server/queries/inventory";
-import { AddPlacement, PlaceButton } from "./client";
+import { inventoryDeals, inventoryGrid, type InventoryGrid } from "@/server/queries/inventory";
+import { AddPlacement, BundleSelect, PlaceButton, ZonesButton } from "./client";
 
 type Props = { searchParams: Promise<Record<string, string | undefined>> };
 
@@ -19,21 +22,49 @@ const STATUS: Record<string, string> = { ACTIVE: "активен", PAUSED: "па
 
 export default async function Inventory({ searchParams }: Props) {
   const sp = await searchParams;
+  const p = periodFromParams(sp, "7d");
   const onlyFree = sp.free === "1";
+  const groupByBundle = sp.group === "bundle";
   const today = new Date().toISOString().slice(0, 10);
-  const [grid, deals] = await Promise.all([inventoryGrid(today), inventoryDeals(today)]);
-  const sites = onlyFree ? grid.sites.filter((s) => s.free > 0) : grid.sites;
+  const [grid, deals, bundles] = await Promise.all([inventoryGrid(today, p), inventoryDeals(today), db.bundle.findMany({ orderBy: { title: "asc" } })]);
+  const bundle = sp.bundle && bundles.find((b) => b.slug === sp.bundle) ? sp.bundle : "";
+  let sites = grid.sites;
+  if (bundle) sites = sites.filter((s) => s.bundles.includes(bundle));
+  if (onlyFree) sites = sites.filter((s) => s.free > 0);
   const totalFree = grid.sites.reduce((a, s) => a + s.free, 0);
   const running = deals.filter((d) => d.status !== "ENDED");
   const endingSoon = running.filter((d) => d.daysLeft != null && d.daysLeft <= 7).length;
+  const unmapped = grid.sites.reduce((a, s) => a + s.unmapped, 0);
+  const href = (over: Record<string, string | undefined>) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries({ ...sp, ...over })) if (v) q.set(k, v);
+    const s = q.toString();
+    return `/inventory${s ? `?${s}` : ""}`;
+  };
+  const placeTitle = Object.fromEntries(grid.places.map((pl) => [pl.slug, pl.title]));
+
+  // Blocks: one per bundle (a site in two bundles is in both) + sites outside every bundle; or one block.
+  const blocks: { key: string; title: string | null; sites: InventoryGrid["sites"] }[] = groupByBundle
+    ? [
+      ...bundles.filter((b) => !bundle || b.slug === bundle).map((b) => ({ key: b.slug, title: b.title, sites: sites.filter((s) => s.bundles.includes(b.slug)) })).filter((b) => b.sites.length),
+      ...(bundle ? [] : [{ key: "_none", title: "Без бандла", sites: sites.filter((s) => !s.bundles.length) }].filter((b) => b.sites.length)),
+    ]
+    : [{ key: "all", title: null, sites }];
+  const sum = (rows: InventoryGrid["sites"], slug: string) => rows.reduce((a, r) => a + r.cells[slug].revenue, 0);
+  const shown = new Map(sites.map((s) => [s.id, s]));
+  const shownTotal = [...shown.values()].reduce((a, s) => a + s.revenue, 0);
+
   return (
     <>
-      <PageHeader title="Форматы"
-        sub={`Места на сайтах и чем они заняты · свободно ${totalFree} из ${grid.sites.length * grid.places.length} · фикс-дилов ${running.length}${endingSoon ? ` · заканчиваются за неделю: ${endingSoon}` : ""}`} />
+      <PageHeader title="Форматы" period={p}
+        sub={`Выручка по форматам за период ${fmtMoney(grid.revenue)} · свободно ${totalFree} из ${grid.sites.length * grid.places.length} мест · фикс-дилов ${running.length}${endingSoon ? ` · заканчиваются за неделю: ${endingSoon}` : ""}${unmapped ? ` · зон без формата: ${unmapped}` : ""}`} />
       <Section title="Места × сайты"
-        sub="Фикс и own deal — из дилов с указанным местом, ротация ASG — из зон AdSpyglass с этим местом в названии; остальное можно отметить вручную (клик по ячейке). Точка — дил заканчивается в течение недели"
-        actions={<div className="flex items-center gap-2">
-          <Link href={onlyFree ? "/inventory" : "/inventory?free=1"} className="rounded-md border border-border px-3 py-1.5 text-sm hover:bg-surface-hover">
+        sub="В ячейке — выручка формата на сайте за период (зоны AdSpyglass с этим форматом + фикс-дилы); цвет — чем занято. Клик по ячейке — подробности и ручная отметка. «N зон» у сайта — привязать зоны без формата"
+        actions={<div className="flex flex-wrap items-center gap-2">
+          <BundleSelect value={bundle} bundles={bundles.map((b) => ({ slug: b.slug, title: b.title }))} />
+          <Link href={href({ group: groupByBundle ? undefined : "bundle" })} className={`rounded-md border px-3 py-1.5 text-sm hover:bg-surface-hover ${groupByBundle ? "border-accent text-accent" : "border-border"}`}>
+            {groupByBundle ? "Без группировки" : "Группировать по бандлам"}</Link>
+          <Link href={href({ free: onlyFree ? undefined : "1" })} className={`rounded-md border px-3 py-1.5 text-sm hover:bg-surface-hover ${onlyFree ? "border-accent text-accent" : "border-border"}`}>
             {onlyFree ? "Все сайты" : "Только со свободными"}</Link>
           <AddPlacement />
         </div>}>
@@ -44,35 +75,31 @@ export default async function Inventory({ searchParams }: Props) {
           <table className="num w-full border-separate border-spacing-0 text-[12px]">
             <thead>
               <tr className="text-xs text-muted">
-                <th className="sticky left-0 z-10 h-9 border-b border-border bg-surface pl-5 pr-3 text-left font-medium">Сайт</th>
-                {grid.places.map((p) => (
-                  <th key={p.slug} className="h-9 min-w-24 border-b border-border px-2 text-left font-medium">
-                    <div className="leading-4">{p.title}</div><div className="text-[11px] font-normal text-faint">свободно {p.free}</div>
+                <th className="sticky left-0 z-10 h-10 border-b border-border bg-surface pl-5 pr-3 text-left font-medium">Сайт</th>
+                {grid.places.map((pl) => (
+                  <th key={pl.slug} className="h-10 min-w-24 border-b border-border px-2 text-left font-medium">
+                    <div className="leading-4">{pl.title}</div>
+                    <div className="text-[11px] font-normal text-faint">{fmtMoney(sum([...shown.values()], pl.slug))} · своб. {pl.free}</div>
                   </th>
                 ))}
+                <th className="h-10 border-b border-border px-3 text-right font-medium">Итого</th>
               </tr>
             </thead>
             <tbody>
-              {sites.map((s) => (
-                <tr key={s.id}>
-                  <td className="sticky left-0 z-10 h-9 border-b border-border/60 bg-surface pl-5 pr-3 font-mono">
-                    <Link href={`/sites/${s.domain}`} className="hover:underline">{s.domain}</Link>
-                  </td>
-                  {grid.places.map((p) => {
-                    const c = s.cells[p.slug];
-                    const soonest = c.deals.map((d) => daysLeft(d.endsAt, today)).filter((x): x is number => x != null).sort((a, b) => a - b)[0];
-                    return (
-                      <td key={p.slug} className="border-b border-border/60 px-1 py-1">
-                        <PlaceButton siteId={s.id} domain={s.domain} slug={p.slug} place={p.title} use={c.use} by={c.by} label={c.label} deals={c.deals}
-                          today={today} ending={soonest != null && soonest <= 7} className={TONE[c.use]}
-                          text={c.deals.length ? c.deals.map((d) => d.advertiser).join(", ") : SHORT[c.use]} />
-                      </td>
-                    );
-                  })}
-                </tr>
+              {blocks.map((b) => (
+                <BlockRows key={b.key} block={b} grid={grid} today={today} placeTitle={placeTitle} sum={sum} />
               ))}
-              {sites.length === 0 && <tr><td colSpan={grid.places.length + 1} className="py-8 text-center text-sm text-muted">{onlyFree ? "Свободных мест нет" : "Нет активных сайтов"}</td></tr>}
+              {sites.length === 0 && <tr><td colSpan={grid.places.length + 2} className="py-8 text-center text-sm text-muted">{onlyFree ? "Свободных мест нет" : "Нет активных сайтов"}</td></tr>}
             </tbody>
+            {sites.length > 0 && (
+              <tfoot>
+                <tr className="font-medium">
+                  <td className="sticky left-0 z-10 h-9 border-t border-border bg-surface pl-5 pr-3">Итого по сайтам{bundle ? " бандла" : ""}</td>
+                  {grid.places.map((pl) => <td key={pl.slug} className="h-9 border-t border-border px-3">{fmtMoney(sum([...shown.values()], pl.slug))}</td>)}
+                  <td className="h-9 border-t border-border px-3 text-right">{fmtMoney(shownTotal)}</td>
+                </tr>
+              </tfoot>
+            )}
           </table>
         </div>
       </Section>
@@ -94,6 +121,45 @@ export default async function Inventory({ searchParams }: Props) {
           }))}
           filters={[{ id: "soon", label: "Заканчиваются за 7 дней", column: "soon", op: "truthy" }, { id: "noplace", label: "Без места", column: "noPlace", op: "truthy" }]} />
       </Section>
+    </>
+  );
+}
+
+function BlockRows({ block, grid, today, placeTitle, sum }: {
+  block: { key: string; title: string | null; sites: InventoryGrid["sites"] }; grid: InventoryGrid; today: string;
+  placeTitle: Record<string, string>; sum: (rows: InventoryGrid["sites"], slug: string) => number;
+}) {
+  return (
+    <>
+      {block.title && (
+        <tr className="bg-surface-2 text-xs font-medium text-muted">
+          <td className="sticky left-0 z-10 h-8 border-b border-border/60 bg-surface-2 pl-5 pr-3">{block.title} · {block.sites.length} {block.sites.length === 1 ? "сайт" : "сайтов"}</td>
+          {grid.places.map((pl) => <td key={pl.slug} className="h-8 border-b border-border/60 px-3">{fmtMoney(sum(block.sites, pl.slug))}</td>)}
+          <td className="h-8 border-b border-border/60 px-3 text-right">{fmtMoney(block.sites.reduce((a, s) => a + s.revenue, 0))}</td>
+        </tr>
+      )}
+      {block.sites.map((s) => (
+        <tr key={s.id}>
+          <td className="sticky left-0 z-10 h-9 border-b border-border/60 bg-surface pl-5 pr-3">
+            <div className="flex items-center gap-2">
+              <Link href={`/sites/${s.domain}`} className="font-mono hover:underline">{s.domain}</Link>
+              <ZonesButton siteId={s.id} domain={s.domain} zones={s.zones} unmapped={s.unmapped} places={grid.places.map((pl) => ({ slug: pl.slug, title: pl.title }))} />
+            </div>
+          </td>
+          {grid.places.map((pl) => {
+            const c = s.cells[pl.slug];
+            const soonest = c.deals.map((d) => daysLeft(d.endsAt, today)).filter((x): x is number => x != null).sort((a, b) => a - b)[0];
+            return (
+              <td key={pl.slug} className="border-b border-border/60 px-1 py-1">
+                <PlaceButton siteId={s.id} domain={s.domain} slug={pl.slug} place={placeTitle[pl.slug]} use={c.use} by={c.by} label={c.label} deals={c.deals}
+                  today={today} ending={soonest != null && soonest <= 7} className={TONE[c.use]}
+                  text={c.revenue > 0 ? fmtMoney(c.revenue) : c.deals.length ? c.deals.map((d) => d.advertiser).join(", ") : SHORT[c.use]} />
+              </td>
+            );
+          })}
+          <td className="h-9 border-b border-border/60 px-3 text-right font-medium">{fmtMoney(s.revenue)}</td>
+        </tr>
+      ))}
     </>
   );
 }

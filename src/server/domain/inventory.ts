@@ -4,7 +4,11 @@
 export type PlaceUse = "ROTATION" | "OWN_DEAL" | "FIX" | "CPA" | "FREE" | "NONE";
 /** A deal as the grid shows it: who, for how much, from when to when. */
 export interface PlaceDeal { id: string; title: string; advertiser: string; price: string; basis: string; startsAt: string; endsAt: string | null; billedVia: "DIRECT" | "VIA_ASG" }
-export interface PlaceCell { use: PlaceUse; by: "deal" | "manual" | "zone" | "default"; label: string | null; deals: PlaceDeal[] }
+export interface PlaceCell {
+  use: PlaceUse; by: "deal" | "manual" | "zone" | "default"; label: string | null; deals: PlaceDeal[];
+  /** Period revenue of the place on the site: zones mapped to it + direct fix deals with it. */
+  revenue: number; imps: number;
+}
 
 /** Whole days from `today` to `endsAt`; null for an open-ended deal. */
 export function daysLeft(endsAt: string | null, today: string): number | null {
@@ -52,12 +56,14 @@ export function resolvePlace(i: {
   deals: PlaceDeal[];
   manual?: { use: PlaceUse; note: string | null } | null;
   zones: { name: string }[];
+  revenue?: number; imps?: number;
 }): PlaceCell {
+  const money = { revenue: i.revenue ?? 0, imps: i.imps ?? 0 };
   if (i.deals.length) {
     const fix = i.deals.filter((d) => d.billedVia === "DIRECT");
-    return { use: fix.length ? "FIX" : "OWN_DEAL", by: "deal", label: i.deals.map((d) => `${d.advertiser} — ${d.title}`).join(", "), deals: i.deals };
+    return { use: fix.length ? "FIX" : "OWN_DEAL", by: "deal", label: i.deals.map((d) => `${d.advertiser} — ${d.title}`).join(", "), deals: i.deals, ...money };
   }
-  if (i.manual) return { use: i.manual.use, by: "manual", label: i.manual.note, deals: [] };
-  if (i.zones.length) return { use: "ROTATION", by: "zone", label: i.zones.map((z) => z.name).join(", "), deals: [] };
-  return { use: "FREE", by: "default", label: null, deals: [] };
+  if (i.manual) return { use: i.manual.use, by: "manual", label: i.manual.note, deals: [], ...money };
+  if (i.zones.length) return { use: "ROTATION", by: "zone", label: i.zones.map((z) => z.name).join(", "), deals: [], ...money };
+  return { use: "FREE", by: "default", label: null, deals: [], ...money };
 }

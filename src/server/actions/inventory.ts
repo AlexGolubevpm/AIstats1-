@@ -1,7 +1,7 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { db } from "@/server/db";
-import { addPlacement, setPlacementUse } from "@/server/services/inventory";
+import { addPlacement, setPlacementUse, setZonePlacement } from "@/server/services/inventory";
 import { requireSession } from "@/server/session";
 import { guarded, opt, str, type ActionResult } from "./result";
 
@@ -20,5 +20,16 @@ export async function setPlacementUseAction(_: ActionResult, f: FormData): Promi
     await setPlacementUse(db, str(f, "siteId"), str(f, "slug"), str(f, "use"), opt(f, "note"));
     revalidatePath("/inventory");
     return { ok: true, message: "Сохранено" };
+  });
+}
+
+export async function setZonePlacementAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    await setZonePlacement(db, str(f, "zoneId"), opt(f, "slug"));
+    revalidatePath("/inventory");
+    const domain = opt(f, "domain");
+    if (domain) revalidatePath(`/sites/${domain}`);
+    return { ok: true, message: "Формат зоны сохранён" };
   });
 }
