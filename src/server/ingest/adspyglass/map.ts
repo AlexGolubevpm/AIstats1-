@@ -13,7 +13,44 @@ export function measures(r: AsgRow) {
     impsNetwork: Math.round(num(r.broker_hits)),
     clicks: Math.round(num(r.clicks)),
     revenue: num(r.broker_income),
+    // ADOK's own revenue estimate. Unlike broker_* it is scoped to the site in every per-site cut.
+    predicted: num(r.predicted_income),
   };
+}
+export type Measures = ReturnType<typeof measures>;
+
+export function addMeasures(a: Measures, b: Measures): Measures {
+  return { pageLoads: a.pageLoads + b.pageLoads, impsOwn: a.impsOwn + b.impsOwn, impsNetwork: a.impsNetwork + b.impsNetwork,
+    clicks: a.clicks + b.clicks, revenue: a.revenue + b.revenue, predicted: a.predicted + b.predicted };
+}
+
+/** Splits an integer total over weights (largest remainder): the parts always add up exactly. */
+export function apportion(total: number, weights: number[]): number[] {
+  const sum = weights.reduce((a, w) => a + Math.max(0, w), 0);
+  const w = sum > 0 ? weights.map((x) => Math.max(0, x)) : weights.map(() => 1);
+  const ws = sum > 0 ? sum : w.length;
+  if (!w.length) return [];
+  const exact = w.map((x) => (total * x) / ws), parts = exact.map(Math.floor);
+  let left = total - parts.reduce((a, x) => a + x, 0);
+  for (const i of exact.map((x, i) => [x - Math.floor(x), i]).sort((a, b) => b[0] - a[0]).map(([, i]) => i)) { if (left-- <= 0) break; parts[i]++; }
+  return parts;
+}
+
+/**
+ * Per-site country and device cuts: ADOK scopes the site's own fields (hits, impressions,
+ * clicks, predicted_income) to the site, but not the ad network side — broker_income is
+ * inflated up to 100x in the country cut and mostly missing in the device cut. The site total
+ * (website cut) is authoritative: its broker revenue and network impressions are spread over
+ * the cells by their own revenue estimate (then impressions, then loads), summing exactly.
+ * Without a site total the network side is zero: ADOK reported nothing for the site that day.
+ */
+export function allocateBroker<T extends { m: Measures }>(cells: T[], site: Measures | undefined): T[] {
+  const pick = (k: "predicted" | "impsOwn" | "pageLoads") => cells.map((c) => c.m[k]);
+  const anyOf = (xs: number[]) => xs.some((x) => x > 0);
+  const weights = anyOf(pick("predicted")) ? pick("predicted") : anyOf(pick("impsOwn")) ? pick("impsOwn") : pick("pageLoads");
+  const rev = apportion(Math.round((site?.revenue ?? 0) * 10_000), weights);
+  const imps = apportion(site?.impsNetwork ?? 0, anyOf(pick("impsOwn")) ? pick("impsOwn") : weights);
+  return cells.map((c, i) => ({ ...c, m: { ...c.m, revenue: rev[i] / 10_000, impsNetwork: imps[i] } }));
 }
 
 /** banner_view_rate may come as a fraction or a percentage. */
@@ -33,13 +70,12 @@ export interface GeoCell { countryCode: string; m: ReturnType<typeof measures> }
  * ADOK sends an `iso` field next to the name: a known code wins, the name is the fallback.
  */
 export function mapCountryRows(rows: AsgRow[], resolver: CountryResolver): GeoCell[] {
-  const acc = new Map<string, ReturnType<typeof measures>>();
+  const acc = new Map<string, Measures>();
   for (const r of rows) {
     const iso = typeof r.iso === "string" ? r.iso : null;
     const code = resolver.knows(iso) ? iso!.trim().toUpperCase() : resolver.resolve(String(r.name), "adspyglass");
     const m = measures(r), cur = acc.get(code);
-    acc.set(code, cur ? { pageLoads: cur.pageLoads + m.pageLoads, impsOwn: cur.impsOwn + m.impsOwn, impsNetwork: cur.impsNetwork + m.impsNetwork,
-      clicks: cur.clicks + m.clicks, revenue: cur.revenue + m.revenue } : m);
+    acc.set(code, cur ? addMeasures(cur, m) : m);
   }
   return [...acc].map(([countryCode, m]) => ({ countryCode, m }));
 }
@@ -70,8 +106,7 @@ export function mapNetworkRows(rows: AsgRow[]): NetworkCell[] {
   for (const r of rows) {
     const title = String(r.name ?? "").trim() || "unknown";
     const slug = networkSlug(title), m = measures(r), cur = acc.get(slug);
-    acc.set(slug, cur ? { slug, title: cur.title, m: { pageLoads: cur.m.pageLoads + m.pageLoads, impsOwn: cur.m.impsOwn + m.impsOwn,
-      impsNetwork: cur.m.impsNetwork + m.impsNetwork, clicks: cur.m.clicks + m.clicks, revenue: cur.m.revenue + m.revenue } } : { slug, title, m });
+    acc.set(slug, cur ? { slug, title: cur.title, m: addMeasures(cur.m, m) } : { slug, title, m });
   }
   return [...acc.values()];
 }
@@ -82,8 +117,7 @@ export function mapDeviceRows(rows: AsgRow[]): DeviceCell[] {
   const acc = new Map<string, DeviceCell>();
   for (const r of rows) {
     const device = normalizeDevice(String(r.name ?? "")), m = measures(r), cur = acc.get(device);
-    acc.set(device, cur ? { device, m: { pageLoads: cur.m.pageLoads + m.pageLoads, impsOwn: cur.m.impsOwn + m.impsOwn,
-      impsNetwork: cur.m.impsNetwork + m.impsNetwork, clicks: cur.m.clicks + m.clicks, revenue: cur.m.revenue + m.revenue } } : { device, m });
+    acc.set(device, cur ? { device, m: addMeasures(cur.m, m) } : { device, m });
   }
   return [...acc.values()];
 }

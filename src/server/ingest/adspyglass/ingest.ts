@@ -2,8 +2,11 @@
 //  - hourly: ONE account-level request per day (group_by=website) → site totals (country ZZ);
 //  - nightly: ONE account-level spot cut per day (the spot name carries the domain) → zones,
 //    and per site: country, network (adnetwork_squashed) and device cuts.
-// The country cut is reconciled with the account-level site total: > 2% apart is reported
-// (spec readiness check "revenue matches the AdSpyglass cabinet ±2%").
+// In the per-site country and device cuts ADOK scopes only the site's own fields; the ad network
+// side (broker_income, broker_hits) is not per site there, so the site total from the website cut
+// is spread over the cells instead (map.ts allocateBroker). The network cut is per site as is.
+// The country cut's own revenue estimate is reconciled with the site total: > 2% apart is
+// reported (spec readiness check "revenue matches the AdSpyglass cabinet ±2%").
 // ADOK scopes a report to a site only with platforms_ids[] (website_id is silently ignored).
 // Each per-site response is still checked against the site's own hits and rejected when it is
 // larger, so account data is never written into a site (docs/architecture/08-backend.md#asg-limits).
@@ -14,7 +17,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { CountryResolver } from "@/server/ingest/normalize";
 import { rawKey, type RawStore } from "@/server/ingest/raw-store";
 import { AsgClient, AsgError } from "./client";
-import { mapCountryRows, mapDeviceRows, mapNetworkRows, mapSpotRows, mapWebsiteRows, type DeviceCell, type GeoCell, type NetworkCell } from "./map";
+import { allocateBroker, mapCountryRows, mapDeviceRows, mapNetworkRows, mapSpotRows, mapWebsiteRows, type DeviceCell, type GeoCell, type Measures, type NetworkCell } from "./map";
 
 export interface AsgIngestDeps { db: PrismaClient; client: AsgClient; raw: RawStore; runId: string }
 
@@ -113,13 +116,16 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
   let rows = 0;
   const failed: string[] = [];
   for (const date of dates) {
-    const siteRows = mapWebsiteRows(await client.report({ from: date, to: date, groupBy: "website" })).filter((t) => t.adsgSiteId != null);
+    const websiteBody = await client.report({ from: date, to: date, groupBy: "website" });
+    await raw.put(rawKey("adspyglass", "website", date, runId), websiteBody); // the split's reference, kept for reprocessing
+    const siteRows = mapWebsiteRows(websiteBody).filter((t) => t.adsgSiteId != null);
+    const siteTotal = new Map(siteRows.map((t) => [t.adsgSiteId!, t.m]));
     const totals = new Map(siteRows.map((t) => [t.adsgSiteId!, t.m.pageLoads]));
-    const revenueById = new Map(siteRows.map((t) => [t.adsgSiteId!, t.m.revenue]));
     for (const s of sites) {
       try {
         const body = await client.report({ from: date, to: date, groupBy: "country", websiteId: s.adsgSiteId! });
-        const cells = mapCountryRows(body, resolver);
+        const rawCells = mapCountryRows(body, resolver);
+        const cells = allocateBroker(rawCells, siteTotal.get(s.adsgSiteId!));
         const hits = cells.reduce((a, c) => a + c.m.pageLoads, 0);
         if (!scopedToSite(hits, totals.get(s.adsgSiteId!))) {
           const why = `AdSpyglass игнорирует website_id (${s.domain} ${date}: ответ в ${(hits / Math.max(1, totals.get(s.adsgSiteId!) ?? 1)).toFixed(1)}× больше сайта)`;
@@ -136,12 +142,12 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
           rows += await writeNetworks(db, date, s.id, nets);
         } else failed.push(`${s.domain} ${date}: сетки не по сайту — пропущены`);
         const devBody = await client.report({ from: date, to: date, groupBy: "device", websiteId: s.adsgSiteId! });
-        const devs = mapDeviceRows(devBody);
+        const devs = allocateBroker(mapDeviceRows(devBody), siteTotal.get(s.adsgSiteId!));
         if (scopedToSite(devs.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
           await raw.put(rawKey("adspyglass", `device/${s.adsgSiteId}`, date, runId), devBody);
           rows += await writeDevices(db, date, s.id, devs);
         } else failed.push(`${s.domain} ${date}: устройства не по сайту — пропущены`);
-        const gap = reconcile(cells.reduce((a, c) => a + c.m.revenue, 0), revenueById.get(s.adsgSiteId!));
+        const gap = reconcile(rawCells.reduce((a, c) => a + c.m.predicted, 0), siteTotal.get(s.adsgSiteId!)?.predicted);
         if (gap != null) failed.push(`${s.domain} ${date}: сверка с итогом ADOK — выручка по странам расходится на ${(gap * 100).toFixed(1)}%`);
       } catch (e) {
         if (e instanceof AsgError && (e.pausesQueue || e.kind === "budget")) throw e; // stop the whole run
@@ -246,26 +252,52 @@ export async function ingestSiteZones(deps: AsgIngestDeps, dates: string[], site
   return { rows, failed };
 }
 
-/** Re-applies country mapping from stored raw responses (after an alias was fixed) — no API calls. */
-export async function reprocessGeoFromRaw(db: PrismaClient, raw: RawStore, keys: { key: string; date: string; siteId: string }[]): Promise<number> {
+/** Site totals of a day from the latest stored website response (adsgSiteId → measures). */
+export async function siteTotalsFromRaw(raw: RawStore, date: string): Promise<Map<number, Measures> | null> {
+  const keys = await raw.list(`raw/adspyglass/website/${date}/`);
+  if (!keys.length) return null;
+  const rows = mapWebsiteRows((await raw.get(keys.at(-1)!)) as never).filter((t) => t.adsgSiteId != null);
+  return new Map(rows.map((t) => [t.adsgSiteId!, t.m]));
+}
+
+/**
+ * Rewrites country and device rows from stored raw responses — no API calls. Used after an
+ * alias was mapped and to re-apply the network revenue split to days ingested before it.
+ * A day without a stored website response has no site total to split by: its cells are
+ * written as the cut reported them (the behaviour before the split existed).
+ */
+export async function reprocessGeoFromRaw(db: PrismaClient, raw: RawStore, keys: RawCutKey[]): Promise<number> {
   const resolver = await loadResolver(db);
   const netId = await networkId(db);
+  const totals = new Map<string, Map<number, Measures> | null>();
   let rows = 0;
-  for (const k of keys) rows += await writeGeo(db, k.date, k.siteId, mapCountryRows((await raw.get(k.key)) as never, resolver), "country", netId);
+  for (const k of keys) {
+    if (!totals.has(k.date)) totals.set(k.date, await siteTotalsFromRaw(raw, k.date));
+    const day = totals.get(k.date);
+    const split = <T extends { m: Measures }>(cells: T[]) => (day ? allocateBroker(cells, day.get(k.adsgSiteId)) : cells);
+    const body = (await raw.get(k.key)) as never;
+    rows += k.cut === "country"
+      ? await writeGeo(db, k.date, k.siteId, split(mapCountryRows(body, resolver)), "country", netId)
+      : await writeDevices(db, k.date, k.siteId, split(mapDeviceRows(body)));
+  }
   return rows;
 }
+
+export interface RawCutKey { key: string; date: string; siteId: string; adsgSiteId: number; cut: "country" | "device" }
 
 /**
  * Latest stored country response per site × day in a window (runs are ordered by cuid, so the
  * lexicographically last key of a day is the latest run).
  */
-export async function rawGeoKeys(db: PrismaClient, raw: RawStore, from: string, to: string): Promise<{ key: string; date: string; siteId: string }[]> {
+export async function rawGeoKeys(db: PrismaClient, raw: RawStore, from: string, to: string): Promise<RawCutKey[]> {
   const sites = new Map((await db.site.findMany({ where: { adsgSiteId: { not: null } } })).map((s) => [String(s.adsgSiteId), s.id]));
-  const latest = new Map<string, { key: string; date: string; siteId: string }>();
-  for (const key of await raw.list("raw/adspyglass/country/")) {
-    const m = /^raw\/adspyglass\/country\/(\d+)\/(\d{4}-\d{2}-\d{2})\//.exec(key);
-    if (!m || m[2] < from || m[2] > to || !sites.has(m[1])) continue;
-    latest.set(`${m[1]}|${m[2]}`, { key, date: m[2], siteId: sites.get(m[1])! });
+  const latest = new Map<string, RawCutKey>();
+  for (const cut of ["country", "device"] as const) {
+    for (const key of await raw.list(`raw/adspyglass/${cut}/`)) {
+      const m = new RegExp(`^raw/adspyglass/${cut}/(\\d+)/(\\d{4}-\\d{2}-\\d{2})/`).exec(key);
+      if (!m || m[2] < from || m[2] > to || !sites.has(m[1])) continue;
+      latest.set(`${cut}|${m[1]}|${m[2]}`, { key, date: m[2], siteId: sites.get(m[1])!, adsgSiteId: Number(m[1]), cut });
+    }
   }
   return [...latest.values()];
 }
