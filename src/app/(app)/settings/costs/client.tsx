@@ -116,7 +116,7 @@ export function SourceShare({ slug, percent }: { slug: string; percent: number }
   return (
     <ActionForm action={sourceShareAction} submit="Сохранить" className="flex items-end gap-2">
       <input type="hidden" name="slug" value={slug} />
-      <FormField name="revShare" label="Доля выручки в расход, %"><Input name="revShare" inputMode="decimal" defaultValue={String(percent)} className="num w-24" /></FormField>
+      <FormField name="revShare" label="В расход, %"><Input name="revShare" inputMode="decimal" defaultValue={String(percent)} className="num w-24" /></FormField>
     </ActionForm>
   );
 }

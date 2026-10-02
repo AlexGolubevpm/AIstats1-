@@ -28,9 +28,10 @@ describe("traffic sources", () => {
     ] });
     await db.factCost.create({ data: { date, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", rateModel: "REVSHARE", rate: "1", cost: "6", origin: "ASG" } });
     const t = await sourcesTable(P, "s1");
-    expect(t.map((r) => [r.source, r.loads, r.revenue, r.cost, r.margin])).toEqual([["TubeCrown", 750, 6, 6, 0], ["Direct", 250, 4, 0, 4]]);
+    expect(t.map((r) => [r.source, r.loads, r.reported, r.cost])).toEqual([["TubeCrown", 750, 6, 6], ["Direct", 250, 4, 0]]);
     expect(t[0].loadsShare).toBeCloseTo(0.75);
-    expect(t[1].revPer1k).toBeCloseTo(16);
+    expect(t[0].costPer1k).toBeCloseTo(8);
+    expect([t[0].share, t[1].share]).toEqual([1, 0]);
   });
 });
 

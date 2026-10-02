@@ -163,7 +163,7 @@ export async function devicesTable(p: Period, siteId: string) {
   }).sort((a, b) => b.revenue - a.revenue);
 }
 
-/** ADOK traffic sources of a site: volume, revenue their traffic earned, and its cost (revshare). */
+/** ADOK traffic sources of a site: volume and what was paid to each (ADOK labels that sum "revenue"). */
 export async function sourcesTable(p: Period, siteId: string) {
   const rows = await db.$queryRaw<Raw[]>`
     SELECT s.title source, s."revShare"::float8 share_paid, SUM(f."pageLoads")::float8 loads, SUM(f."impsOwn")::float8 imps, SUM(f."revenueReported")::float8 revenue,
@@ -171,11 +171,11 @@ export async function sourcesTable(p: Period, siteId: string) {
     FROM "FactTrafficSource" f JOIN "CostSource" s ON s.slug = f."sourceSlug"
     WHERE f."siteId" = ${siteId} AND f.date BETWEEN ${D(p.from)} AND ${D(p.to)}
     GROUP BY f."siteId", f."sourceSlug", s.title, s."revShare"`;
-  const total = rows.reduce((a, r) => a + n(r.revenue), 0), loadsTotal = rows.reduce((a, r) => a + n(r.loads), 0);
+  const costTotal = rows.reduce((a, r) => a + n(r.cost), 0), loadsTotal = rows.reduce((a, r) => a + n(r.loads), 0);
   return rows.map((r) => {
-    const revenue = n(r.revenue), cost = n(r.cost), loads = n(r.loads);
-    return { source: String(r.source), loads, loadsShare: m.share(loads, loadsTotal), revenue, revPer1k: m.revPer1kLoads(revenue, loads),
-      cost, margin: revenue - cost, revShare: n(r.share_paid), share: m.share(revenue, total) };
+    const reported = n(r.revenue), cost = n(r.cost), loads = n(r.loads);
+    return { source: String(r.source), loads, loadsShare: m.share(loads, loadsTotal), reported, cost,
+      costPer1k: m.revPer1kLoads(cost, loads), revShare: n(r.share_paid), share: m.share(cost, costTotal) };
   }).sort((a, b) => b.loads - a.loads);
 }
 

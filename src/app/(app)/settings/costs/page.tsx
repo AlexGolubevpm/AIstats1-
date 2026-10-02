@@ -59,7 +59,7 @@ export default async function CostsSettings() {
           ))}</ul>
         )}
       </Section>
-      <Section title="Источники трафика из AdSpyglass" sub="Расход = выручка, которую принёс трафик источника, × доля. 100% — ревшара целиком, 0% — бесплатный трафик (Direct). Считается каждую ночь вместе с выгрузкой">
+      <Section title="Источники трафика из AdSpyglass" sub="Расход = сколько заплачено источнику: сумма из ADOK (там она называется «выручка») × доля. 100% — вся сумма, 0% — бесплатный трафик (Direct). Считается каждую ночь вместе с выгрузкой">
         {asgSources.length === 0 ? <p className="text-sm text-muted">Появятся после первой ночной выгрузки AdSpyglass</p> : (
           <ul className="divide-y divide-border">{asgSources.map((s) => (
             <li key={s.slug} className="flex flex-wrap items-end justify-between gap-4 py-3">
