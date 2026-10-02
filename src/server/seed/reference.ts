@@ -1,6 +1,7 @@
 // Reference data every environment needs: countries with tiers, known country aliases,
 // networks with fixed colours, traffic sources. Idempotent — safe to run on every deploy.
 import countries from "../../../prisma/data/countries.json" with { type: "json" };
+import { DEFAULT_PLACEMENTS } from "@/server/domain/inventory";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { SEED_ALIASES } from "@/server/ingest/normalize";
 
@@ -37,4 +38,5 @@ export async function seedReference(db: PrismaClient): Promise<void> {
     await db.network.upsert({ where: { slug: n.slug }, create: { ...n }, update: { isSystem: "isSystem" in n ? n.isSystem : false } });
   }
   for (const s of COST_SOURCES) await db.costSource.upsert({ where: { slug: s.slug }, create: s, update: {} });
+  for (const p of DEFAULT_PLACEMENTS) await db.placement.upsert({ where: { slug: p.slug }, create: p, update: {} });
 }

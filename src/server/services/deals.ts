@@ -224,17 +224,19 @@ export async function correctPeriod(db: PrismaClient, periodId: string, input: E
 // ---------- deal terms ----------
 
 const TERM_FIELDS = ["title", "format", "paymentBasis", "price", "geoScope", "geoExclude", "startsAt", "endsAt", "billingPeriod",
-  "paymentTermsDays", "counterSource", "billedVia", "notes"] as const;
+  "paymentTermsDays", "counterSource", "billedVia", "notes", "placementSlug"] as const;
 
 export async function saveDeal(db: PrismaClient, raw: DealInput, id?: string, reason?: string | null): Promise<string> {
   const i = validateDeal(raw);
   const known = await db.site.count({ where: { id: { in: i.siteIds } } });
   if (known !== i.siteIds.length) throw new DealRuleError("sites", "Сайт не найден", "siteIds");
+  if (i.placementSlug && !(await db.placement.findUnique({ where: { slug: i.placementSlug } }))) throw new DealRuleError("placement", "Формат не найден", "placementSlug");
   const advertiser = await db.advertiser.upsert({ where: { name: i.advertiser }, create: { name: i.advertiser }, update: {} });
   const data = {
     title: i.title, advertiserId: advertiser.id, format: i.format as never, paymentBasis: i.paymentBasis, price: i.price, geoScope: i.geoScope,
     geoExclude: i.geoExclude, startsAt: d(i.startsAt), endsAt: i.endsAt ? d(i.endsAt) : null, billingPeriod: i.billingPeriod,
     paymentTermsDays: i.paymentTermsDays, counterSource: i.counterSource, billedVia: i.billedVia, notes: i.notes || null,
+    placementSlug: i.placementSlug || null,
   };
   const sites = i.siteIds.map((siteId) => ({ siteId, zoneId: i.zoneBySite?.[siteId] || null }));
   if (!id) {

@@ -25,7 +25,7 @@ export default async function Deals({ searchParams }: { searchParams: Promise<Re
   return (
     <>
       <PageHeader title="Фикс-дилы" sub="Прямые сделки вне аукциона AdSpyglass: что идёт, сколько принесло, кто нам должен"
-        period={tab === "deals" ? p : undefined} actions={<DealFormButton sites={opts.sites} advertisers={opts.advertisers} label="Новый дил" />} />
+        period={tab === "deals" ? p : undefined} actions={<DealFormButton sites={opts.sites} advertisers={opts.advertisers} placements={opts.placements} label="Новый дил" />} />
       <nav className="flex gap-1 border-b border-border">
         {TABS.map(([t, label]) => (
           <Link key={t} href={q({ tab: t === "deals" ? undefined : t })} className={cn("-mb-px border-b-2 px-3 py-2 text-sm", tab === t ? "border-accent font-medium text-accent" : "border-transparent text-muted hover:text-text")}>

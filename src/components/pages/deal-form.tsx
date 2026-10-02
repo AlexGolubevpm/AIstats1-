@@ -11,14 +11,14 @@ export interface DealFormSite { id: string; domain: string; zones: { id: string;
 export interface DealFormValues {
   id?: string; title?: string; advertiser?: string; format?: string; paymentBasis?: string; price?: string; siteIds?: string[]; zoneBySite?: Record<string, string | null>;
   geoScope?: string; geoExclude?: boolean; startsAt?: string; endsAt?: string | null; billingPeriod?: string; paymentTermsDays?: number;
-  counterSource?: string; billedVia?: string; notes?: string | null; hasPeriods?: boolean;
+  counterSource?: string; billedVia?: string; notes?: string | null; hasPeriods?: boolean; placementSlug?: string | null;
 }
 
 const FORMATS = [["POPUNDER", "Popunder"], ["BANNER", "Баннер"], ["NATIVE", "Нативка"], ["SLIDER", "Слайдер"], ["OUTSTREAM", "Outstream"], ["INVIDEO", "In-video"], ["INPAGEPUSH", "In-page push"], ["OTHER", "Другое"]];
 const BASIS = [["PER_1000_LOADS", "За 1000 загрузок"], ["CPM_ADVERTISER", "CPM по счётчику рекламодателя"], ["CPM_OWN", "CPM по нашему счётчику"], ["FLAT_DAILY", "Флэт в сутки"], ["FLAT_PERIOD", "Флэт за период"]];
 
-export function DealFormButton({ sites, advertisers, values = {}, label, variant = "primary" }: {
-  sites: DealFormSite[]; advertisers: string[]; values?: DealFormValues; label: string; variant?: "primary" | "secondary";
+export function DealFormButton({ sites, advertisers, placements = [], values = {}, label, variant = "primary" }: {
+  sites: DealFormSite[]; advertisers: string[]; placements?: { slug: string; title: string }[]; values?: DealFormValues; label: string; variant?: "primary" | "secondary";
 }) {
   const [open, setOpen] = useState(false);
   const [picked, setPicked] = useState<Set<string>>(new Set(values.siteIds ?? []));
@@ -40,6 +40,9 @@ export function DealFormButton({ sites, advertisers, values = {}, label, variant
             <FormField name="title" label="Название"><Input name="title" defaultValue={values.title} required placeholder="Спонсорский баннер в шапке" /></FormField>
             <FormField name="format" label="Формат">
               <Select name="format" defaultValue={values.format ?? "BANNER"}>{FORMATS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select>
+            </FormField>
+            <FormField name="placementSlug" label="Место на сайте" hint="Займёт это место во вкладке «Форматы»">
+              <Select name="placementSlug" defaultValue={values.placementSlug ?? ""}><option value="">Не указано</option>{placements.map((p) => <option key={p.slug} value={p.slug}>{p.title}</option>)}</Select>
             </FormField>
             <FormField name="billedVia" label="Как платит" hint="Через AdSpyglass — выручка уже в own_deals, не задваиваем">
               <Select name="billedVia" defaultValue={values.billedVia ?? "DIRECT"}><option value="DIRECT">Напрямую нам</option><option value="VIA_ASG">Через AdSpyglass</option></Select>

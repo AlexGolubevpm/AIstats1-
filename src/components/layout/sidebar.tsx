@@ -3,7 +3,7 @@
 // yellow dot when older than 2 h, red when the last run failed.
 import {
   ArrowLeftRight, BarChart3, ChevronDown, ChevronsLeft, ChevronsRight, CircleDollarSign, Globe, LayoutDashboard, Layers, LogOut, Moon, Settings,
-  Sun, TriangleAlert,
+  LayoutGrid, Sun, TriangleAlert,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -28,6 +28,7 @@ const NAV = [
   { href: "/sites", label: "Сайты", icon: BarChart3 },
   { href: "/geo", label: "Гео", icon: Globe },
   { href: "/deals", label: "Фикс-дилы", icon: ArrowLeftRight, count: "deals" as const },
+  { href: "/inventory", label: "Форматы", icon: LayoutGrid },
   { href: "/alerts", label: "Алерты", icon: TriangleAlert, count: "alerts" as const },
 ];
 

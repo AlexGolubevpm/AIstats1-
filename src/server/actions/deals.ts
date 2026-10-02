@@ -23,7 +23,7 @@ async function dealInput(f: FormData): Promise<DealInput> {
     startsAt: str(f, "startsAt"), endsAt: opt(f, "endsAt"), billingPeriod: (str(f, "billingPeriod") || "MONTH") as BillingPeriod,
     paymentTermsDays: int(f, "paymentTermsDays") ?? 30, counterSource: (str(f, "counterSource") || "ASG_ZONE") as DealInput["counterSource"],
     billedVia: (str(f, "billedVia") || "DIRECT") as DealInput["billedVia"], notes: opt(f, "notes"),
-    zoneBySite: Object.fromEntries(siteIds.map((id) => [id, opt(f, `zone_${id}`)])),
+    zoneBySite: Object.fromEntries(siteIds.map((id) => [id, opt(f, `zone_${id}`)])), placementSlug: opt(f, "placementSlug"),
   };
 }
 

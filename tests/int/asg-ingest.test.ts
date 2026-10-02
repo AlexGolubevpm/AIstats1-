@@ -85,12 +85,13 @@ describe("AdSpyglass ingest", () => {
     const { client } = fakeAsg(() => [
       { name: "491. Banners_Footer_A (alpha.test)", hits: 1000, impressions: 5000, banner_view_rate: 12, broker_income: 0.5 },
       { name: "492. Popunder (alpha.test)", hits: 1000, impressions: 900, broker_income: 2 },
+      { name: "493. Tablink 2 (alpha.test)", hits: 1000, impressions: 100, broker_income: 0.1 },
     ]);
     await ingestSiteZones({ db, client, raw, runId: "r4" }, [DATE], "a");
     const zones = await db.zone.findMany({ orderBy: { adsgZoneId: "asc" } });
-    expect(zones.map((z) => [z.format, z.position])).toEqual([["BANNER", "footer"], ["POPUNDER", null]]);
+    expect(zones.map((z) => [z.format, z.position, z.placementSlug])).toEqual([["BANNER", "footer", null], ["POPUNDER", null, null], ["OTHER", null, "tablink_2"]]);
     const facts = await db.factRevenueZone.findMany({ orderBy: { impsOwn: "desc" } });
-    expect(facts.map((f) => f.views)).toEqual([600, 0]);
+    expect(facts.map((f) => f.views)).toEqual([600, 0, 0]);
   });
 
   it("zones of all sites come from one account-level spot request, split by domain", async () => {

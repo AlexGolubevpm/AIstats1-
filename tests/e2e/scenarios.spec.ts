@@ -105,3 +105,16 @@ test("readiness: a site page over 30 days renders in under a second", async ({ p
   expect(r.status()).toBe(200);
   expect(ms, `server render took ${ms} ms`).toBeLessThan(1000);
 });
+
+test("formats: the inventory grid lists places; a free place can be marked CPA", async ({ page }) => {
+  await login(page, "/inventory");
+  await expect(page.getByRole("columnheader", { name: /Tablink 1/ })).toBeVisible();
+  await page.locator("table").getByRole("button", { name: "свободно" }).first().click();
+  await page.getByRole("dialog").locator("select[name=use]").selectOption("CPA");
+  await page.getByRole("dialog").locator("input[name=note]").fill("e2e offer");
+  await page.getByRole("dialog").getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText("Сохранено")).toBeVisible();
+  await expect(page.locator("table").getByRole("button", { name: "CPA" }).first()).toBeVisible();
+  await page.getByRole("link", { name: "Только со свободными" }).click();
+  await expect(page).toHaveURL(/free=1/);
+});

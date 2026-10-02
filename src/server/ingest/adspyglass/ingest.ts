@@ -14,6 +14,7 @@
 // so a day is never counted twice whichever job ran last.
 import Decimal from "decimal.js";
 import type { PrismaClient } from "@/generated/prisma/client";
+import { matchPlacement } from "@/server/domain/inventory";
 import { CountryResolver } from "@/server/ingest/normalize";
 import { rawKey, type RawStore } from "@/server/ingest/raw-store";
 import { AsgClient, AsgError } from "./client";
@@ -248,6 +249,7 @@ export async function ingestSiteZones(deps: AsgIngestDeps, dates: string[], site
   const { db, client, raw, runId } = deps;
   const sites = await db.site.findMany({ where: { status: "ACTIVE", ...(siteFilter ? { id: siteFilter } : {}) } });
   const byDomain = new Map(sites.map((s) => [s.domain, s]));
+  const places = await db.placement.findMany();
   let rows = 0;
   const failed: string[] = [];
   for (const date of dates) {
@@ -266,7 +268,7 @@ export async function ingestSiteZones(deps: AsgIngestDeps, dates: string[], site
           for (const c of cells) {
             const zone = await tx.zone.upsert({
               where: { adsgZoneId: c.adsgZoneId },
-              create: { adsgZoneId: c.adsgZoneId, siteId, name: c.name, format: c.format, position: c.position },
+              create: { adsgZoneId: c.adsgZoneId, siteId, name: c.name, format: c.format, position: c.position, placementSlug: matchPlacement(c.name, places) },
               update: { name: c.name },
             });
             await tx.factRevenueZone.upsert({

@@ -159,6 +159,7 @@ export interface DealInput {
   title: string; advertiser: string; format: string; paymentBasis: PaymentBasis; price: string; siteIds: string[];
   geoScope: string[]; geoExclude: boolean; startsAt: string; endsAt: string | null; billingPeriod: BillingPeriod; paymentTermsDays: number;
   counterSource: "ASG_ZONE" | "METRIKA" | "MANUAL"; billedVia: "DIRECT" | "VIA_ASG"; notes?: string | null; zoneBySite?: Record<string, string | null>;
+  placementSlug?: string | null; // the ad place the deal takes on its sites (inventory)
 }
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;

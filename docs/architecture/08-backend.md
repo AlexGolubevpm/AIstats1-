@@ -73,6 +73,7 @@ tests/                       см. 10-testing
 | --- | --- | --- |
 | `FactCost` | + `origin: RATE \| IMPORT`, + `importBatchId?` | Импорт перекрывает расчёт; откат импорта |
 | `FactRevenueNetwork` | новая: дата × сайт × сетка (разрез `adnetwork_squashed`, без страны — ADOK не отдаёт сетку × страну) | Сравнение сеток и флор по сайту; в `v_network_geo` строки с `country_code = 'ZZ'` заменяют общий `asg_all` за тот же сайт-день |
+| `Placement`, `SitePlacement` | новые: каталог мест на сайтах и ручное состояние места на сайте (`PlacementUse`: ROTATION, OWN_DEAL, FIX, CPA, FREE, NONE); `Deal.placementSlug`, `Zone.placementSlug` | Вкладка «Форматы» (`/inventory`): какие места заняты и какие свободны |
 | `FactTrafficSource` | новая: дата × сайт × источник трафика (разрез `traffic_source`): загрузки, показы, клики, сумма, которую ADOK называет выручкой (= сколько заплачено источнику) | Вкладка «Источники» сайта; база расхода по ревшаре ([ADR 0006](../adr/0006-traffic-source-cost-revshare.md)) |
 | `CostSource` | + `revShare` (доля этой суммы, идущая в расход; Direct — 0), + `asgName` (имя в ADOK) | Расход = сумма ADOK × `revShare`; ставки `CostRate` к источникам из ADOK не применяются |
 | `FactCost` | + `origin = ASG`, `rateModel = REVSHARE`; страна `ZZ` (разреза источник × страна в ADOK нет) | Маржа и ROMI по сайту и бандлу; по странам расход источников не раскладывается |
