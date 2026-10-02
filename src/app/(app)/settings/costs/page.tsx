@@ -2,9 +2,9 @@ import { Section } from "@/components/ui/card";
 import { fmtDate, fmtMoney } from "@/lib/format";
 import { db } from "@/server/db";
 import { sitesWithoutRates } from "@/server/services/settings";
-import { AddRateButton, AddSource, DeleteRate, ImportCosts, RecalcForm, RevertImport } from "./client";
+import { AddRateButton, AddSource, DeleteRate, ImportCosts, RecalcForm, RevertImport, SourceShare } from "./client";
 
-const MODEL: Record<string, string> = { CPU: "за уника", CPM: "CPM", CPC: "CPC", FLAT: "флэт/сутки" };
+const MODEL: Record<string, string> = { CPU: "за уника", CPM: "CPM", CPC: "CPC", FLAT: "флэт/сутки", REVSHARE: "ревшара" };
 
 export default async function CostsSettings() {
   const [rates, sources, sites, batches, noRate] = await Promise.all([
@@ -16,6 +16,7 @@ export default async function CostsSettings() {
   ]);
   const siteName = new Map(sites.map((s) => [s.id, s.domain]));
   const srcName = new Map(sources.map((s) => [s.slug, s.title]));
+  const asgSources = sources.filter((s) => s.asgName);
   const today = new Date().toISOString().slice(0, 10);
   return (
     <>
@@ -58,8 +59,18 @@ export default async function CostsSettings() {
           ))}</ul>
         )}
       </Section>
-      <Section title="Источники закупки" sub="Валюта всегда USD">
-        <ul className="flex flex-wrap gap-2 text-sm">{sources.map((s) => <li key={s.slug} className="rounded-full border border-border px-3 py-1">{s.title} <span className="font-mono text-xs text-faint">{s.slug}</span></li>)}</ul>
+      <Section title="Источники трафика из AdSpyglass" sub="Расход = выручка, которую принёс трафик источника, × доля. 100% — ревшара целиком, 0% — бесплатный трафик (Direct). Считается каждую ночь вместе с выгрузкой">
+        {asgSources.length === 0 ? <p className="text-sm text-muted">Появятся после первой ночной выгрузки AdSpyglass</p> : (
+          <ul className="divide-y divide-border">{asgSources.map((s) => (
+            <li key={s.slug} className="flex flex-wrap items-end justify-between gap-4 py-3">
+              <span className="text-sm">{s.title} <span className="font-mono text-xs text-faint">{s.slug}</span></span>
+              <SourceShare slug={s.slug} percent={Number(s.revShare) * 100} />
+            </li>
+          ))}</ul>
+        )}
+      </Section>
+      <Section title="Другие источники закупки" sub="Для ставок и импорта CSV. Валюта всегда USD">
+        <ul className="flex flex-wrap gap-2 text-sm">{sources.filter((s) => !s.asgName).map((s) => <li key={s.slug} className="rounded-full border border-border px-3 py-1">{s.title} <span className="font-mono text-xs text-faint">{s.slug}</span></li>)}</ul>
         <AddSource />
       </Section>
     </>

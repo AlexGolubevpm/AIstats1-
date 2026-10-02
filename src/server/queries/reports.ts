@@ -163,6 +163,22 @@ export async function devicesTable(p: Period, siteId: string) {
   }).sort((a, b) => b.revenue - a.revenue);
 }
 
+/** ADOK traffic sources of a site: volume, revenue their traffic earned, and its cost (revshare). */
+export async function sourcesTable(p: Period, siteId: string) {
+  const rows = await db.$queryRaw<Raw[]>`
+    SELECT s.title source, s."revShare"::float8 share_paid, SUM(f."pageLoads")::float8 loads, SUM(f."impsOwn")::float8 imps, SUM(f."revenueReported")::float8 revenue,
+           COALESCE((SELECT SUM(c.cost) FROM "FactCost" c WHERE c."siteId" = f."siteId" AND c."sourceSlug" = f."sourceSlug" AND c.date BETWEEN ${D(p.from)} AND ${D(p.to)}), 0)::float8 cost
+    FROM "FactTrafficSource" f JOIN "CostSource" s ON s.slug = f."sourceSlug"
+    WHERE f."siteId" = ${siteId} AND f.date BETWEEN ${D(p.from)} AND ${D(p.to)}
+    GROUP BY f."siteId", f."sourceSlug", s.title, s."revShare"`;
+  const total = rows.reduce((a, r) => a + n(r.revenue), 0), loadsTotal = rows.reduce((a, r) => a + n(r.loads), 0);
+  return rows.map((r) => {
+    const revenue = n(r.revenue), cost = n(r.cost), loads = n(r.loads);
+    return { source: String(r.source), loads, loadsShare: m.share(loads, loadsTotal), revenue, revPer1k: m.revPer1kLoads(revenue, loads),
+      cost, margin: revenue - cost, revShare: n(r.share_paid), share: m.share(revenue, total) };
+  }).sort((a, b) => b.loads - a.loads);
+}
+
 /** Geo rows for one site, each with networks in that country (the nested table). */
 export async function siteGeoWithNetworks(p: Period, siteId: string) {
   const geo = await geoTable(p, { siteIds: [siteId] }, 0);

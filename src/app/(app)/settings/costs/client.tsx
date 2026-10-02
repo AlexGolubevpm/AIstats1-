@@ -6,7 +6,7 @@ import { Input, Select } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
 import { useToast } from "@/components/ui/toast";
 import { fmtMoney } from "@/lib/format";
-import { addRateAction, addSourceAction, applyImportAction, deleteRateAction, previewImportAction, revertImportAction, runJobAction } from "@/server/actions/settings";
+import { addRateAction, addSourceAction, sourceShareAction, applyImportAction, deleteRateAction, previewImportAction, revertImportAction, runJobAction } from "@/server/actions/settings";
 import type { ImportPreview } from "@/server/services/costs";
 
 type Opt = { id: string; label: string };
@@ -108,6 +108,15 @@ export function AddSource() {
     <ActionForm action={addSourceAction} submit="Добавить источник" className="flex flex-wrap items-end gap-3">
       <FormField name="slug" label="Слаг"><Input name="slug" required className="w-40 font-mono" /></FormField>
       <FormField name="title" label="Название"><Input name="title" required className="w-48" /></FormField>
+    </ActionForm>
+  );
+}
+
+export function SourceShare({ slug, percent }: { slug: string; percent: number }) {
+  return (
+    <ActionForm action={sourceShareAction} submit="Сохранить" className="flex items-end gap-2">
+      <input type="hidden" name="slug" value={slug} />
+      <FormField name="revShare" label="Доля выручки в расход, %"><Input name="revShare" inputMode="decimal" defaultValue={String(percent)} className="num w-24" /></FormField>
     </ActionForm>
   );
 }

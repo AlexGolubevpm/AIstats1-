@@ -25,6 +25,9 @@ test("2. overview → bundle → site → geo; the URL keeps the cut and Back re
   await expect(page.locator("table").getByRole("button", { name: "Свернуть" }).first()).toBeVisible();
   await page.goBack();
   await expect(page).toHaveURL(siteUrl);
+  await page.getByRole("link", { name: "Источники" }).last().click();
+  await expect(page).toHaveURL(/by=sources/);
+  await expect(page.getByText("Ошибка")).toHaveCount(0);
 });
 
 test("3. add a site in settings → it is listed", async ({ page }) => {

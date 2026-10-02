@@ -15,16 +15,21 @@ import { dealMultiplier } from "@/lib/metrics";
 import { periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
 import { D, dailyTotals, kpis } from "@/server/queries/common";
-import { devicesTable, formatsTable, networksTable, siteGeoWithNetworks, zonesTable } from "@/server/queries/reports";
+import { devicesTable, formatsTable, networksTable, siteGeoWithNetworks, sourcesTable, zonesTable } from "@/server/queries/reports";
 
 type Props = { params: Promise<{ domain: string }>; searchParams: Promise<Record<string, string | undefined>> };
-const TABS = [{ id: "zones", label: "Зоны" }, { id: "formats", label: "Форматы" }, { id: "networks", label: "Сетки" }, { id: "geo", label: "Гео" }, { id: "devices", label: "Девайсы" }];
+const TABS = [{ id: "zones", label: "Зоны" }, { id: "formats", label: "Форматы" }, { id: "networks", label: "Сетки" }, { id: "geo", label: "Гео" }, { id: "devices", label: "Девайсы" }, { id: "sources", label: "Источники" }];
 
 const ZONE_COLS: Column[] = [
   { id: "zone", header: "Зона", kind: "text" }, { id: "format", header: "Формат", kind: "text" }, { id: "position", header: "Позиция", kind: "text" },
   { id: "imps", header: "Показы", kind: "int" }, { id: "views", header: "Видимые", kind: "int" }, { id: "viewRate", header: "View rate", kind: "percent" },
   { id: "cpm", header: "CPM", kind: "cpm" }, { id: "viewableCpm", header: "Viewable CPM", kind: "cpm" }, { id: "revenue", header: "Выручка", kind: "money" },
   { id: "share", header: "Доля", kind: "share" },
+];
+const SOURCE_COLS: Column[] = [
+  { id: "source", header: "Источник трафика", kind: "text" }, { id: "loads", header: "Page loads", kind: "int" }, { id: "loadsShare", header: "Доля трафика", kind: "share" },
+  { id: "revenue", header: "Выручка", kind: "money", tooltip: "Сколько заработал трафик источника (ADOK)" }, { id: "revPer1k", header: "Rev/1000 loads", kind: "cpm" },
+  { id: "cost", header: "Расход", kind: "money", tooltip: "Выручка трафика × доля источника (Настройки → Расход)" }, { id: "margin", header: "Маржа", kind: "money" },
 ];
 const NESTED_NET: Column[] = [
   { id: "network", header: "Сетка в этой стране", kind: "text" }, { id: "pageLoads", header: "Page loads", kind: "int" }, { id: "volShare", header: "Доля объёма", kind: "share" },
@@ -67,6 +72,10 @@ export default async function SitePage({ params, searchParams }: Props) {
     const g = await siteGeoWithNetworks(p, site.id);
     table = <DataTable id="g" exportName={`${site.domain}-geo`} defaultSort={{ id: "pageLoads", dir: "desc" }} columns={GEO_COLS} nestedColumns={NESTED_NET}
       rows={geoRows(g).map((r) => ({ ...r, _children: r.children }))} filters={[{ id: "loss", label: "Только убыточные", column: "margin", op: "lt", value: 0 }]} />;
+  } else if (by === "sources") {
+    const src = await sourcesTable(p, site.id);
+    table = <DataTable id="s" exportName={`${site.domain}-sources`} defaultSort={{ id: "loads", dir: "desc" }} columns={SOURCE_COLS}
+      rows={src.map((r) => ({ ...r, _key: r.source }))} />;
   } else {
     const d = await devicesTable(p, site.id);
     table = <DataTable id="d" exportName={`${site.domain}-devices`} defaultSort={{ id: "revenue", dir: "desc" }}

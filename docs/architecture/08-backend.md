@@ -73,6 +73,9 @@ tests/                       см. 10-testing
 | --- | --- | --- |
 | `FactCost` | + `origin: RATE \| IMPORT`, + `importBatchId?` | Импорт перекрывает расчёт; откат импорта |
 | `FactRevenueNetwork` | новая: дата × сайт × сетка (разрез `adnetwork_squashed`, без страны — ADOK не отдаёт сетку × страну) | Сравнение сеток и флор по сайту; в `v_network_geo` строки с `country_code = 'ZZ'` заменяют общий `asg_all` за тот же сайт-день |
+| `FactTrafficSource` | новая: дата × сайт × источник трафика (разрез `traffic_source`): загрузки, показы, клики, выручка трафика источника | Вкладка «Источники» сайта; база расхода по ревшаре ([ADR 0006](../adr/0006-traffic-source-cost-revshare.md)) |
+| `CostSource` | + `revShare` (доля выручки трафика, отдаваемая источнику; Direct — 0), + `asgName` (имя в ADOK) | Расход = выручка трафика × `revShare`; ставки `CostRate` к источникам из ADOK не применяются |
+| `FactCost` | + `origin = ASG`, `rateModel = REVSHARE`; страна `ZZ` (разреза источник × страна в ADOK нет) | Маржа и ROMI по сайту и бандлу; по странам расход источников не раскладывается |
 | `FactRevenueDevice` | новая: дата × сайт × устройство (разрез `device`) | Вкладка «Девайсы» сайта; в `FactRevenueGeo` устройство у реальных данных `UNKNOWN` |
 | `FactRevenue` → `FactRevenueGeo` + `FactRevenueZone` | Два факта вместо одного с `zoneId = null` / `countryCode = 'ZZ'`, см. [ADR 0004](../adr/0004-revenue-facts-and-billing.md) | Разрезы AdSpyglass не складываются друг с другом |
 | `FactRevenueGeo` | `revenueConfirmed` заполняется выплатой `AsgPayout` пропорционально отчётной выручке | Подтверждение выплат AdSpyglass |
@@ -112,7 +115,7 @@ CSV текущей таблицы формируется в браузере и�
 | Джоб | Очередь | Расписание (UTC) | Окно | Что делает |
 | --- | --- | --- | --- | --- |
 | `asg:totals` | `asg` | каждый час, :05 | вчера + сегодня | Один запрос `group_by=website` на день окна → итоги по сайтам (`FactRevenueGeo`, страна `ZZ`) |
-| `asg:sites` | `asg` | 04:00 | T-`ASG_RESTATE_DAYS`…T-1 | В день: `group_by=website` (итоги для сверки) и `group_by=spot` по аккаунту (зона → сайт по домену в названии). По каждому сайту с `platforms_ids[]=<id>`: `group_by=country`, `adnetwork_squashed`, `device` → `FactRevenueGeo`, `FactRevenueNetwork`, `FactRevenueDevice`. Сайт × день = 3 запроса. Выручка по странам сверяется с итогом сайта из `group_by=website`: расхождение больше 2% (и больше $0.05) пишется в `IngestRun.error`, прогон — `partial` |
+| `asg:sites` | `asg` | 04:00 | T-`ASG_RESTATE_DAYS`…T-1 | В день: `group_by=website` (итоги для сверки) и `group_by=spot` по аккаунту (зона → сайт по домену в названии). По каждому сайту с `platforms_ids[]=<id>`: `group_by=country`, `adnetwork_squashed`, `device`, `traffic_source` → `FactRevenueGeo`, `FactRevenueNetwork`, `FactRevenueDevice`, `FactTrafficSource`, затем расход по ревшаре источников (`revshareCosts` → `FactCost`, `origin = ASG`). Сайт × день = 4 запроса (27 сайтов × 2 дня ≈ 220 в ночь + 48 почасовых — в бюджете 300). Выручка по странам сверяется с итогом сайта из `group_by=website`: расхождение больше 2% (и больше $0.05) пишется в `IngestRun.error`, прогон — `partial` |
 | `metrika` | `main` | каждый час, :15 | вчера + сегодня | → `FactTraffic` |
 | `derive` | `main` | 04:45 | T-4…T-1 | Расход по ставкам → прогноз дилов → алерты, строго по порядку |
 | `geo:reprocess` | `main` | по кнопке | 90 дней | Переписывает строки стран и устройств из сохранённого сырья (после сопоставления страны или чтобы заново разложить выручку сеток по итогу сайта), затем `derive`. Запросов к API нет |
@@ -154,7 +157,8 @@ ADOK блокирует клиентов за частые запросы (на 
 | `group_by=country` | 200, строка на страну, есть поле `iso` (маппинг берёт его первым) |
 | `group_by=spot` | 200, строка на зону: `"491410. Name (domain.com)"` — домен даёт сайт |
 | `group_by=adnetwork_squashed` | 200, строка на сетку (в UI — «Demand»), имя вида `AdPulsar.io` → слаг `adpulsar` |
-| `group_by=date`, `device`, `ad_type`, `platform`, `adnetwork_type` | 200 |
+| `group_by=date`, `device`, `ad_type`, `platform`, `adnetwork_type`, `campaign` | 200 |
+| `group_by=traffic_source` | 200, строка на источник трафика (Direct, TubeCrown, …), с `platforms_ids[]` — по сайту. Сумма выручки по источникам = выручка сайта (1.000×) — это выручка трафика источника; у источников на ревшаре она же расход ([ADR 0006](../adr/0006-traffic-source-cost-revshare.md)). Полей стоимости нет |
 | `group_by=broker|network|partner|demand|adnetwork` | 422 |
 | Два измерения (`website,country`, `group_by[]`, повтор параметра) | 422 или только одно измерение |
 | Фильтр по сайту `platforms_ids[]=<id>` | **работает** (ответ = 1.00× итога сайта) для стран, сеток и зон |

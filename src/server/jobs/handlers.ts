@@ -9,7 +9,7 @@ import { MetrikaClient } from "@/server/ingest/metrika/client";
 import { ingestMetrika } from "@/server/ingest/metrika/ingest";
 import type { RawStore } from "@/server/ingest/raw-store";
 import { asgPause, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
-import { recalcCosts } from "@/server/services/costs";
+import { recalcCosts, revshareCosts } from "@/server/services/costs";
 import { forecastDeals } from "@/server/services/deals";
 
 export interface JobContext { db: PrismaClient; cfg: Config; raw: RawStore; today?: string; fetchImpl?: typeof fetch }
@@ -60,7 +60,8 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
       }
       const g = await ingestSiteGeo(deps, days(w.from, w.to), data.siteId);
       const z = await ingestSiteZones(deps, days(w.from, w.to), data.siteId);
-      return { rows: g.rows + z.rows, requests: client.requests, partial: [...g.failed, ...z.failed] };
+      const c = await revshareCosts(db, w.from, w.to, data.siteId); // traffic source revenue → cost
+      return { rows: g.rows + z.rows + c, requests: client.requests, partial: [...g.failed, ...z.failed] };
     });
   }
   if (name === "metrika") {
@@ -82,7 +83,7 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
   }
   // derive: costs → deal forecast → alerts, in that order.
   return withIngestRun(db, { source: "derive", job: name, ...w }, async () => {
-    const costs = await recalcCosts(db, w.from, w.to, data.siteId);
+    const costs = await recalcCosts(db, w.from, w.to, data.siteId) + await revshareCosts(db, w.from, w.to, data.siteId);
     const deals = await forecastDeals(db, w.from, w.to);
     const sources = [cfg.asg.configured && "adspyglass", cfg.metrika.configured && "metrika"].filter(Boolean) as string[];
     const alerts = await evaluateAlerts({ db, asOf: todayOf(ctx), configuredSources: sources });

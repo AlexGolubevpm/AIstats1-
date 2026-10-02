@@ -200,6 +200,35 @@ describe("AdSpyglass ingest", () => {
     expect((await db.factRevenueDevice.findMany()).map((x) => [x.device, Number(x.revenueReported)])).toEqual([["MOBILE", 4]]);
   });
 
+  it("traffic sources per site: linked to seeded sources, new ones created paid, Direct free", async () => {
+    const { client, calls } = fakeAsg((u) => {
+      const g = u.searchParams.get("group_by");
+      if (g === "website") return [{ name: "101. alpha.test", hits: 1000, broker_income: 10 }];
+      if (g === "traffic_source") return [{ name: "TubeCrown", hits: 700, broker_income: 7 }, { name: "Direct", hits: 250, broker_income: 2.5 }, { name: "Alex Z", hits: 50, broker_income: 0.5 }];
+      return [];
+    });
+    const r = await ingestSiteGeo({ db, client, raw, runId: "t1" }, [DATE], "a");
+    expect(r.failed).toEqual([]);
+    expect(calls.find((c) => c.searchParams.get("group_by") === "traffic_source")?.searchParams.get("platforms_ids[]")).toBe("101");
+    const facts = await db.factTrafficSource.findMany({ orderBy: { pageLoads: "desc" } });
+    expect(facts.map((f) => [f.sourceSlug, f.pageLoads, Number(f.revenueReported)])).toEqual([["tubecrown", 700, 7], ["direct", 250, 2.5], ["alex_z", 50, 0.5]]);
+    const src = await db.costSource.findMany({ where: { asgName: { not: null } }, orderBy: { slug: "asc" } });
+    expect(src.map((s) => [s.slug, s.asgName, Number(s.revShare)])).toEqual([["alex_z", "Alex Z", 1], ["direct", "Direct", 0], ["tubecrown", "TubeCrown", 1]]);
+    expect(await raw.get(rawKey("adspyglass", "traffic_source/101", DATE, "t1"))).toHaveLength(3);
+  });
+
+  it("a traffic source cut larger than the site is not written", async () => {
+    const { client } = fakeAsg((u) => {
+      const g = u.searchParams.get("group_by");
+      if (g === "website") return [{ name: "101. alpha.test", hits: 1000, broker_income: 10 }];
+      if (g === "traffic_source") return [{ name: "TubeCrown", hits: 9000, broker_income: 70 }];
+      return [];
+    });
+    const r = await ingestSiteGeo({ db, client, raw, runId: "t2" }, [DATE], "a");
+    expect(r.failed).toEqual([expect.stringContaining("источники трафика не по сайту")]);
+    expect(await db.factTrafficSource.count()).toBe(0);
+  });
+
   it("reconcile", () => {
     expect(reconcile(100, 101)).toBeNull();
     expect(reconcile(0.03, 0)).toBeNull();
@@ -221,7 +250,7 @@ describe("AdSpyglass ingest", () => {
     await db.countryAlias.create({ data: { source: "adspyglass", raw: "Atlantis", countryCode: "GR" } });
     await reprocessGeoFromRaw(db, raw, [{ key: rawKey("adspyglass", "country/101", DATE, "r5"), date: DATE, siteId: "a", adsgSiteId: 101, cut: "country" }]);
     expect((await geoRows()).map((x) => x.countryCode)).toEqual(["GR"]);
-    expect(calls).toHaveLength(4); // website totals + country + network + device during ingest; none during reprocess
+    expect(calls).toHaveLength(5); // website totals + country + network + device + traffic source during ingest; none during reprocess
   });
 
   it("finds the latest raw country response per site and day", async () => {

@@ -12,7 +12,7 @@ import { clearData } from "@/server/seed/demo";
 import { loadDemo } from "@/server/seed/load-demo";
 import { applyCostImport, previewCostImport, revertCostImport, type ImportPreview } from "@/server/services/costs";
 import {
-  addCostRate, addCostSource, addSitesToBundle, deleteBundle, mapAlias, missingAsgSites, removeSitesFromBundle, saveBundle, saveNetwork, saveSite,
+  addCostRate, addCostSource, addSitesToBundle, setSourceShare, deleteBundle, mapAlias, missingAsgSites, removeSitesFromBundle, saveBundle, saveNetwork, saveSite,
   setBundleSites, setSitesStatus, type RateInput,
 } from "@/server/services/settings";
 import { requireSession } from "@/server/session";
@@ -116,6 +116,15 @@ export async function addSourceAction(_: ActionResult, f: FormData): Promise<Act
     await addCostSource(db, str(f, "slug"), str(f, "title"));
     revalidatePath("/settings/costs");
     return { ok: true, message: "Источник добавлен" };
+  });
+}
+
+export async function sourceShareAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    await setSourceShare(db, str(f, "slug"), str(f, "revShare"));
+    revalidatePath("/settings/costs");
+    return { ok: true, message: "Доля сохранена. Пересчитайте расход за нужный период" };
   });
 }
 

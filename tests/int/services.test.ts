@@ -1,7 +1,9 @@
 import Decimal from "decimal.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildNetwork, D1, D2 } from "@tests/factories/network";
-import { applyCostImport, previewCostImport, recalcCosts, revertCostImport } from "@/server/services/costs";
+import { applyCostImport, previewCostImport, recalcCosts, revertCostImport, revshareCosts } from "@/server/services/costs";
+import { setSourceShare } from "@/server/services/settings";
+import { RuleError } from "@/server/domain/errors";
 import { correctPeriod, enterPeriod, forecastDeals, markDisputed, recordPayment } from "@/server/services/deals";
 import { resetDb, testDb } from "./helpers";
 
@@ -15,6 +17,46 @@ beforeEach(async () => {
 
 const sumRevenue = async (dealId: string) =>
   new Decimal((await db.factFixDeal.aggregate({ _sum: { revenue: true }, where: { dealId } }))._sum.revenue?.toString() ?? 0).toString();
+
+describe("ADOK traffic sources as cost (revshare)", () => {
+  const traffic = async () => {
+    await db.factCost.deleteMany();
+    await db.costSource.update({ where: { slug: "tubecrown" }, data: { asgName: "TubeCrown" } });
+    await db.costSource.create({ data: { slug: "direct", title: "Direct", asgName: "Direct", revShare: 0 } });
+    await db.factTrafficSource.createMany({ data: [
+      { date: D1, siteId: "s1", sourceSlug: "tubecrown", pageLoads: 800, revenueReported: "6" },
+      { date: D1, siteId: "s1", sourceSlug: "direct", pageLoads: 200, revenueReported: "4" },
+    ] });
+  };
+
+  it("costs each paid source at the revenue its traffic earned × revShare; Direct is free", async () => {
+    await traffic();
+    expect(await revshareCosts(db, "2026-09-20", "2026-09-21")).toBe(1);
+    const c = await db.factCost.findFirstOrThrow({ where: { siteId: "s1", date: D1, sourceSlug: "tubecrown" } });
+    expect([c.countryCode, c.origin, c.rateModel, Number(c.cost), c.uniquesBought]).toEqual(["ZZ", "ASG", "REVSHARE", 6, 800]);
+    await setSourceShare(db, "tubecrown", "50");
+    await revshareCosts(db, "2026-09-20", "2026-09-21");
+    expect(Number((await db.factCost.findFirstOrThrow({ where: { sourceSlug: "tubecrown", date: D1 } })).cost)).toBe(3);
+    const [site] = await db.$queryRaw<{ cost: number }[]>`SELECT SUM(cost)::float8 cost FROM v_site_geo_daily WHERE site_id = 's1' AND date = ${D1}`;
+    expect(site.cost).toBe(3); // the view's margin now includes it
+  });
+
+  it("an imported cost wins; rates of ADOK sources are not applied on top", async () => {
+    await traffic();
+    await db.costRate.create({ data: { sourceSlug: "tubecrown", rateModel: "CPM", rate: "2", validFrom: D1 } });
+    expect(await recalcCosts(db, "2026-09-20", "2026-09-21")).toBe(0);
+    await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", rateModel: "FLAT", rate: "1", cost: "5", origin: "IMPORT" } });
+    expect(await revshareCosts(db, "2026-09-20", "2026-09-21")).toBe(0);
+    expect((await db.factCost.findMany()).map((c) => [c.origin, Number(c.cost)])).toEqual([["IMPORT", 5]]);
+  });
+
+  it("validates the share", async () => {
+    await expect(setSourceShare(db, "tubecrown", "120")).rejects.toBeInstanceOf(RuleError);
+    await expect(setSourceShare(db, "tubecrown", "abc")).rejects.toBeInstanceOf(RuleError);
+    await setSourceShare(db, "tubecrown", "12,5");
+    expect(Number((await db.costSource.findUniqueOrThrow({ where: { slug: "tubecrown" } })).revShare)).toBe(0.125);
+  });
+});
 
 describe("costs service", () => {
   it("recalculates from rates, keeping imported rows", async () => {

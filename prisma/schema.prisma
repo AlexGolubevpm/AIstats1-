@@ -35,6 +35,7 @@ model Site {
   revenueZn  FactRevenueZone[]
   revenueNet FactRevenueNetwork[]
   revenueDev FactRevenueDevice[]
+  trafficSrc FactTrafficSource[]
   traffic    FactTraffic[]
   costs      FactCost[]
   deals      FactFixDeal[]
@@ -239,8 +240,30 @@ model FactTraffic {
 }
 
 model CostSource {
-  slug  String @id // tubetraffic | tubecrown
-  title String
+  slug     String  @id // tubetraffic | tubecrown | direct …
+  title    String
+  // Share of the revenue an ADOK traffic source earned that is paid back to it (revshare):
+  // 1 = all of it (cost = that revenue), 0 = free traffic (Direct).
+  revShare Decimal @default(1) @db.Decimal(5, 4)
+  asgName  String? @unique // name in ADOK group_by=traffic_source
+
+  traffic FactTrafficSource[]
+}
+
+/// ADOK group_by=traffic_source per site: what each traffic source brought (volume and revenue).
+model FactTrafficSource {
+  date            DateTime   @db.Date
+  siteId          String
+  sourceSlug      String
+  pageLoads       Int        @default(0)
+  impsOwn         Int        @default(0)
+  clicks          Int        @default(0)
+  revenueReported Decimal    @default(0) @db.Decimal(12, 4)
+  site            Site       @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  source          CostSource @relation(fields: [sourceSlug], references: [slug], onUpdate: Cascade)
+
+  @@id([date, siteId, sourceSlug])
+  @@index([date])
 }
 
 enum RateModel {
@@ -248,11 +271,13 @@ enum RateModel {
   CPC
   CPU
   FLAT
+  REVSHARE // cost = revenue of the source's traffic × CostSource.revShare
 }
 
 enum CostOrigin {
   RATE // computed nightly from CostRate × uniques
   IMPORT // CSV / Google Sheets; always overrides RATE
+  ASG // from ADOK traffic sources × revShare; overridden by IMPORT
 }
 
 model FactCost {

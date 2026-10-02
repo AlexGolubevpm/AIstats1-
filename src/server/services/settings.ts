@@ -121,6 +121,13 @@ export async function addCostSource(db: PrismaClient, slug: string, title: strin
   await db.costSource.upsert({ where: { slug: s }, create: { slug: s, title: title.trim() }, update: { title: title.trim() } });
 }
 
+/** Revshare of an ADOK traffic source, in percent (0 = free traffic, 100 = all its revenue is paid back). */
+export async function setSourceShare(db: PrismaClient, slug: string, percent: string): Promise<void> {
+  const v = Number(percent.replace(",", "."));
+  if (!Number.isFinite(v) || v < 0 || v > 100) throw new RuleError("revShare", "Доля — от 0 до 100%", "revShare");
+  await db.costSource.update({ where: { slug }, data: { revShare: (v / 100).toFixed(4) } });
+}
+
 // ---------- networks ----------
 
 export const MAX_LEGEND_COLORS = 6;
