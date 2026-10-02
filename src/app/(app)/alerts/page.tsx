@@ -10,6 +10,7 @@ import { SnoozeButton } from "./snooze";
 const RULE_LABEL: Record<string, string> = {
   loss_geo: "Убыточное гео", waterfall_inversion: "Инверсия waterfall", discrepancy: "Дискрепанси", invisible_zone: "Невидимая зона",
   dead_zone: "Мёртвая зона", low_fill: "Низкий фил", deal_no_numbers: "Дил без цифр", overdue_payment: "Просроченная оплата", ingest_down: "Ингест",
+  deal_ending: "Фикс-дил заканчивается",
 };
 
 export default async function Alerts({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {

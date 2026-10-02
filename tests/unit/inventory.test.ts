@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PLACEMENTS, matchPlacement, placementSlug, resolvePlace } from "@/server/domain/inventory";
+import { DEFAULT_PLACEMENTS, daysLeft, matchPlacement, placementSlug, resolvePlace, type PlaceDeal } from "@/server/domain/inventory";
 
 describe("inventory", () => {
   it("the owner's ten places, with stable slugs", () => {
@@ -20,11 +20,21 @@ describe("inventory", () => {
 
   it("a running deal wins, then the manual state, then a rotation zone; else free", () => {
     const zones = [{ name: "Tablink 1" }];
-    expect(resolvePlace({ deals: [{ id: "d1", title: "Sponsor", billedVia: "DIRECT" }], manual: { use: "CPA", note: null }, zones }))
-      .toEqual({ use: "FIX", by: "deal", label: "Sponsor", dealIds: ["d1"] });
-    expect(resolvePlace({ deals: [{ id: "d2", title: "Own", billedVia: "VIA_ASG" }], zones }).use).toBe("OWN_DEAL");
+    const deal = (over: Partial<PlaceDeal>): PlaceDeal => ({ id: "d1", title: "Sponsor", advertiser: "Acme", price: "1000", basis: "флэт за период",
+      startsAt: "2026-09-01", endsAt: "2026-10-31", billedVia: "DIRECT", ...over });
+    const fix = resolvePlace({ deals: [deal({})], manual: { use: "CPA", note: null }, zones });
+    expect(fix).toMatchObject({ use: "FIX", by: "deal", label: "Acme — Sponsor" });
+    expect(fix.deals[0]).toMatchObject({ advertiser: "Acme", price: "1000", endsAt: "2026-10-31" });
+    expect(resolvePlace({ deals: [deal({ id: "d2", title: "Own", billedVia: "VIA_ASG" })], zones }).use).toBe("OWN_DEAL");
     expect(resolvePlace({ deals: [], manual: { use: "CPA", note: "offer X" }, zones })).toMatchObject({ use: "CPA", by: "manual", label: "offer X" });
     expect(resolvePlace({ deals: [], zones })).toMatchObject({ use: "ROTATION", by: "zone" });
     expect(resolvePlace({ deals: [], zones: [] })).toMatchObject({ use: "FREE", by: "default" });
+  });
+
+  it("days left: whole days, null when open-ended, negative after the end", () => {
+    expect(daysLeft("2026-10-09", "2026-10-02")).toBe(7);
+    expect(daysLeft("2026-10-02", "2026-10-02")).toBe(0);
+    expect(daysLeft("2026-09-30", "2026-10-02")).toBe(-2);
+    expect(daysLeft(null, "2026-10-02")).toBeNull();
   });
 });

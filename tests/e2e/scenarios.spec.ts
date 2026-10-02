@@ -117,4 +117,10 @@ test("formats: the inventory grid lists places; a free place can be marked CPA",
   await expect(page.locator("table").getByRole("button", { name: "CPA" }).first()).toBeVisible();
   await page.getByRole("link", { name: "Только со свободными" }).click();
   await expect(page).toHaveURL(/free=1/);
+  // The deals table under the grid lists the demo deals with who / how much / until when.
+  const deals = page.locator("section", { hasText: "Фикс-дилы" }).last();
+  await expect(deals.getByRole("cell", { name: /Sakura Media/ }).first()).toBeVisible();
+  await expect(deals.getByRole("columnheader", { name: "По" })).toBeVisible();
+  await deals.getByRole("button", { name: "Без места" }).click();
+  await expect(deals.getByRole("cell", { name: /Sakura Media/ }).first()).toBeVisible(); // demo deals have no place yet
 });

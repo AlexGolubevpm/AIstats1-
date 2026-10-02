@@ -35,6 +35,7 @@ export async function saveDealAction(_: ActionResult, f: FormData): Promise<Acti
   });
   if (r.error) return r;
   revalidatePath("/deals");
+  revalidatePath("/inventory"); // the Formats tab lists every deal
   if (!str(f, "id")) redirect(`/deals/${id}`);
   revalidatePath(`/deals/${id}`);
   return { ok: true, message: "Условия сохранены" };
@@ -46,6 +47,7 @@ export async function dealStatusAction(id: string, status: "ACTIVE" | "PAUSED" |
     await setDealStatus(db, id, status);
     revalidatePath(`/deals/${id}`);
     revalidatePath("/deals");
+    revalidatePath("/inventory");
     return { ok: true, message: status === "PAUSED" ? "Дил на паузе" : status === "ENDED" ? "Дил завершён" : "Дил активен" };
   });
 }
@@ -55,6 +57,7 @@ export async function deleteDealAction(id: string): Promise<ActionResult> {
   const r = await guarded(() => deleteDeal(db, id));
   if (r.error) return r;
   revalidatePath("/deals");
+  revalidatePath("/inventory"); // the Formats tab lists every deal
   redirect("/deals");
 }
 
