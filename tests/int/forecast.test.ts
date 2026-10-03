@@ -42,7 +42,7 @@ describe("recommendations query", () => {
     const list = await recommendations("2026-09-22");
     const ids = list.map((r) => r.id);
     expect(ids).toContain("alert:" + (await db.alert.findFirstOrThrow()).id);
-    expect(ids).toContain("zone-invisible:s1:Banners_Footer_A"); // 6 000 views of 60 000 impressions
+    expect(ids).toContain(`zone-invisible:${net.zone.id}`); // 6 000 views of 60 000 impressions over the week
     expect(ids.some((i) => i.startsWith("free:"))).toBe(true); // every factory site has 10 free places
     expect(list[0].level).toBe("CRITICAL");
     expect(list.every((r) => r.action && r.title && r.link)).toBe(true);

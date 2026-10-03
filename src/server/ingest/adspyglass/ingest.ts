@@ -13,6 +13,7 @@
 // Country-level rows for a (date, site) replace its site-total row, never add to it,
 // so a day is never counted twice whichever job ran last.
 import Decimal from "decimal.js";
+import { reapplyPayouts } from "@/server/services/finance";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { matchPlacement } from "@/server/domain/inventory";
 import { CountryResolver } from "@/server/ingest/normalize";
@@ -83,6 +84,7 @@ export async function ingestSiteTotals(deps: AsgIngestDeps, dates: string[]): Pr
     await db.appSetting.upsert({ where: { key: "asg_unknown_sites" }, create: { key: "asg_unknown_sites", value: JSON.stringify([...unknown]) },
       update: { value: JSON.stringify([...unknown]) } });
   }
+  await reapplyPayouts(db, dates); // a paid month keeps its confirmed amounts after the rows were rewritten
   return { rows, unknown: [...unknown] };
 }
 
@@ -163,6 +165,7 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
     }
   }
   await saveUnresolved(db, resolver);
+  await reapplyPayouts(db, dates);
   return { rows, failed };
 }
 
@@ -320,6 +323,7 @@ export async function reprocessGeoFromRaw(db: PrismaClient, raw: RawStore, keys:
       ? await writeGeo(db, k.date, k.siteId, split(mapCountryRows(body, resolver)), "country", netId)
       : await writeDevices(db, k.date, k.siteId, split(mapDeviceRows(body)));
   }
+  await reapplyPayouts(db, [...new Set(keys.map((k) => k.date))]);
   return rows;
 }
 

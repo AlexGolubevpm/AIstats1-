@@ -21,7 +21,7 @@ export interface InventoryGrid {
 
 /**
  * Sites × places. Revenue of a cell for the period = zone facts of the site's zones mapped to the
- * place + direct fix-deal facts of deals with that place (VIA_ASG money is inside the zone facts).
+ * place + fix-deal facts of deals with that place, DIRECT and VIA_ASG alike (own deals are not in the zone cut, CLAUDE.md).
  */
 export async function inventoryGrid(today = iso(new Date()), p?: Period): Promise<InventoryGrid> {
   const period = p ?? { from: iso(new Date(D(today).getTime() - 6 * 86_400_000)), to: today };
@@ -37,7 +37,7 @@ export async function inventoryGrid(today = iso(new Date()), p?: Period): Promis
       FROM "FactRevenueZone" f WHERE f.date BETWEEN ${D(period.from)} AND ${D(period.to)} GROUP BY 1`,
     db.$queryRaw<Raw[]>`SELECT f."siteId" site_id, d."placementSlug" slug, SUM(f.revenue)::float8 revenue, SUM(f."impsOwn")::float8 imps
       FROM "FactFixDeal" f JOIN "Deal" d ON d.id = f."dealId"
-      WHERE d."placementSlug" IS NOT NULL AND d."billedVia" = 'DIRECT' AND f.date BETWEEN ${D(period.from)} AND ${D(period.to)} GROUP BY 1, 2`,
+      WHERE d."placementSlug" IS NOT NULL AND f.date BETWEEN ${D(period.from)} AND ${D(period.to)} GROUP BY 1, 2`,
   ]);
   const key = (siteId: string, slug: string) => `${siteId}|${slug}`;
   const dealsAt = new Map<string, PlaceDeal[]>();

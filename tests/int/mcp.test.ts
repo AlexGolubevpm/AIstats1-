@@ -48,7 +48,9 @@ describe("MCP tools", () => {
 
   it("network matrix, zones, alerts, deals", async () => {
     const m = await getNetworkMatrix({ site: "one.test", ...P });
-    expect(m.map((x) => `${x.country}:${x.network}`)).toContain("JP:own_deals");
+    expect(m.map((x) => x.network)).toContain("own_deals");
+    expect(m[0].note).toMatch(/по сайту целиком/);
+    expect((await getPnl({ ...P, group_by: "site", site: "one.test" }))[0]).toMatchObject({ opex: 0, margin_after_opex: 42 - 34 }); // $40 + $2 own deal, cost $24 + $10
     const z = await getZones({ site: "one.test", ...P });
     expect(z[0]).toMatchObject({ zone: "Banners_Footer_A", view_rate: 0.1, invisible: true }); // 6000 views / 60000 imps
     await db.alert.create({ data: { rule: "loss_geo", entityKey: "s1:JP", level: "CRITICAL", title: "t", message: "m", link: "/sites/one.test", siteId: "s1", moneyAtRisk: "4", payload: {} } });

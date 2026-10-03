@@ -12,6 +12,10 @@ export interface Candidate {
 
 const n = (v: unknown) => (v == null ? 0 : Number(v));
 const money = (v: number) => `$${v.toFixed(2)}`;
+const int = (v: number) => v.toLocaleString("ru-RU");
+/** Country ZZ is "no country": per-site network cuts carry it. Alerts then speak about the site, not a country. */
+const where = (cc: string, domain: string) => (cc === "ZZ" ? `на ${domain}` : `в ${cc} на ${domain}`);
+const FORMAT_WORD: Record<string, string> = { POPUNDER: "Popunder", BANNER: "баннеров", NATIVE: "нативки", SLIDER: "слайдера", OUTSTREAM: "Outstream", INVIDEO: "In-video", INPAGEPUSH: "In-page push", OTHER: "прочих форматов" };
 const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 const day = (s: string) => new Date(`${s}T00:00:00Z`);
 
@@ -55,7 +59,7 @@ async function waterfallInversion({ db, asOf }: RuleContext): Promise<Candidate[
     WHERE r.price_rank > 3 AND r.vol_share > 0.30 AND r.loads > 10000`;
   return rows.map((r) => ({
     rule: "waterfall_inversion", entityKey: `site:${r.site_id}|country:${r.country_code}|net:${r.network_title}`, level: "WARNING",
-    title: `Инверсия waterfall: ${r.network_title} в ${r.country_code} на ${r.domain}`,
+    title: `Инверсия waterfall: ${r.network_title} ${where(r.country_code, r.domain)}`,
     message: `${r.network_title} — ${n(r.price_rank)}-я по цене, но держит ${pct(n(r.vol_share))} объёма. Переставить ниже в waterfall, объём отдать ${r.best}.`,
     link: `/sites/${r.domain}?by=networks&preset=7d`, siteId: r.site_id, moneyAtRisk: 0,
     payload: { network: r.network_title, country: r.country_code, volShare: n(r.vol_share), rank: n(r.price_rank) },
@@ -79,8 +83,8 @@ async function discrepancyRule({ db, asOf }: RuleContext): Promise<Candidate[]> 
     return {
       rule: "discrepancy", entityKey: `site:${r.site_id}|country:${r.country_code}|net:${r.network_title}`,
       level: critical ? "CRITICAL" : "WARNING",
-      title: `Дискрепанси ${pct(disc)}: ${r.network_title}, ${r.country_code}, ${r.domain}`,
-      message: `2 дня подряд: наши показы ${own.toLocaleString("en")}, у сетки ${net.toLocaleString("en")} (×${mult.toFixed(2)}).` +
+      title: `Дискрепанси ${pct(disc)}: ${r.network_title} ${where(r.country_code, r.domain)}`,
+      message: `2 дня подряд: наши показы ${int(own)}, у сетки ${int(net)} (×${mult.toFixed(2)}).` +
         (critical ? " Перевести дил на оплату за загрузку." : " Сверить счётчики."),
       link: `/sites/${r.domain}?by=networks&preset=7d`, siteId: r.site_id, moneyAtRisk: 0,
       payload: { own, network: net, discrepancy: disc, multiplier: mult },
@@ -139,8 +143,8 @@ async function lowFill({ db, asOf }: RuleContext): Promise<Candidate[]> {
     GROUP BY 1, 2, 3 HAVING SUM(f.page_loads) > 100000 AND SUM(f.imps_own)::numeric / SUM(f.page_loads) < 0.25`;
   return rows.map((r) => ({
     rule: "low_fill", entityKey: `site:${r.site_id}|format:${r.format}`, level: "WARNING",
-    title: `Низкий фил ${r.format} на ${r.domain}`,
-    message: `Fill rate ${pct(n(r.imps) / n(r.loads))} на ${n(r.loads).toLocaleString("en")} запросах за 7 дней. Подключить бэкфилл.`,
+    title: `Низкий фил ${FORMAT_WORD[r.format] ?? r.format} на ${r.domain}`,
+    message: `Fill rate ${pct(n(r.imps) / n(r.loads))} на ${int(n(r.loads))} запросах за 7 дней. Подключить бэкфилл.`,
     link: `/sites/${r.domain}?by=formats&preset=7d`, siteId: r.site_id, moneyAtRisk: 0,
     payload: { fillRate: n(r.imps) / n(r.loads), loads: n(r.loads) },
   }));

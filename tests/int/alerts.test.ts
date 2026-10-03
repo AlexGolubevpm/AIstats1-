@@ -180,3 +180,22 @@ describe("evaluateAlerts", () => {
     expect((await db.alert.findUniqueOrThrow({ where: { id: a.id } })).snoozedUntil).toBeNull();
   });
 });
+
+describe("alerts speak about the site when the network cut has no country", () => {
+  it("discrepancy and waterfall titles carry no «ZZ»", async () => {
+    const extra = await Promise.all(["trafficstars", "clickadu", "exoclick"].map((slug) => db.network.findUniqueOrThrow({ where: { slug } })));
+    const rows = extra.map((n, i) => ({ date: D1, siteId: "s2", networkId: n.id, countryCode: "ZZ", device: "UNKNOWN" as const,
+      pageLoads: i === 2 ? 60_000 : 5_000, impsOwn: 1_000, impsNetwork: 1_000, revenueReported: i === 2 ? "6" : String(20 - i) }));
+    rows.push({ date: D1, siteId: "s2", networkId: net.net.id, countryCode: "ZZ", device: "UNKNOWN", pageLoads: 5_000, impsOwn: 1_000, impsNetwork: 1_000, revenueReported: "30" });
+    await db.factRevenueGeo.deleteMany({ where: { siteId: "s2" } });
+    await db.factRevenueGeo.createMany({ data: rows });
+    for (const date of [D1, D2]) await db.factRevenueGeo.create({ data: { date, siteId: "s3", networkId: net.net.id, countryCode: "ZZ", device: "UNKNOWN", pageLoads: 10_000, impsOwn: 6_000, impsNetwork: 12_600, revenueReported: "5" } });
+    await db.factRevenueGeo.deleteMany({ where: { siteId: "s3", countryCode: { not: "ZZ" } } });
+    const w = await RULES.waterfallInversion(ctx());
+    expect(w.map((c) => c.title)).toEqual(["Инверсия waterfall: ExoClick на two.test"]);
+    const d = await RULES.discrepancyRule(ctx());
+    expect(d.some((c) => c.title.includes("ZZ"))).toBe(false);
+    expect(d.find((c) => c.siteId === "s3")?.title).toMatch(/^Дискрепанси .*: AdPulsar на three.test$/);
+    expect(d.find((c) => c.siteId === "s3")?.message).toMatch(/наши показы 12\u00a0000|наши показы 12\u202f000/); // ru-RU grouping (narrow no-break space), two days summed
+  });
+});

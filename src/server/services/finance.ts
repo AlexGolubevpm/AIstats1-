@@ -21,14 +21,18 @@ export const payoutDiff = (reported: Decimal.Value, received: Decimal.Value): nu
   return r.isZero() ? null : new Decimal(received).minus(r).div(r).toNumber();
 };
 
-export async function recordAsgPayout(db: PrismaClient, input: { month: string; amountReceived: string; receivedAt: string; note?: string | null }): Promise<{ reported: string; diff: number | null }> {
-  if (!/^\d{4}-\d{2}/.test(input.month)) throw new DealRuleError("month", "Укажите месяц", "month");
-  const received = parseDecimal(input.amountReceived);
-  if (!received.isFinite() || received.isNegative()) throw new DealRuleError("amount", "Сумма должна быть неотрицательным числом", "amountReceived");
-  const from = monthStart(input.month), to = nextMonth(from);
-  const reported = await reportedAsgRevenue(db, input.month);
-  if (reported.isZero()) throw new DealRuleError("empty", "За этот месяц нет выручки AdSpyglass — нечего подтверждать", "month");
-  const ratio = received.div(reported);
+/**
+ * Spreads a month's received payout over its FactRevenueGeo rows pro rata to reported revenue,
+ * exact to 1/10000 (remainder on the largest row). Re-run after any re-ingest of a day in a
+ * paid month: writeGeo recreates rows and would otherwise drop the confirmed amounts.
+ */
+export async function applyPayout(db: PrismaClient, month: string): Promise<boolean> {
+  const from = monthStart(month), to = nextMonth(from);
+  const payout = await db.asgPayout.findUnique({ where: { month: from } });
+  if (!payout) return false;
+  const reported = await reportedAsgRevenue(db, month);
+  if (reported.isZero()) return false;
+  const received = new Decimal(payout.amountReceived.toString()), ratio = received.div(reported);
   await db.$transaction(async (tx) => {
     await tx.$executeRaw`UPDATE "FactRevenueGeo" SET "revenueConfirmed" = ROUND("revenueReported" * ${ratio.toString()}::numeric, 4)
       WHERE date >= ${from} AND date < ${to}`;
@@ -38,9 +42,30 @@ export async function recordAsgPayout(db: PrismaClient, input: { month: string; 
       await tx.$executeRaw`UPDATE "FactRevenueGeo" SET "revenueConfirmed" = "revenueConfirmed" + ${rest.toString()}::numeric
         WHERE ctid = (SELECT ctid FROM "FactRevenueGeo" WHERE date >= ${from} AND date < ${to} ORDER BY "revenueReported" DESC LIMIT 1)`;
     }
+  });
+  return true;
+}
+
+/** Re-applies payouts of every paid month that the given dates touch (called after ingest writes). */
+export async function reapplyPayouts(db: PrismaClient, dates: string[]): Promise<number> {
+  const months = [...new Set(dates.map((d) => d.slice(0, 7)))];
+  let n = 0;
+  for (const m of months) if (await applyPayout(db, m)) n++;
+  return n;
+}
+
+export async function recordAsgPayout(db: PrismaClient, input: { month: string; amountReceived: string; receivedAt: string; note?: string | null }): Promise<{ reported: string; diff: number | null }> {
+  if (!/^\d{4}-\d{2}/.test(input.month)) throw new DealRuleError("month", "Укажите месяц", "month");
+  const received = parseDecimal(input.amountReceived);
+  if (!received.isFinite() || received.isNegative()) throw new DealRuleError("amount", "Сумма должна быть неотрицательным числом", "amountReceived");
+  const from = monthStart(input.month);
+  const reported = await reportedAsgRevenue(db, input.month);
+  if (reported.isZero()) throw new DealRuleError("empty", "За этот месяц нет выручки AdSpyglass — нечего подтверждать", "month");
+  await db.$transaction(async (tx) => {
     const data = { amountReported: reported.toString(), amountReceived: received.toString(), receivedAt: new Date(`${input.receivedAt}T00:00:00Z`), note: input.note || null };
     await tx.asgPayout.upsert({ where: { month: from }, create: { month: from, ...data }, update: data });
     await tx.auditLog.create({ data: { entity: "AsgPayout", entityId: input.month.slice(0, 7), field: "payout", after: received.toString(), reason: input.note || null } });
   });
+  await applyPayout(db, input.month);
   return { reported: reported.toString(), diff: payoutDiff(reported, received) };
 }

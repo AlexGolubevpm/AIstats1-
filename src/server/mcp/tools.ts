@@ -58,8 +58,12 @@ export async function getPnl(a: { date_from: string; date_to: string; group_by: 
   switch (a.group_by) {
     case "bundle": return (await bundlesTable(p)).filter((b) => !a.bundle || b.slug === a.bundle)
       .map(({ slug, title, sites, revenue, cost, margin, romi, uniques, rpm }) => ({ bundle: slug, title, sites, revenue, cost, margin, romi, uniques, rpm }));
-    case "site": return (await sitesTable(p, scope)).map(({ domain, revenue, cost, margin, romi, uniques, rpm, pageLoads }) =>
-      ({ site: domain, revenue, cost, margin, romi, uniques, rpm, rev_per_1k_loads: pageLoads ? (revenue / pageLoads) * 1000 : null }));
+    case "site": {
+      const [sites, opex] = await Promise.all([sitesTable(p, scope), opexBySite(p)]);
+      return sites.map(({ id, domain, revenue, cost, margin, romi, uniques, rpm, pageLoads }) =>
+        ({ site: domain, revenue, cost, margin, opex: opex.get(id) ?? 0, margin_after_opex: margin - (opex.get(id) ?? 0), romi, uniques, rpm,
+          rev_per_1k_loads: pageLoads ? (revenue / pageLoads) * 1000 : null, note: "margin — до опер. расходов; opex — только расходы, заведённые на этот сайт" }));
+    }
     case "country": return (await geoTable(p, scope, 0)).filter((g) => !scope.countryCode || g.country === scope.countryCode)
       .map(({ country, name, tier, uniques, pageLoads, revenue, cost, margin, romi, revPer1k }) =>
         ({ country, name, tier, uniques, page_loads: pageLoads, revenue, cost, margin, romi, rev_per_1k_loads: revPer1k }));
@@ -75,19 +79,20 @@ export async function getPnl(a: { date_from: string; date_to: string; group_by: 
   }
 }
 
+/** Operating expenses booked to a site in the period (network-wide entries have no site). */
+async function opexBySite(p: Period): Promise<Map<string, number>> {
+  const rows = await appDb.$queryRaw<{ site_id: string | null; v: number }[]>`SELECT site_id, SUM(amount)::float8 v FROM v_opex_daily WHERE date BETWEEN ${new Date(`${p.from}T00:00:00Z`)} AND ${new Date(`${p.to}T00:00:00Z`)} GROUP BY 1`;
+  return new Map(rows.filter((r) => r.site_id).map((r) => [r.site_id!, Number(r.v)]));
+}
+
+/** Networks of a site. ADOK has no network × country cut, so the matrix is per site; `country` is accepted for compatibility and noted. */
 export async function getNetworkMatrix(a: { site: string; date_from: string; date_to: string; country?: string }) {
   const p = period(a.date_from, a.date_to);
   const id = await siteId(a.site);
-  const cc = a.country?.toUpperCase();
-  const countries = cc ? [cc] : (await geoTable(p, { siteIds: [id] }, 10)).map((g) => g.country).filter(Boolean);
-  const out: Record<string, unknown>[] = [];
-  for (const c of countries) {
-    for (const n of await networksTable(p, { siteIds: [id] }, c)) {
-      out.push({ country: c, network: n.slug, page_loads: n.pageLoads, vol_share: n.volShare, fill_rate: n.fillRate, rev_per_1k_loads: n.revPer1k,
-        rank: n.rank, discrepancy: n.discrepancy, floor_recommendation: n.floor, below_floor: n.belowFloor, waterfall_inversion: n.inverted });
-    }
-  }
-  return out;
+  const nets = await networksTable(p, { siteIds: [id] });
+  return nets.map((n) => ({ network: n.slug, page_loads: n.pageLoads, vol_share: n.volShare, fill_rate: n.fillRate, rev_per_1k_loads: n.revPer1k,
+    rank: n.rank, discrepancy: n.discrepancy, floor_recommendation: n.floor, below_floor: n.belowFloor, waterfall_inversion: n.inverted,
+    note: a.country ? `по сайту целиком: ADOK не отдаёт сетку × страну (${a.country.toUpperCase()} проигнорирована)` : "по сайту целиком: ADOK не отдаёт сетку × страну" }));
 }
 
 export async function getZones(a: { site: string; date_from: string; date_to: string }) {

@@ -107,14 +107,14 @@ describe("inventory revenue, bundles and zone mapping", () => {
     expect(g2.sites.find((s) => s.id === "a")!.cells.under_bar.revenue).toBe(99);
   });
 
-  it("a direct fix deal adds its facts to the cell; a deal billed via ASG does not (its money is in the zone facts)", async () => {
+  it("fix deals with a place add their facts to the cell, direct and via ASG alike (own deals are not in the zone cut)", async () => {
     const direct = await deal({ placementSlug: "welcome_bar" });
     const own = await deal({ title: "Own", billedVia: "VIA_ASG", placementSlug: "tablink_1" });
     await db.factFixDeal.deleteMany();
     await fix(direct, "a", "2026-10-01", "33.3333");
     await fix(own, "a", "2026-10-01", "50");
     const a = (await inventoryGrid(TODAY)).sites.find((s) => s.id === "a")!;
-    expect([a.cells.welcome_bar.use, a.cells.welcome_bar.revenue, a.cells.tablink_1.use, a.cells.tablink_1.revenue]).toEqual(["FIX", 33.3333, "OWN_DEAL", 0]);
+    expect([a.cells.welcome_bar.use, a.cells.welcome_bar.revenue, a.cells.tablink_1.use, a.cells.tablink_1.revenue]).toEqual(["FIX", 33.3333, "OWN_DEAL", 50]);
   });
 
   it("mapping a zone by hand moves its revenue into the place and survives the nightly name matching", async () => {

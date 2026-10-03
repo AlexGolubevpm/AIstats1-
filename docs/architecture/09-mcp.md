@@ -24,8 +24,8 @@ Claude ──HTTPS + Bearer──► caddy ──► web /api/mcp
 | Инструмент | Параметры | Возвращает |
 | --- | --- | --- |
 | `query` | `sql` | Строки результата. Только SELECT по вьюхам, `statement_timeout = 10s`, `LIMIT 1000` навязывается, если его нет. В описание кладётся полная DDL вьюх |
-| `get_pnl` | `date_from`, `date_to`, `group_by: bundle \| site \| country \| device \| format \| network`, `bundle?`, `site?`, `country?` | revenue, revenue_confirmed, cost, margin, romi, uniques, rpm, rev_per_1k_loads |
-| `get_network_matrix` | `site`, `date_from`, `date_to`, `country?` | Сетка × гео: page loads, доля объёма, fill rate, rev/1000 loads, ранг, дискрепанси, флор |
+| `get_pnl` | `date_from`, `date_to`, `group_by: bundle \| site \| country \| device \| format \| network`, `bundle?`, `site?`, `country?` | revenue, cost, margin (до опер. расходов), romi, uniques, rpm, rev_per_1k_loads; для `site` ещё `opex` и `margin_after_opex`. Подтверждённая выручка — через `query` по `v_site_geo_daily.revenue_confirmed` |
+| `get_network_matrix` | `site`, `date_from`, `date_to`, `country?` | Сетки сайта: page loads, доля объёма, fill rate, rev/1000 loads, ранг, дискрепанси, флор. По сайту целиком — ADOK не отдаёт сетку × страну, `country` игнорируется с пометкой |
 | `get_zones` | `site`, `date_from`, `date_to` | Зоны: view rate, viewable CPM, доля, флаги «не видна» / «кандидат на снос» |
 | `get_alerts` | `level?`, `bundle?`, `site?` | Активные алерты с контекстом и ссылками на UI |
 | `get_deals` | `status?`, `advertiser?`, `date_from?`, `date_to?` | Дилы: прогноз, выставлено, подтверждено, остаток, множитель |
