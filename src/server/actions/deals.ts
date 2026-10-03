@@ -5,7 +5,7 @@ import { parseGeoList, type BillingPeriod, type DealInput, type PaymentBasis } f
 import { db } from "@/server/db";
 import { requireSession } from "@/server/session";
 import {
-  calculatePeriodAmount, correctPeriod, deleteDeal, enterPeriod, markDisputed, recordPayment, saveDeal, setDealStatus, type EnterPeriodInput,
+  calculatePeriodAmount, correctPeriod, deleteDeal, enterPeriod, markDisputed, recordPayment, reforecastAll, saveDeal, setDealStatus, type EnterPeriodInput,
 } from "@/server/services/deals";
 import { guarded, int, money, opt, str, type ActionResult } from "./result";
 
@@ -105,5 +105,15 @@ export async function disputeAction(_: ActionResult, f: FormData): Promise<Actio
     await markDisputed(db, str(f, "periodId"), str(f, "reason"));
     revalidatePath(`/deals/${dealId}`); revalidatePath("/deals");
     return { ok: true, message: "Период помечен как спорный" };
+  });
+}
+
+/** «Пересчитать прогноз» on /deals: all deals, the last 92 days up to today. */
+export async function reforecastDealsAction(): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const rows = await reforecastAll(db);
+    for (const p of ["/deals", "/finance", "/inventory", "/forecast", "/"]) revalidatePath(p);
+    return { ok: true, message: `Прогноз пересчитан: ${rows} строк` };
   });
 }

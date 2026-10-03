@@ -268,6 +268,11 @@ export async function saveDeal(db: PrismaClient, raw: DealInput, id?: string, re
 
 /** Forecast window after a save: from the deal's start (at most 92 days back) up to today, so the pages show it at once. */
 export const REFORECAST_DAYS = 92;
+/** Recomputes the forecast of every deal for the last REFORECAST_DAYS days up to today (button on /deals, worker start). */
+export async function reforecastAll(db: PrismaClient, today = isoOf(new Date())): Promise<number> {
+  const from = isoOf(new Date(d(today).getTime() - (REFORECAST_DAYS - 1) * DAY));
+  return forecastDeals(db, from, today);
+}
 async function reforecast(db: PrismaClient, id: string, today = isoOf(new Date())): Promise<void> {
   const deal = await db.deal.findUniqueOrThrow({ where: { id } });
   const floor = isoOf(new Date(d(today).getTime() - (REFORECAST_DAYS - 1) * DAY));

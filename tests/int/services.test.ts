@@ -228,3 +228,26 @@ describe("deal forecast runs on save", () => {
     expect(rows.map((r) => [r.date.toISOString().slice(0, 10), r.countryCode, r.pageLoads])).toEqual([["2026-09-20", "ZZ", 20_000], ["2026-09-21", "US", 5_000]]);
   });
 });
+
+describe("reforecastAll", () => {
+  it("recomputes every deal over the last 92 days up to today and leaves older rows alone", async () => {
+    const { reforecastAll } = await import("@/server/services/deals");
+    const D = (s: string) => new Date(`${s}T00:00:00Z`);
+    const today = "2026-10-03";
+    const a = await db.deal.create({ data: { title: "A", advertiserId: net.direct.advertiserId, format: "BANNER", price: "310", paymentBasis: "FLAT_PERIOD", billingPeriod: "MONTH",
+      startsAt: D("2026-06-01"), billedVia: "DIRECT", sites: { create: [{ siteId: "s1" }] } } });
+    const b = await db.deal.create({ data: { title: "B", advertiserId: net.direct.advertiserId, format: "BANNER", price: "20", paymentBasis: "FLAT_DAILY",
+      startsAt: D("2026-10-01"), billedVia: "DIRECT", sites: { create: [{ siteId: "s2" }] } } });
+    // A stale row from the old 30-day rule and one far in the past.
+    await db.factFixDeal.createMany({ data: [
+      { date: D("2026-10-01"), dealId: a.id, siteId: "s1", countryCode: "ZZ", revenue: "10.3333", revenueState: "FORECAST" },
+      { date: D("2026-06-10"), dealId: a.id, siteId: "s1", countryCode: "ZZ", revenue: "9.99", revenueState: "FORECAST" }] });
+    await reforecastAll(db, today);
+    expect(await db.factFixDeal.count({ where: { dealId: a.id, date: { gte: D("2026-07-04") } } })).toBe(92); // 92 days up to today
+    expect(await db.factFixDeal.count({ where: { dealId: a.id } })).toBe(93); // + the untouched June row
+    const oct1 = await db.factFixDeal.findUniqueOrThrow({ where: { date_dealId_siteId_countryCode: { date: D("2026-10-01"), dealId: a.id, siteId: "s1", countryCode: "ZZ" } } });
+    expect(Number(oct1.revenue)).toBe(10); // 310 / 31
+    expect(Number((await db.factFixDeal.findUniqueOrThrow({ where: { date_dealId_siteId_countryCode: { date: D("2026-06-10"), dealId: a.id, siteId: "s1", countryCode: "ZZ" } } })).revenue)).toBe(9.99);
+    expect(await db.factFixDeal.count({ where: { dealId: b.id } })).toBe(3);
+  });
+});
