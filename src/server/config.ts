@@ -7,7 +7,7 @@ export function config(env: Record<string, string | undefined> = process.env) {
       email: (env.ASG_AUTH_EMAIL ?? "").trim(),
       token: (env.ASG_AUTH_TOKEN ?? "").trim(),
       minIntervalMs: int(env.ASG_MIN_INTERVAL_MS, 5_000),
-      dailyBudget: int(env.ASG_DAILY_BUDGET, 300),
+      dailyBudget: int(env.ASG_DAILY_BUDGET, 500),
       restateDays: int(env.ASG_RESTATE_DAYS, 2),
       get configured() { return Boolean(this.email && this.token); },
     },

@@ -26,6 +26,12 @@ export async function addPlacement(db: PrismaClient, title: string): Promise<str
   return slug;
 }
 
+/** Maps a zone to a place by hand (null = no place). Automatic matching never overrides it. */
+export async function setZonePlacement(db: PrismaClient, zoneId: string, slug: string | null): Promise<void> {
+  if (slug && !(await db.placement.findUnique({ where: { slug } }))) throw new RuleError("placement", "Формат не найден", "placementSlug");
+  await db.zone.update({ where: { id: zoneId }, data: { placementSlug: slug } });
+}
+
 const USES: PlaceUse[] = ["ROTATION", "OWN_DEAL", "FIX", "CPA", "FREE", "NONE"];
 
 /** Sets the place's state on a site by hand; "AUTO" removes it (deals and zones decide again). */

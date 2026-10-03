@@ -10,7 +10,8 @@ import { isDemo } from "@/server/seed/demo";
 import { AliasRow, DemoButtons, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
 
 const JOB_LABEL: Record<string, string> = {
-  "asg:totals": "AdSpyglass: итоги по сайтам (1 запрос в день окна)", "asg:sites": "AdSpyglass: гео и зоны по сайтам (ночной)",
+  "asg:sites": "AdSpyglass: все разрезы по сайтам — страны, сетки, устройства, источники трафика, зоны + расход (ночной, ~4 запроса на сайт в день)",
+  "asg:totals": "AdSpyglass: только итоги по сайтам (1 запрос в день окна, без разрезов)",
   metrika: "Метрика: трафик", derive: "Расход → прогноз дилов → алерты", "geo:reprocess": "Пересчитать гео из сырья (без запросов к API)",
 };
 const CRON: Record<string, string> = { "5 * * * *": "каждый час в :05", "0 4 * * *": "ежедневно 04:00 UTC", "15 * * * *": "каждый час в :15", "45 4 * * *": "ежедневно 04:45 UTC" };
