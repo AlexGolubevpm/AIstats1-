@@ -8,6 +8,7 @@ import { RuleError } from "@/server/domain/errors";
 import { checkSite, withAsg } from "@/server/ingest/probe";
 import { resumeAsg } from "@/server/ingest/run";
 import { JOB_NAMES, type JobName } from "@/server/jobs/handlers";
+import { cancelBackfill, daysBetween, requestsPerDay, startBackfill } from "@/server/jobs/backfill";
 import { clearData } from "@/server/seed/demo";
 import { loadDemo } from "@/server/seed/load-demo";
 import { applyCostImport, previewCostImport, revertCostImport, type ImportPreview } from "@/server/services/costs";
@@ -174,7 +175,7 @@ export async function runJobAction(_: ActionResult, f: FormData): Promise<Action
   if (job === "asg:sites" && from && to) {
     const days = Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1;
     const sites = await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(opt(f, "siteId") ? { id: opt(f, "siteId")! } : {}) } });
-    const requests = days * (sites * 4 + 2); // per site: country + network + device + traffic source; per day: totals + spots
+    const requests = days * requestsPerDay(sites);
     const budget = config().asg.dailyBudget;
     if (requests > budget && str(f, "confirm") !== "1") {
       return { error: `Бэкфилл потребует ~${requests} запросов к AdSpyglass при дневном бюджете ${budget}. Сократите диапазон или отметьте подтверждение — джоб продолжит на следующий день.`, field: "confirm" };
@@ -243,4 +244,27 @@ export async function issueMcpTokenAction(): Promise<ActionResult> {
   const token = await issueMcpToken(db);
   revalidatePath("/settings/access");
   return { ok: true, message: "Новый токен выпущен, старый больше не работает", data: { token } };
+}
+
+/** «Бэкфилл AdSpyglass»: writes the window, queues the first chunk; the job re-queues itself day by day. */
+export async function startBackfillAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  const from = str(f, "from"), to = str(f, "to"), siteId = opt(f, "siteId");
+  const today = new Date().toISOString().slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return { error: "Проверьте диапазон дат", field: "from" };
+  if (to >= today) return { error: "Бэкфилл — для прошлых дней: сегодня и вчера грузят почасовой и ночной джобы", field: "to" };
+  return guarded(async () => {
+    const state = await startBackfill(db, { from, to, siteId });
+    const sites = await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(siteId ? { id: siteId } : {}) } });
+    const cfg = config();
+    const perDay = Math.floor((cfg.asg.dailyBudget - cfg.asg.backfillReserve) / requestsPerDay(sites));
+    const nights = perDay > 0 ? Math.ceil(state.pending.length / perDay) : null;
+    revalidatePath("/settings/integrations");
+    return { ok: true, message: `Бэкфилл: ${state.pending.length} из ${daysBetween(from, to).length} дней — первая порция в ближайшие 30 минут${nights ? `, всего ≈ ${nights} сут. при ${perDay} дн./сутки` : ""}` };
+  });
+}
+
+export async function cancelBackfillAction(): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => { await cancelBackfill(db); revalidatePath("/settings/integrations"); return { ok: true, message: "Бэкфилл отменён" }; });
 }

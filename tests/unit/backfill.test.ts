@@ -1,0 +1,13 @@
+import { describe, expect, it } from "vitest";
+import { daysBetween, daysThatFit, defaultWindow, requestsPerDay } from "@/server/jobs/backfill";
+
+describe("backfill arithmetic", () => {
+  it("requests per day, days that fit, default window", () => {
+    expect(requestsPerDay(27)).toBe(110);
+    expect(daysThatFit(270, 800, 300, 110)).toBe(2); // (800 − 300 − 270) / 110
+    expect(daysThatFit(600, 800, 300, 110)).toBe(0);
+    expect(defaultWindow("2026-10-03")).toEqual({ from: "2026-09-01", to: "2026-09-30" });
+    expect(defaultWindow("2026-01-02")).toEqual({ from: "2025-12-01", to: "2025-12-30" });
+    expect(daysBetween("2026-09-29", "2026-10-01")).toEqual(["2026-09-29", "2026-09-30", "2026-10-01"]);
+  });
+});

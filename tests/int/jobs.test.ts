@@ -72,3 +72,59 @@ describe("job handlers", () => {
     expect(calls).toBe(0);
   });
 });
+
+describe("asg:backfill", () => {
+  // Factory sites s1..s3 have adsgSiteId 1..3; one day = 2 + 4 × 3 = 14 requests.
+  const fakeApi = (() => {
+    const fetchImpl = (async (u: URL | string) => {
+      const url = new URL(String(u)), g = url.searchParams.get("group_by"), site = url.searchParams.get("platforms_ids[]");
+      if (g === "website") return new Response(JSON.stringify([1, 2, 3].map((i) => ({ name: `${i}. ${["one", "two", "three"][i - 1]}.test`, hits: 1000, broker_income: 10, predicted_income: 10 }))));
+      if (g === "country") return new Response(JSON.stringify([{ name: "Japan", iso: "JP", hits: 1000, broker_income: 10, predicted_income: 10 }]));
+      if (g === "adnetwork_squashed") return new Response(JSON.stringify([{ name: "AdPulsar", hits: 1000, broker_income: 10 }]));
+      if (g === "device") return new Response(JSON.stringify([{ name: "Desktop", hits: 1000, impressions: 500, broker_income: 10, predicted_income: 10 }]));
+      if (g === "traffic_source") return new Response(JSON.stringify([{ name: "TubeCrown", hits: 1000, broker_income: 4 }, { name: "Direct", hits: 0, broker_income: 6 }]));
+      if (g === "spot") return new Response(JSON.stringify([{ name: `49${site ?? "1"}. Footer (one.test)`, hits: 100, broker_income: 1 }]));
+      return new Response("[]");
+    }) as typeof fetch;
+    return fetchImpl;
+  })();
+  const cfg = (budget: number) => config({ ASG_AUTH_EMAIL: "e", ASG_AUTH_TOKEN: "t", ASG_MIN_INTERVAL_MS: "0", ASG_DAILY_BUDGET: String(budget), ASG_BACKFILL_RESERVE: "10" });
+
+  it("ingests the newest pending days that fit the budget minus the reserve, stops, continues next day and finishes with derive", async () => {
+    const ctx = { db, cfg: cfg(10 + 14 * 2 + 1), raw, today, fetchImpl: fakeApi };
+    expect((await runJob("asg:backfill", ctx, {})).skipped).toContain("нечего"); // no window set: the half-hourly tick is a no-op
+    const r1 = await runJob("asg:backfill", ctx, { from: "2026-09-01", to: "2026-09-03" });
+    expect(r1.status).toBe("partial"); // stopped on the budget with one day left
+    const { readBackfill } = await import("@/server/jobs/backfill");
+    let s = (await readBackfill(db))!;
+    expect(s.done).toEqual(["2026-09-03", "2026-09-02"]);
+    expect(s.pending).toEqual(["2026-09-01"]);
+    expect(s.lastStop).toContain("бюджет");
+    expect((await runJob("asg:backfill", ctx, {})).status).toBe("partial"); // same day: nothing fits, stops at once without requests
+    expect((await db.ingestRun.findFirstOrThrow({ where: { job: "asg:backfill" }, orderBy: { startedAt: "desc" } })).requests).toBe(0);
+    const run = await db.ingestRun.findFirstOrThrow({ where: { job: "asg:backfill" }, orderBy: { startedAt: "asc" } });
+    expect([run.dateFrom.toISOString().slice(0, 10), run.dateTo.toISOString().slice(0, 10), run.requests]).toEqual(["2026-09-02", "2026-09-03", 28]);
+    expect(await db.factRevenueGeo.count({ where: { date: new Date("2026-09-03T00:00:00Z"), countryCode: "JP" } })).toBe(3);
+    expect(await db.factCost.count({ where: { date: new Date("2026-09-03T00:00:00Z"), origin: "ASG" } })).toBe(3); // TubeCrown cost per site
+    // Next UTC day: the budget counter is fresh, the last day lands and derive runs over the window.
+    await db.appSetting.deleteMany({ where: { key: { startsWith: "asg_requests:" } } });
+    const r2 = await runJob("asg:backfill", ctx, {}); // the scheduled tick picks the stored window up
+    expect(r2.status).toBe("ok");
+    s = (await readBackfill(db))!;
+    expect([s.pending, s.done.length]).toEqual([[], 3]);
+    expect(await db.ingestRun.count({ where: { source: "derive" } })).toBe(1);
+    expect((await runJob("asg:backfill", ctx, {})).skipped).toContain("нечего");
+  });
+
+  it("a cancelled backfill does nothing; a new window keeps the days already done", async () => {
+    const { startBackfill, cancelBackfill, readBackfill } = await import("@/server/jobs/backfill");
+    await startBackfill(db, { from: "2026-09-01", to: "2026-09-02" });
+    await cancelBackfill(db);
+    expect((await readBackfill(db))!.pending).toEqual([]);
+    const s = await startBackfill(db, { from: "2026-09-01", to: "2026-09-04" });
+    expect(s.pending).toEqual(["2026-09-04", "2026-09-03", "2026-09-02", "2026-09-01"]);
+    const widened = await startBackfill(db, { from: "2026-08-30", to: "2026-09-04" });
+    expect(widened.pending).toHaveLength(6);
+    expect(widened.startedAt).toBe(s.startedAt);
+  });
+});
