@@ -1,7 +1,7 @@
 // Page queries against the reference network (tests/factories/network.ts): the numbers the
 // pages show, including the network-total-by-sites and no-double-counting invariants.
 import { beforeEach, describe, expect, it } from "vitest";
-import { buildNetwork } from "@tests/factories/network";
+import { buildNetwork, D1 } from "@tests/factories/network";
 import { dailyTotals, freshness, kpis, siteList, totals } from "@/server/queries/common";
 import { dealDetail, dealsList, paymentsRegister, todoQueue } from "@/server/queries/deals";
 import { asgPayouts, financeKpis, pnlTable, receivables, revenueStructure } from "@/server/queries/finance";
@@ -140,5 +140,37 @@ describe("deals", () => {
     expect(d?.outstanding).toBe(6);
     expect(d?.history.length).toBeGreaterThan(0);
     expect(await dealDetail("nope")).toBeNull();
+  });
+});
+
+describe("geo: no-country money is spread over the countries by page loads", () => {
+  it("ZZ source cost lands on JP and US pro rata to loads, the ZZ row disappears, totals stay equal", async () => {
+    await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 0, rateModel: "REVSHARE", rate: "1", cost: "8", origin: "ASG" } });
+    const rows = await geoTable(P, { siteIds: ["s1"] }, 0);
+    expect(rows.map((r) => r.country).sort()).toEqual(["JP", "US"]);
+    const jp = rows.find((r) => r.country === "JP")!, us = rows.find((r) => r.country === "US")!;
+    expect(jp.cost + us.cost).toBeCloseTo(24 + 10 + 8, 6); // factory cost + the spread $8
+    expect(jp.cost).toBeCloseTo(24 + 4, 6); // equal loads → half each
+    expect([jp.estimated, us.estimated]).toEqual([true, true]);
+    const t = await totals(P, { siteIds: ["s1"] });
+    expect(rows.reduce((a, r) => a + r.cost, 0)).toBeCloseTo(t.cost, 6);
+    expect(rows.reduce((a, r) => a + r.revenue, 0)).toBeCloseTo(t.revenue, 6);
+  });
+
+  it("a site with only ZZ rows keeps one «Без страны» row without ROMI", async () => {
+    await db.factRevenueGeo.deleteMany({ where: { siteId: "s2" } });
+    await db.factTraffic.deleteMany({ where: { siteId: "s2" } });
+    await db.factCost.deleteMany({ where: { siteId: "s2" } });
+    await db.factRevenueGeo.create({ data: { date: D1, siteId: "s2", networkId: net.net.id, countryCode: "ZZ", device: "UNKNOWN", pageLoads: 100, revenueReported: "5" } });
+    const rows = await geoTable(P, { siteIds: ["s2"] }, 0);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ country: "ZZ", name: "Без страны", revenue: 5, romi: null, revPer1k: null });
+  });
+
+  it("the geo matrix spreads no-country cost per site too", async () => {
+    await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 0, rateModel: "REVSHARE", rate: "1", cost: "8", origin: "ASG" } });
+    const mx = await geoMatrix(P);
+    expect(mx.countries).not.toContain("ZZ");
+    expect(mx.value("one.test", "JP")).toBeCloseTo(((22 - 28) / 28) * 100, 3); // $20 + $2 own deal vs $24 + half of the $8
   });
 });

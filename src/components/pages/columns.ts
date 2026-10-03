@@ -16,7 +16,8 @@ export const FORMAT_COLS: Column[] = [
 
 export const GEO_COLS: Column[] = [
   { id: "country", header: "Страна", kind: "country" }, { id: "tier", header: "Тир", kind: "int" }, { id: "uniques", header: "Уники", kind: "int" },
-  { id: "pageLoads", header: "Page loads", kind: "int" }, { id: "revenue", header: "Выручка", kind: "money" }, { id: "cost", header: "Расход", kind: "money" },
+  { id: "pageLoads", header: "Page loads", kind: "int" }, { id: "revenue", header: "Выручка", kind: "money" },
+  { id: "cost", header: "Расход", kind: "money", tooltip: "Оценка: ADOK не даёт расход источников по странам, он разложен по странам пропорционально загрузкам" },
   { id: "margin", header: "Маржа", kind: "money", heat: "sign" }, { id: "romi", header: "ROMI", kind: "romi", heat: "vsMean" },
   { id: "revPer1k", header: "Rev/1000 loads", kind: "cpm" },
 ];

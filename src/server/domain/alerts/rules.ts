@@ -17,12 +17,12 @@ const day = (s: string) => new Date(`${s}T00:00:00Z`);
 
 export interface RuleContext { db: PrismaClient; asOf: string; configuredSources: string[] }
 
-/** 1. Loss-making geo: 7 days, revenue < cost and cost > $5. */
+/** 1. Loss-making geo: 7 days, revenue < cost and cost > $5. Country ZZ ("no country": source cost, flat deals) is not a geo. */
 async function lossGeo({ db, asOf }: RuleContext): Promise<Candidate[]> {
   const rows = await db.$queryRaw<{ site_id: string; domain: string; country_code: string; rev: unknown; cost: unknown }[]>`
     SELECT g.site_id, s.domain, g.country_code, SUM(g.revenue) rev, SUM(g.cost) cost
     FROM v_site_geo_daily g JOIN "Site" s ON s.id = g.site_id
-    WHERE g.date >= ${day(addDays(asOf, -7))} AND g.date < ${day(asOf)} AND g.cost > 0
+    WHERE g.date >= ${day(addDays(asOf, -7))} AND g.date < ${day(asOf)} AND g.cost > 0 AND g.country_code <> 'ZZ'
     GROUP BY 1, 2, 3 HAVING SUM(g.revenue) < SUM(g.cost) AND SUM(g.cost) > 5`;
   return rows.map((r) => {
     const rev = n(r.rev), cost = n(r.cost), romi = ((rev - cost) / cost) * 100;

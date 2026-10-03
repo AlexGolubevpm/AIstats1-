@@ -38,7 +38,7 @@ export async function saveDealAction(_: ActionResult, f: FormData): Promise<Acti
   revalidatePath("/inventory"); // the Formats tab lists every deal
   if (!str(f, "id")) redirect(`/deals/${id}`);
   revalidatePath(`/deals/${id}`);
-  return { ok: true, message: "Условия сохранены" };
+  return { ok: true, message: "Условия сохранены, прогноз пересчитан" };
 }
 
 export async function dealStatusAction(id: string, status: "ACTIVE" | "PAUSED" | "ENDED"): Promise<ActionResult> {

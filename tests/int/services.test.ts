@@ -195,3 +195,36 @@ describe("flat deals: evenly per site and day", () => {
     expect(Math.max(...rows.map((r) => Number(r.revenue))) - Math.min(...rows.map((r) => Number(r.revenue)))).toBeLessThan(0.01);
   });
 });
+
+describe("deal forecast runs on save", () => {
+  const D = (s: string) => new Date(`${s}T00:00:00Z`);
+  const today = new Date().toISOString().slice(0, 10);
+  const monthAgo = new Date(Date.now() - 20 * 86_400_000).toISOString().slice(0, 10);
+
+  it("a flat deal saved today has forecast rows from its start up to today without waiting for the night", async () => {
+    const { saveDeal, setDealStatus } = await import("@/server/services/deals");
+    const id = await saveDeal(db, { title: "Now", advertiser: "Acme", format: "BANNER", paymentBasis: "FLAT_PERIOD", price: "310", siteIds: ["s1"], geoScope: [], geoExclude: false,
+      startsAt: monthAgo, endsAt: null, billingPeriod: "MONTH", paymentTermsDays: 30, counterSource: "MANUAL", billedVia: "DIRECT" } as never);
+    const rows = await db.factFixDeal.findMany({ where: { dealId: id }, orderBy: { date: "asc" } });
+    expect(rows).toHaveLength(21); // 20 days ago … today inclusive
+    expect(rows[0].date).toEqual(D(monthAgo));
+    expect(rows.at(-1)!.date).toEqual(D(today));
+    expect(rows.every((r) => r.revenueState === "FORECAST" && Number(r.revenue) > 0)).toBe(true);
+    // Ending the deal yesterday drops the rows after the new end date.
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    await setDealStatus(db, id, "ENDED", yesterday);
+    expect((await db.factFixDeal.findMany({ where: { dealId: id, date: { gt: D(yesterday) } } })).length).toBe(0);
+  });
+
+  it("a scoped deal on a site that only has ZZ site totals still gets counters", async () => {
+    await db.factRevenueGeo.deleteMany({ where: { siteId: "s3" } });
+    await db.factRevenueGeo.create({ data: { date: D1, siteId: "s3", networkId: net.net.id, countryCode: "ZZ", device: "UNKNOWN", pageLoads: 20_000, impsOwn: 15_000, revenueReported: "10" } });
+    await db.factRevenueGeo.create({ data: { date: D2, siteId: "s3", networkId: net.net.id, countryCode: "US", device: "DESKTOP", pageLoads: 5_000, impsOwn: 4_000, revenueReported: "4" } });
+    await db.factRevenueGeo.create({ data: { date: D2, siteId: "s3", networkId: net.net.id, countryCode: "JP", device: "DESKTOP", pageLoads: 3_000, impsOwn: 2_000, revenueReported: "3" } });
+    const deal = await db.deal.create({ data: { title: "US only", advertiserId: net.direct.advertiserId, format: "BANNER", price: "1", paymentBasis: "PER_1000_LOADS",
+      geoScope: ["US"], startsAt: D1, counterSource: "ASG_ZONE", sites: { create: [{ siteId: "s3" }] } } });
+    await forecastDeals(db, "2026-09-20", "2026-09-21", deal.id);
+    const rows = await db.factFixDeal.findMany({ where: { dealId: deal.id }, orderBy: [{ date: "asc" }, { countryCode: "asc" }] });
+    expect(rows.map((r) => [r.date.toISOString().slice(0, 10), r.countryCode, r.pageLoads])).toEqual([["2026-09-20", "ZZ", 20_000], ["2026-09-21", "US", 5_000]]);
+  });
+});
