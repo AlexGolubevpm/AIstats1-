@@ -24,19 +24,25 @@ export function calcAmount(basis: PaymentBasis, price: Decimal.Value, c: Counter
   }
 }
 
-/**
- * Days a FLAT_PERIOD price covers: a month is always 30 days (owner's rule: $1000 a month on
- * 10 sites = 1000 / 10 / 30 per site per day), a week 7, a term its own length.
- */
-export function flatPeriodDays(billing: BillingPeriod, termDays: number | null): number {
-  if (billing === "WEEK") return 7;
-  if (billing === "TERM" && termDays) return termDays;
-  return 30;
+/** Days in the calendar month of an ISO date (or a YYYY-MM month). */
+export function daysInMonth(date: string): number {
+  return new Date(Date.UTC(+date.slice(0, 4), +date.slice(5, 7), 0)).getUTCDate();
 }
 
-/** Flat deals: the deal's amount per day (before splitting between its sites). */
-export function flatPerDay(basis: PaymentBasis, price: Decimal.Value, billing: BillingPeriod, termDays: number | null): Decimal {
-  return basis === "FLAT_DAILY" ? new Decimal(price) : new Decimal(price).div(flatPeriodDays(billing, termDays));
+/**
+ * Days a FLAT_PERIOD price covers: a month is the calendar month of `date` (September 30, October
+ * 31 — so September of a $1000 deal is exactly $1000, ADR 0007), a week 7, a term its own length.
+ * Without a date a month counts 30 days.
+ */
+export function flatPeriodDays(billing: BillingPeriod, termDays: number | null, date?: string): number {
+  if (billing === "WEEK") return 7;
+  if (billing === "TERM" && termDays) return termDays;
+  return date ? daysInMonth(date) : 30;
+}
+
+/** Flat deals: the deal's amount on `date` (before splitting between its sites). */
+export function flatPerDay(basis: PaymentBasis, price: Decimal.Value, billing: BillingPeriod, termDays: number | null, date?: string): Decimal {
+  return basis === "FLAT_DAILY" ? new Decimal(price) : new Decimal(price).div(flatPeriodDays(billing, termDays, date));
 }
 
 export const isFlat = (basis: PaymentBasis) => basis === "FLAT_DAILY" || basis === "FLAT_PERIOD";

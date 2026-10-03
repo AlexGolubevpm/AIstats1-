@@ -9,7 +9,10 @@ import { Badge } from "@/components/ui/badge";
 import { Section } from "@/components/ui/card";
 import { fmtDate, fmtMoney, fmtPercent } from "@/lib/format";
 import { daysBetween, periodFromParams } from "@/lib/period";
-import { asgPayouts, financeKpis, pnlTable, receivables, revenueStructure } from "@/server/queries/finance";
+import { db } from "@/server/db";
+import { asgPayouts, financeKpis, monthlyPnl, opexEntries, pnlTable, receivables, revenueStructure } from "@/server/queries/finance";
+import { OPEX_LABEL, type OpexCategory } from "@/server/services/opex";
+import { DeleteOpex, OpexButton } from "./opex";
 import { PayoutButton } from "./payout";
 
 const MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
@@ -19,7 +22,9 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
   const sp = await searchParams;
   const p = periodFromParams(sp, "mtd");
   const monthly = daysBetween(p.from, p.to) > 62;
-  const [k, structure, pnl, payouts, recv] = await Promise.all([financeKpis(p), revenueStructure(p, monthly), pnlTable(p), asgPayouts(), receivables()]);
+  const [k, structure, pnl, payouts, recv, months, opex, sites] = await Promise.all([financeKpis(p), revenueStructure(p, monthly), pnlTable(p), asgPayouts(), receivables(),
+    monthlyPnl(), opexEntries(), db.site.findMany({ where: { status: { not: "ARCHIVED" } }, orderBy: { domain: "asc" }, select: { id: true, domain: true } })]);
+  const thisMonth = new Date().toISOString().slice(0, 7);
   const seg = (v: number) => (k.revenue > 0 ? `${(v / k.revenue) * 100}%` : "0%");
   const bundle = sp.bundle;
   const rows: Row[] = pnl.filter((r) => !bundle || r.bundles.includes(bundle)).map((r) => ({
@@ -31,7 +36,9 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
     _badges: r.costGapDays ? { romi: [{ label: "неполный", tone: "warning" as const }] } : undefined,
     _children: r.months.map((x) => ({ ...x, month: monthLabel(x.month) })),
   }));
-  const tot = pnl.reduce((a, r) => ({ asg: a.asg + r.asg, deals: a.deals + r.deals, revenue: a.revenue + r.revenue, cost: a.cost + r.cost }), { asg: 0, deals: 0, revenue: 0, cost: 0 });
+  const tot = pnl.reduce((a, r) => ({ asg: a.asg + r.asg, deals: a.deals + r.deals, revenue: a.revenue + r.revenue, cost: a.cost + r.cost, opex: a.opex + r.opex }), { asg: 0, deals: 0, revenue: 0, cost: 0, opex: 0 });
+  const opexByMonth = new Map<string, typeof opex>();
+  for (const e of opex) opexByMonth.set(e.month, [...(opexByMonth.get(e.month) ?? []), e]);
   const bundles = [...new Set(pnl.flatMap((r) => r.bundles))].sort();
 
   return (
@@ -39,7 +46,7 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
       <PageHeader title="Финансы по тьюбам" sub="Сколько каждый сайт заработал, сколько ещё придёт и где мы в минусе" period={p}
         extraPresets={[{ id: "quarter", label: "Квартал" }]}
         actions={<a href={`/api/export/month?month=${p.from.slice(0, 7)}`} className="inline-flex h-8 items-center rounded-md border border-border bg-surface px-3 text-[13px] hover:bg-surface-hover">Отчёт за месяц (CSV)</a>} />
-      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 min-[1800px]:grid-cols-7">
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 min-[1800px]:grid-cols-8">
         <div className="card flex flex-col gap-2 p-4 lg:col-span-1">
           <span className="text-xs font-medium text-muted">Выручка всего</span>
           <span className="num text-[26px] leading-8 font-semibold">{fmtMoney(k.revenue).replace(/\.\d\d$/, "")}</span>
@@ -51,9 +58,10 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
         </div>
         <KpiCard label="Подтверждено" value={k.confirmed} format="money" color="#16A34A" />
         <KpiCard label="Ожидается" value={k.expected} format="money" sub="прогноз + выставлено" />
-        <KpiCard label="Расход" value={k.cost} format="money" color="#F43F5E" />
-        <KpiCard label="Маржа" value={k.margin} format="money" negativeFrame={k.margin < 0} />
-        <KpiCard label="ROMI" value={k.romi} format="percent" />
+        <KpiCard label="Расход на трафик" value={k.cost} format="money" color="#F43F5E" />
+        <KpiCard label="Опер. расходы" value={k.opex} format="money" color="#F97316" sub="хостинг, люди, софт" />
+        <KpiCard label="Маржа" value={k.margin} format="money" negativeFrame={k.margin < 0} sub="после опер. расходов" />
+        <KpiCard label="ROMI" value={k.romi} format="percent" sub="на расход на трафик" />
         <KpiCard label="Дебиторка просрочена" value={k.overdue} format="money" color="#E11D48"
           sub={k.overduePeriods ? `${k.overduePeriods} счетов` : "нет просрочки"} warn={k.overdue > 0 ? "Выставлено и не оплачено дольше срока" : undefined} />
       </div>
@@ -67,7 +75,52 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
         ]} />
       </Section>
 
-      <Section title="P&L по тьюбам" sub="Итог считается по сайтам. Пунктир — прогноз, не подтверждено деньгами"
+      <Section title="По месяцам" sub="Календарные месяцы: фикс-дилы и операционные расходы ложатся на дни своего месяца. Текущий месяц — не закрыт">
+        <table className="num w-full text-[13px] [&_td]:px-2 [&_td:first-child]:pl-0 [&_th]:px-2 [&_th:first-child]:pl-0">
+          <thead><tr className="border-b border-border text-xs text-muted">
+            <th className="py-2 text-left font-medium">Месяц</th><th className="text-right font-medium">AdSpyglass</th><th className="text-right font-medium">Фикс-дилы</th>
+            <th className="text-right font-medium">Выручка</th><th className="text-right font-medium">Расход на трафик</th><th className="text-right font-medium">Опер. расходы</th>
+            <th className="text-right font-medium">Маржа</th><th className="text-right font-medium">ROMI</th></tr></thead>
+          <tbody>{months.map((x) => (
+            <tr key={x.month} className={`h-10 border-b border-border/60 ${x.isCurrent ? "text-muted" : ""}`} data-month={x.month}>
+              <td className="capitalize">{monthLabel(x.month)}{x.isCurrent && <span className="ml-2 text-[11px] text-faint">идёт</span>}</td>
+              <td className="text-right">{fmtMoney(x.asg)}</td><td className="text-right">{fmtMoney(x.deals)}</td><td className="text-right font-medium">{fmtMoney(x.revenue)}</td>
+              <td className="text-right">{fmtMoney(x.cost)}</td><td className="text-right">{fmtMoney(x.opex)}</td>
+              <td className={`text-right font-medium ${x.margin < 0 ? "text-negative" : ""}`}>{fmtMoney(x.margin)}</td>
+              <td className="text-right">{x.romi == null ? <span className="text-faint">—</span> : fmtPercent(x.romi / 100)}</td>
+            </tr>
+          ))}
+          {months.length === 0 && <tr><td colSpan={8} className="py-6 text-center text-sm text-muted">Данных ещё нет</td></tr>}</tbody>
+        </table>
+      </Section>
+
+      <Section title="Операционные расходы" sub="Хостинг, люди, софт — цифра за месяц, делится поровну на его дни. Без сайта — расход всей сети"
+        actions={<OpexButton sites={sites} defaultMonth={thisMonth} />}>
+        {opex.length === 0 ? <p className="py-6 text-center text-sm text-muted">Расходов пока нет — добавьте первый: месяц, что и сколько</p> : (
+          <table className="num w-full text-[13px] [&_td]:px-2 [&_td:first-child]:pl-0 [&_th]:px-2 [&_th:first-child]:pl-0">
+            <thead><tr className="border-b border-border text-xs text-muted">
+              <th className="py-2 text-left font-medium">Месяц</th><th className="text-left font-medium">Что</th><th className="text-left font-medium">Категория</th>
+              <th className="text-left font-medium">Сайт</th><th className="text-right font-medium">За месяц</th><th className="text-right font-medium">В день</th><th /></tr></thead>
+            <tbody>{[...opexByMonth.entries()].map(([mo, list]) => [
+              <tr key={`${mo}-h`} className="h-8 bg-surface-2 text-xs font-medium text-muted"><td className="capitalize">{monthLabel(mo)}</td><td colSpan={3} />
+                <td className="text-right">{fmtMoney(list.reduce((a, e) => a + e.amount, 0))}</td><td colSpan={2} /></tr>,
+              ...list.map((e) => (
+                <tr key={e.id} className="h-10 border-b border-border/60">
+                  <td />
+                  <td>{e.title}{e.note && <span className="ml-2 text-xs text-faint">{e.note}</span>}</td>
+                  <td className="text-muted">{OPEX_LABEL[e.category as OpexCategory] ?? e.category}</td>
+                  <td className="font-mono text-xs">{e.domain ?? <span className="text-muted">вся сеть</span>}</td>
+                  <td className="text-right">{fmtMoney(e.amount)}</td>
+                  <td className="text-right text-muted">{fmtMoney(e.amount / new Date(Date.UTC(+e.month.slice(0, 4), +e.month.slice(5, 7), 0)).getUTCDate())}</td>
+                  <td className="text-right whitespace-nowrap"><OpexButton sites={sites} defaultMonth={thisMonth} label="Изменить" values={e} /> <DeleteOpex id={e.id} /></td>
+                </tr>
+              )),
+            ])}</tbody>
+          </table>
+        )}
+      </Section>
+
+      <Section title="P&L по тьюбам" sub="Итог считается по сайтам. Маржа — после операционных расходов (общие расходы сети разложены по выручке). Пунктир — прогноз, не подтверждено деньгами"
         actions={<div className="flex flex-wrap gap-1 text-xs">
           <Link href={{ query: { ...sp, bundle: undefined } }} className={`rounded-full border px-2.5 py-1 ${!bundle ? "border-accent bg-accent-soft text-accent" : "border-border text-muted"}`}>Все</Link>
           {bundles.map((b) => <Link key={b} href={{ query: { ...sp, bundle: b } }} className={`rounded-full border px-2.5 py-1 ${bundle === b ? "border-accent bg-accent-soft text-accent" : "border-border text-muted"}`}>{b}</Link>)}
@@ -75,14 +128,15 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
         <DataTable id="pnl" exportName="pnl" defaultSort={{ id: "margin", dir: "desc" }}
           columns={[
             { id: "domain", header: "Сайт", kind: "site" }, { id: "asg", header: "AdSpyglass", kind: "money" }, { id: "deals", header: "Фикс-дилы", kind: "money" },
-            { id: "revenue", header: "Выручка", kind: "money" }, { id: "cost", header: "Расход", kind: "money" }, { id: "margin", header: "Маржа", kind: "money", heat: "sign" },
+            { id: "revenue", header: "Выручка", kind: "money" }, { id: "cost", header: "Расход на трафик", kind: "money" }, { id: "opex", header: "Опер. расходы", kind: "money" },
+            { id: "margin", header: "Маржа", kind: "money", heat: "sign" },
             { id: "romi", header: "ROMI", kind: "romi", heat: "vsMean" }, { id: "marginShare", header: "Доля маржи", kind: "share" }, { id: "completeness", header: "Полнота", kind: "text" },
           ]}
           nestedColumns={[{ id: "month", header: "Месяц", kind: "text" }, { id: "asg", header: "AdSpyglass", kind: "money" }, { id: "deals", header: "Фикс-дилы", kind: "money" },
             { id: "cost", header: "Расход", kind: "money" }, { id: "margin", header: "Маржа", kind: "money", heat: "sign" }, { id: "romi", header: "ROMI", kind: "romi" }]}
           filters={[{ id: "loss", label: "Только убыточные", column: "margin", op: "lt", value: 0 }, { id: "inc", label: "С неполными данными", column: "incomplete", op: "truthy" }]}
           rows={rows}
-          totals={{ domain: "Итого по сети", ...tot, margin: tot.revenue - tot.cost, romi: tot.cost ? ((tot.revenue - tot.cost) / tot.cost) * 100 : null }} />
+          totals={{ domain: "Итого по сети", ...tot, margin: tot.revenue - tot.cost - tot.opex, romi: tot.cost ? ((tot.revenue - tot.cost) / tot.cost) * 100 : null }} />
       </Section>
 
       <div className="grid gap-4 xl:grid-cols-2">

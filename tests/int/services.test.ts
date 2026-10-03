@@ -157,6 +157,20 @@ describe("flat deals: evenly per site and day", () => {
     expect(total.toNumber()).toBeCloseTo(1000, 1);
   });
 
+  it("a monthly flat deal follows the calendar month: October of $1000 on 10 sites is 1000 / 10 / 31 a day and $1000 in total", async () => {
+    const ids = await sites(10);
+    const deal = await db.deal.create({ data: { title: "Sponsor", advertiserId: net.direct.advertiserId, format: "BANNER", price: "1000",
+      paymentBasis: "FLAT_PERIOD", billingPeriod: "MONTH", startsAt: D("2026-09-01"), sites: { create: ids.map((siteId) => ({ siteId })) } } });
+    await forecastDeals(db, "2026-10-01", "2026-10-31");
+    const rows = await db.factFixDeal.findMany({ where: { dealId: deal.id } });
+    expect(rows).toHaveLength(310);
+    expect(new Set(rows.map((r) => Number(r.revenue)))).toEqual(new Set([3.2258]));
+    const total = rows.reduce((a, r) => a.add(r.revenue.toString()), new Decimal(0));
+    expect(total.toNumber()).toBeCloseTo(1000, 0);
+    const [m] = await db.$queryRaw<{ s: number }[]>`SELECT SUM(revenue_direct)::float8 s FROM v_site_geo_daily WHERE date >= '2026-10-01' AND date <= '2026-10-31'`;
+    expect(m.s).toBeCloseTo(1000, 0);
+  });
+
   it("flat per day is split between sites; a weekly price covers 7 days", async () => {
     const ids = await sites(4);
     const daily = await db.deal.create({ data: { title: "Daily", advertiserId: net.direct.advertiserId, format: "OTHER", price: "20",

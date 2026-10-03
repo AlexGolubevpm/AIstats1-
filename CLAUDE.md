@@ -13,7 +13,7 @@
 
 ## Где что
 
-- Требования: `docs/tubestat-spec.md`, продуктовые документы `docs/product/01…06`.
+- Требования: `docs/tubestat-spec.md`, продуктовые документы `docs/product/01…06`; чего не хватает для полного анализа и какие выгрузки ADOK ещё нужны — `docs/product/12-analytics-gaps.md`.
 - Дизайн-система: `docs/design/07-design-system.md`.
 - Бэкенд и MCP: `docs/architecture/08-backend.md`, `09-mcp.md`.
 - Слои кода: `app` → `server/queries|actions` → `server/domain` → `db`. Формулы только в `src/lib/metrics.ts` и SQL-вьюхах.

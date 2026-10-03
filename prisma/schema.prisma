@@ -41,6 +41,7 @@ model Site {
   costs      FactCost[]
   deals      FactFixDeal[]
   dealSites  DealSite[]
+  opex       OpexEntry[]
 
   @@index([status])
 }
@@ -314,6 +315,34 @@ model CostRate {
   createdAt   DateTime  @default(now())
 
   @@index([sourceSlug, validFrom])
+}
+
+// ---------- Operating expenses ----------
+
+enum OpexCategory {
+  HOSTING // servers, CDN, domains
+  SALARY // people
+  SOFTWARE // services and licences
+  CONTENT // content and its processing
+  MARKETING
+  OTHER
+}
+
+/// An operating expense of a calendar month: hosting, people, software… Spread evenly over the
+/// days of that month (amount / days in month) by v_opex_daily, so a month totals exactly the
+/// figure entered. siteId null = the whole network (allocated to sites pro rata to revenue in P&L).
+model OpexEntry {
+  id        String       @id @default(cuid())
+  month     DateTime     @db.Date // first day of the month
+  title     String
+  category  OpexCategory @default(OTHER)
+  amount    Decimal      @db.Decimal(12, 2)
+  siteId    String?
+  note      String?
+  createdAt DateTime     @default(now())
+  site      Site?        @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([month])
 }
 
 // ---------- Fixed deals ----------

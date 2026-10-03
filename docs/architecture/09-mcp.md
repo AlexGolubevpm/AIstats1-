@@ -34,7 +34,7 @@ Claude ──HTTPS + Bearer──► caddy ──► web /api/mcp
 
 ## Вьюхи, доступные MCP
 
-`v_site_geo_daily`, `v_bundle_daily`, `v_zone_daily`, `v_network_geo`, `v_format_daily`, `v_deal_daily`, `v_alerts_active`. Все с суффиксом `_daily` содержат колонку `date`. В `v_network_geo` сетки по реальным данным ADOK приходят без страны (`country_code = 'ZZ'`): API не даёт сетку × страну.
+`v_site_geo_daily`, `v_bundle_daily`, `v_zone_daily`, `v_network_geo`, `v_format_daily`, `v_deal_daily`, `v_alerts_active`, `v_opex_daily` (операционные расходы по дням календарного месяца; `site_id` NULL — расход всей сети; в `margin` других вьюх их нет). Все с суффиксом `_daily` содержат колонку `date`. В `v_network_geo` сетки по реальным данным ADOK приходят без страны (`country_code = 'ZZ'`): API не даёт сетку × страну.
 
 Плюс справочные `v_sites` и `v_bundles`.
 
@@ -42,7 +42,7 @@ Claude ──HTTPS + Bearer──► caddy ──► web /api/mcp
 CREATE ROLE mcp_reader NOLOGIN;
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM mcp_reader;
 GRANT SELECT ON v_sites, v_bundles, v_site_geo_daily, v_bundle_daily, v_zone_daily, v_network_geo,
-                v_format_daily, v_deal_daily, v_alerts_active TO mcp_reader;
+                v_format_daily, v_deal_daily, v_alerts_active, v_opex_daily TO mcp_reader;
 GRANT mcp_reader TO CURRENT_USER;
 ```
 

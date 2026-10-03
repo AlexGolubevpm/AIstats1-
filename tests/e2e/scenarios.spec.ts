@@ -156,3 +156,24 @@ test("formats: period in the URL, bundle filter and grouping, a zone mapped by h
   await expect(row.getByRole("button", { name: "свободно" })).toHaveCount(freeBefore - 1);
   await expect(row.getByRole("button", { name: /^\$[\d,.]+/ }).first()).toBeVisible();
 });
+
+test("finance: an operating expense of a month lands in the month table, the KPIs and the P&L", async ({ page }) => {
+  await login(page, "/finance?preset=prev_month");
+  const prev = new Date(); prev.setUTCDate(1); prev.setUTCMonth(prev.getUTCMonth() - 1);
+  const month = prev.toISOString().slice(0, 7);
+  await page.getByRole("button", { name: "Добавить расход" }).click();
+  const sheet = page.getByRole("dialog");
+  await sheet.locator("input[name=month]").fill(month);
+  await sheet.locator("input[name=title]").fill("E2E servers");
+  await sheet.locator("select[name=category]").selectOption("HOSTING");
+  await sheet.locator("input[name=amount]").fill("310");
+  await sheet.getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText("Расход сохранён")).toBeVisible();
+  const opex = page.locator("section", { hasText: "Операционные расходы" }).last();
+  await expect(opex.getByRole("cell", { name: /E2E servers/ })).toBeVisible();
+  await expect(page.locator(`tr[data-month="${month}"]`)).toContainText("$310");
+  await expect(page.getByText("Опер. расходы").first()).toBeVisible();
+  await expect(page.locator("section", { hasText: "P&L по тьюбам" }).last().getByRole("columnheader", { name: "Опер. расходы" })).toBeVisible();
+  await opex.getByRole("button", { name: "Удалить" }).first().click();
+  await expect(page.getByText("Расход удалён")).toBeVisible();
+});

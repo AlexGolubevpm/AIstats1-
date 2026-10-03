@@ -3,7 +3,7 @@
 // the statement runs as NOLOGIN role mcp_reader in a READ ONLY transaction with a 10 s timeout.
 import { astVisitor, parse, type Statement } from "pgsql-ast-parser";
 
-export const MCP_VIEWS = ["v_sites", "v_bundles", "v_site_geo_daily", "v_bundle_daily", "v_zone_daily", "v_network_geo", "v_format_daily", "v_deal_daily", "v_alerts_active"] as const;
+export const MCP_VIEWS = ["v_sites", "v_bundles", "v_site_geo_daily", "v_bundle_daily", "v_zone_daily", "v_network_geo", "v_format_daily", "v_deal_daily", "v_alerts_active", "v_opex_daily"] as const;
 export const MAX_ROWS = 1000;
 
 const FUNCTIONS = new Set([

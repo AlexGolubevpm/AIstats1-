@@ -187,9 +187,12 @@ export async function writeDevices(db: PrismaClient, date: string, siteId: strin
   return data.length;
 }
 
+/** ADOK sources that are not bought traffic: Direct, organic search, no referrer. No cost. */
+export const FREE_SOURCES = new Set(["direct", "organic_se", "no_source"]);
+
 /**
  * ADOK traffic sources map to CostSource by their ADOK name; a seeded source with the same slug
- * is linked. New ones are created paid (revShare 1), except Direct (free traffic).
+ * is linked. New ones are created paid (revShare 1), except the free ones (FREE_SOURCES).
  */
 export async function sourceSlugs(db: PrismaClient, cells: TrafficSourceCell[]): Promise<Map<string, string>> {
   const out = new Map<string, string>();
@@ -197,7 +200,7 @@ export async function sourceSlugs(db: PrismaClient, cells: TrafficSourceCell[]):
     const byName = await db.costSource.findUnique({ where: { asgName: c.name } });
     if (byName) { out.set(c.slug, byName.slug); continue; }
     const s = await db.costSource.upsert({ where: { slug: c.slug }, update: { asgName: c.name },
-      create: { slug: c.slug, title: c.name, asgName: c.name, revShare: c.slug === "direct" ? 0 : 1 } });
+      create: { slug: c.slug, title: c.name, asgName: c.name, revShare: FREE_SOURCES.has(c.slug) ? 0 : 1 } });
     out.set(c.slug, s.slug);
   }
   return out;
