@@ -1,7 +1,7 @@
 import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
 import {
-  DealRuleError, calcAmount, checkInvoiceAmount, closedPeriods, distribute, effectiveAmount, flatPerDay, flatPeriodDays, inGeoScope, isFlat,
+  DealRuleError, calcAmount, checkInvoiceAmount, closedPeriods, daysInMonth, distribute, effectiveAmount, flatPerDay, flatPeriodDays, inGeoScope, isFlat,
   periodsOverlap, revenueStateOf, statusAfterPayment, weightOf,
 } from "@/server/domain/deals";
 
@@ -118,14 +118,20 @@ describe("deal form validation", async () => {
 });
 
 describe("flat deals", () => {
-  it("a month is 30 days, a week 7, a term its length", () => {
+  it("a month is the calendar month of the day (30 days without a date), a week 7, a term its length", () => {
     expect(flatPeriodDays("MONTH", 365)).toBe(30);
-    expect(flatPeriodDays("WEEK", null)).toBe(7);
+    expect(flatPeriodDays("MONTH", null, "2026-10-15")).toBe(31);
+    expect(flatPeriodDays("MONTH", null, "2026-02-01")).toBe(28);
+    expect(flatPeriodDays("WEEK", null, "2026-10-15")).toBe(7);
     expect(flatPeriodDays("TERM", 45)).toBe(45);
     expect(flatPeriodDays("TERM", null)).toBe(30);
+    expect([daysInMonth("2026-09"), daysInMonth("2028-02-10"), daysInMonth("2026-12-31")]).toEqual([30, 29, 31]);
   });
-  it("amount per day before the split between sites", () => {
+  it("amount per day before the split between sites: September of a $1000 deal is $1000, so is October", () => {
     expect(flatPerDay("FLAT_PERIOD", "1000", "MONTH", null).div(10).toDecimalPlaces(4).toString()).toBe("3.3333");
+    expect(flatPerDay("FLAT_PERIOD", "1000", "MONTH", null, "2026-09-05").div(10).toDecimalPlaces(4).toString()).toBe("3.3333");
+    expect(flatPerDay("FLAT_PERIOD", "1000", "MONTH", null, "2026-10-05").div(10).toDecimalPlaces(4).toString()).toBe("3.2258");
+    expect(flatPerDay("FLAT_PERIOD", "1000", "MONTH", null, "2026-10-05").mul(31).toNumber()).toBeCloseTo(1000, 6);
     expect(flatPerDay("FLAT_DAILY", "20", "MONTH", null).toString()).toBe("20");
     expect(isFlat("FLAT_PERIOD") && isFlat("FLAT_DAILY") && !isFlat("CPM_OWN")).toBe(true);
   });

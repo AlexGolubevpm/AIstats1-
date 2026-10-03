@@ -78,6 +78,7 @@ tests/                       см. 10-testing
 | `CostSource` | + `revShare` (доля этой суммы, идущая в расход; Direct — 0), + `asgName` (имя в ADOK) | Расход = сумма ADOK × `revShare`; ставки `CostRate` к источникам из ADOK не применяются |
 | `FactCost` | + `origin = ASG`, `rateModel = REVSHARE`; страна `ZZ` (разреза источник × страна в ADOK нет) | Маржа и ROMI по сайту и бандлу; по странам расход источников не раскладывается |
 | `FactRevenueDevice` | новая: дата × сайт × устройство (разрез `device`) | Вкладка «Девайсы» сайта; в `FactRevenueGeo` устройство у реальных данных `UNKNOWN` |
+| `OpexEntry` | новая: `month` (1-е число), `title`, `category: HOSTING \| SALARY \| SOFTWARE \| CONTENT \| MARKETING \| OTHER`, `amount`, `siteId?`, `note` | Операционные расходы месяца; вьюха `v_opex_daily` делит сумму поровну на дни месяца ([ADR 0007](../adr/0007-opex-and-calendar-months.md)). В `v_site_geo_daily` не входит |
 | `FactRevenue` → `FactRevenueGeo` + `FactRevenueZone` | Два факта вместо одного с `zoneId = null` / `countryCode = 'ZZ'`, см. [ADR 0004](../adr/0004-revenue-facts-and-billing.md) | Разрезы AdSpyglass не складываются друг с другом |
 | `FactRevenueGeo` | `revenueConfirmed` заполняется выплатой `AsgPayout` пропорционально отчётной выручке | Подтверждение выплат AdSpyglass |
 | `Deal` | + `billedVia: DIRECT \| VIA_ASG` | Дил через AdSpyglass уже внутри `own_deals` и не добавляется второй раз |
@@ -118,7 +119,7 @@ CSV текущей таблицы формируется в браузере и�
 | `asg:totals` | `asg` | каждый час, :05 | вчера + сегодня | Один запрос `group_by=website` на день окна → итоги по сайтам (`FactRevenueGeo`, страна `ZZ`) |
 | `asg:sites` | `asg` | 04:00 | T-`ASG_RESTATE_DAYS`…T-1 | В день: `group_by=website` (итоги для сверки) и `group_by=spot` по аккаунту (зона → сайт по домену в названии). По каждому сайту с `platforms_ids[]=<id>`: `group_by=country`, `adnetwork_squashed`, `device`, `traffic_source` → `FactRevenueGeo`, `FactRevenueNetwork`, `FactRevenueDevice`, `FactTrafficSource`, затем расход по ревшаре источников (`revshareCosts` → `FactCost`, `origin = ASG`). Сайт × день = 4 запроса (27 сайтов × 2 дня ≈ 220 в ночь + 48 почасовых — в бюджете 300). Выручка по странам сверяется с итогом сайта из `group_by=website`: расхождение больше 2% (и больше $0.05) пишется в `IngestRun.error`, прогон — `partial` |
 | `metrika` | `main` | каждый час, :15 | вчера + сегодня | → `FactTraffic` |
-| `derive` | `main` | 04:45 | T-4…T-1 | Расход по ставкам → прогноз дилов → алерты, строго по порядку |
+| `derive` | `main` | 04:45 | T-4…T-1 | Расход по ставкам → прогноз дилов (флэт «в месяц» — по дням календарного месяца) → алерты, строго по порядку |
 | `geo:reprocess` | `main` | по кнопке | 90 дней | Переписывает строки стран и устройств из сохранённого сырья (после сопоставления страны или чтобы заново разложить выручку сеток по итогу сайта), затем `derive`. Запросов к API нет |
 
 Ручной запуск и бэкфилл — на `/settings/integrations` (action ставит джоб в очередь). Для бэкфилла `asg:sites` форма считает число запросов и требует подтверждения, если оно больше дневного бюджета. Раскладка сумм периода по дням (`distributePeriod`) выполняется сразу в action ввода периода или оплаты.

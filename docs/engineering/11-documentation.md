@@ -12,6 +12,7 @@
 | Финансы, фикс-дилы | [`product/04-finance-and-deals.md`](../product/04-finance-and-deals.md) |
 | Настройки | [`product/05-settings.md`](../product/05-settings.md) |
 | Формула, порог, правило алерта | [`product/06-metrics.md`](../product/06-metrics.md) |
+| Новый разрез или выгрузка из ADOK/Метрики закрыли дыру | вычеркнуть пункт в [`product/12-analytics-gaps.md`](../product/12-analytics-gaps.md) |
 | Токен, компонент, паттерн UI | [`design/07-design-system.md`](../design/07-design-system.md) |
 | Модель данных, API, джоб, структура кода | [`architecture/08-backend.md`](../architecture/08-backend.md) |
 | Инструмент MCP, вьюха | [`architecture/09-mcp.md`](../architecture/09-mcp.md) |

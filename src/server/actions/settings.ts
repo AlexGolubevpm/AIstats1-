@@ -122,9 +122,9 @@ export async function addSourceAction(_: ActionResult, f: FormData): Promise<Act
 export async function sourceShareAction(_: ActionResult, f: FormData): Promise<ActionResult> {
   await requireSession();
   return guarded(async () => {
-    await setSourceShare(db, str(f, "slug"), str(f, "revShare"));
-    revalidatePath("/settings/costs");
-    return { ok: true, message: "Доля сохранена. Пересчитайте расход за нужный период" };
+    const rows = await setSourceShare(db, str(f, "slug"), str(f, "revShare"));
+    revalidatePath("/settings/costs"); revalidatePath("/finance"); revalidatePath("/");
+    return { ok: true, message: `Доля сохранена, расход за 2 месяца пересчитан (${rows} строк)` };
   });
 }
 

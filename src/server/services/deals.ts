@@ -83,7 +83,7 @@ export async function forecastDeals(db: PrismaClient, from: string, to: string):
         const inPeriod = covered(date);
         let amounts: Decimal[];
         if (isFlat(basis)) {
-          const perDay = flatPerDay(basis, deal.price.toString(), deal.billingPeriod as BillingPeriod, termDaysOf(deal));
+          const perDay = flatPerDay(basis, deal.price.toString(), deal.billingPeriod as BillingPeriod, termDaysOf(deal), date);
           amounts = cells.map(() => perDay.div(cells.length).toDecimalPlaces(4)); // evenly between the deal's sites
         } else {
           amounts = cells.map((c) => calcAmount(basis, deal.price.toString(), { ...c, days: 1 }));
@@ -151,7 +151,7 @@ export async function calculatePeriodAmount(db: PrismaClient, dealId: string, fr
   if (siteId) counters = counters.filter((c) => c.siteId === siteId);
   const sum = counters.reduce((a, c) => ({ pageLoads: a.pageLoads + c.pageLoads, impsOwn: a.impsOwn + c.impsOwn }), { pageLoads: 0, impsOwn: 0 });
   const days = daysIn(from, to);
-  const periodDays = flatPeriodDays(deal.billingPeriod as BillingPeriod, termDaysOf(deal) ?? days);
+  const periodDays = flatPeriodDays(deal.billingPeriod as BillingPeriod, termDaysOf(deal) ?? days, from);
   const amount = calcAmount(deal.paymentBasis as PaymentBasis, deal.price.toString(), { ...sum, impsReported, days }, periodDays);
   const forecast = await db.factFixDeal.aggregate({ _sum: { revenue: true }, where: { dealId, date: { gte: d(from), lte: d(to) }, ...(siteId ? { siteId } : {}) } });
   return { ...sum, days, amount: amount.toString(), forecast: (forecast._sum.revenue ?? 0).toString() };

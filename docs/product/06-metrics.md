@@ -20,8 +20,9 @@
 | --- | --- | --- | --- |
 | Выручка | `revenue_mediated + revenue_direct` | money | Везде |
 | Расход | `SUM(cost)` | money | Сайт × гео и выше |
-| Маржа | `revenue − cost` | money, цвет | Сайт × гео и выше |
-| **ROMI** | `(revenue − cost) / cost × 100%` | percent, цвет | Главная цифра бандла и сайта |
+| Маржа | `revenue − cost` | money, цвет | Сайт × гео и выше. На `/finance` — после операционных расходов: `revenue − cost − opex` ([ADR 0007](../adr/0007-opex-and-calendar-months.md)) |
+| Опер. расходы | `SUM(v_opex_daily.amount)` — цифра месяца / дней в месяце, по дням | money | `/finance`: KPI, таблица по месяцам, P&L (расход сети — по сайтам пропорционально выручке) |
+| **ROMI** | `(revenue − cost) / cost × 100%` | percent, цвет | Главная цифра бандла и сайта. Всегда на расход на трафик, без опер. расходов |
 | Уники | `SUM(uniques)` — сумма дневных | int | Подпись в UI: «сумма дневных уников» |
 | RPM на уника | `revenue / uniques × 1000` | money | Сравнение сайтов и бандлов |
 | **Rev / 1000 loads** | `revenue / page_loads × 1000` | cpm | Основная метрика сравнения сеток внутри гео |

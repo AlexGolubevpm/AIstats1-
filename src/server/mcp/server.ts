@@ -12,7 +12,8 @@ export const INSTRUCTIONS = `TubeStat — маржа по сети тьюб-са
 3. Сайт может входить в несколько бандлов: сумма по бандлам ≠ итог сети. Итог сети считать по сайтам.
 4. revenue — включая прогноз; revenue_confirmed — только подтверждённое деньгами.
 5. Метрики — отношение сумм (SUM(margin)/SUM(cost)), не среднее средних.
-ROMI = маржа / расход × 100.`;
+6. Операционные расходы (хостинг, люди, софт) лежат в v_opex_daily по дням календарного месяца; site_id NULL — расход всей сети. Маржа после опер. расходов = revenue − cost − opex. В margin вьюх v_site_geo_daily / v_bundle_daily их нет.
+ROMI = маржа до опер. расходов / расход на трафик × 100.`;
 
 let ddlCache: string | null = null;
 async function viewsDdl(): Promise<string> {

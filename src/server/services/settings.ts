@@ -4,6 +4,7 @@ import Decimal from "decimal.js";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { RuleError, parseDecimal } from "@/server/domain/errors";
 import { normalizeDomain, parseWebsiteName } from "@/server/ingest/normalize";
+import { revshareCosts } from "./costs";
 
 const d = (s: string) => new Date(`${s}T00:00:00Z`);
 const isoOf = (x: Date) => x.toISOString().slice(0, 10);
@@ -122,10 +123,13 @@ export async function addCostSource(db: PrismaClient, slug: string, title: strin
 }
 
 /** Revshare of an ADOK traffic source, in percent (0 = free traffic, 100 = all its revenue is paid back). */
-export async function setSourceShare(db: PrismaClient, slug: string, percent: string): Promise<void> {
+/** Sets the share of an ADOK source's sum that is cost and recomputes that cost for the last `days` days. */
+export async function setSourceShare(db: PrismaClient, slug: string, percent: string, days = 62, today = new Date().toISOString().slice(0, 10)): Promise<number> {
   const v = Number(percent.replace(",", "."));
   if (!Number.isFinite(v) || v < 0 || v > 100) throw new RuleError("revShare", "Доля — от 0 до 100%", "revShare");
   await db.costSource.update({ where: { slug }, data: { revShare: (v / 100).toFixed(4) } });
+  const from = new Date(new Date(`${today}T00:00:00Z`).getTime() - (days - 1) * 86_400_000).toISOString().slice(0, 10);
+  return revshareCosts(db, from, today);
 }
 
 // ---------- networks ----------
