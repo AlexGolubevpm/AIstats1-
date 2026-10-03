@@ -123,7 +123,7 @@ describe("deals", () => {
   it("list, queue, payments register, detail", async () => {
     const list = await dealsList(P);
     expect(list.map((d) => d.title).sort()).toEqual(["Own popunder", "Sponsor banner"]);
-    expect(list.find((d) => d.title === "Sponsor banner")).toMatchObject({ forecast: 3, confirmed: 3 });
+    expect(list.find((d) => d.title === "Sponsor banner")).toMatchObject({ forecast: 3, confirmed: 3, startsAt: "2026-09-20", endsAt: null });
     expect((await dealsList(P, "archive"))).toEqual([]);
     const todo = await todoQueue("2026-11-10");
     expect(todo.some((t) => t.kind === "enter" && t.title === "Sponsor banner" && t.from === "2026-09-20")).toBe(true);

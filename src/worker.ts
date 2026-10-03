@@ -6,12 +6,20 @@ import { JOB_NAMES, SCHEDULES, runJob, type JobData, type JobName } from "@/serv
 import { queue, redis } from "@/server/jobs/queue";
 import { rawStoreFromEnv } from "@/server/ingest/raw-store";
 import { seedReference } from "@/server/seed/reference";
+import { REFORECAST_DAYS, forecastDeals } from "@/server/services/deals";
 
 const cfg = config();
 const raw = rawStoreFromEnv();
 const log = (msg: string, extra: Record<string, unknown> = {}) => console.log(JSON.stringify({ t: new Date().toISOString(), msg, ...extra }));
 
 await seedReference(db);
+// Catch-up: every start (each deploy) recomputes the fix-deal forecast for the last 92 days, so a
+// rule change or a deal entered while the worker was down never waits for the night.
+try {
+  const today = new Date().toISOString().slice(0, 10);
+  const from = new Date(Date.now() - (REFORECAST_DAYS - 1) * 86_400_000).toISOString().slice(0, 10);
+  log("deals reforecast", { from, to: today, rows: await forecastDeals(db, from, today) });
+} catch (e) { log("deals reforecast failed", { error: (e as Error).message }); }
 for (const s of SCHEDULES) {
   await queue(s.queue).upsertJobScheduler(s.name, { pattern: s.pattern, tz: "UTC" }, { name: s.name, data: {} });
 }

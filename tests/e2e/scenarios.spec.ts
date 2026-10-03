@@ -52,6 +52,13 @@ test("4. new deal → enter period → payment → paid in the payments register
   await page.getByRole("button", { name: "Создать дил" }).click();
   await expect(page).toHaveURL(/\/deals\/[a-z0-9]+$/);
   await expect(page.getByRole("heading", { name: /E2E Media · E2E баннер/ })).toBeVisible();
+  // The forecast is there at once (no night run): the deal card lists its August periods with money.
+  await page.goto("/deals?preset=prev_month&from=2026-08-01&to=2026-08-31");
+  await page.goto("/deals?from=2026-08-01&to=2026-08-31");
+  await expect(page.getByRole("row", { name: /E2E Media · E2E баннер/ })).toContainText("01.08.2026 — 31.08.2026");
+  await page.getByRole("button", { name: "Пересчитать прогноз" }).click();
+  await expect(page.getByText(/Прогноз пересчитан/)).toBeVisible();
+  await page.goBack(); await page.goBack();
 
   await page.getByRole("button", { name: "Внести", exact: true }).first().click();
   const amount = page.locator("input[name=amountInvoiced]");

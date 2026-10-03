@@ -37,6 +37,7 @@ export async function dealsList(p: Period, status?: string) {
   const sums = await factSums(p);
   return deals.map((d) => ({
     id: d.id, title: d.title, advertiser: d.advertiser.name, format: d.format, basis: d.paymentBasis, price: Number(d.price), billedVia: d.billedVia,
+    startsAt: iso(d.startsAt), endsAt: d.endsAt ? iso(d.endsAt) : null,
     sites: d.sites.map((s) => s.site.domain), status: d.status, ...(sums.get(d.id) ?? { forecast: 0, invoiced: 0, confirmed: 0, multiplier: null }),
   }));
 }

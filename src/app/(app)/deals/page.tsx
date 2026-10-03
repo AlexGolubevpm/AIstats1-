@@ -3,6 +3,7 @@ import { DataTable } from "@/components/data/data-table";
 import { PageHeader } from "@/components/layout/page-header";
 import { FORMAT_LABEL } from "@/components/pages/columns";
 import { DealFormButton } from "@/components/pages/deal-form";
+import { ReforecastButton } from "./reforecast";
 import { EnterPeriodButton, PaymentButton } from "@/components/pages/period-forms";
 import { Badge } from "@/components/ui/badge";
 import { Section } from "@/components/ui/card";
@@ -18,14 +19,17 @@ const TABS = [["deals", "Дилы"], ["todo", "Нужно внести"], ["paym
 export default async function Deals({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const sp = await searchParams;
   const tab = TABS.some(([t]) => t === sp.tab) ? sp.tab! : "deals";
-  const p = periodFromParams(sp, "mtd");
+  // Flat deals are known for today in advance, so the default month runs up to today, not yesterday like ADOK data.
+  const today = new Date().toISOString().slice(0, 10);
+  const p0 = periodFromParams(sp, "mtd");
+  const p = p0.preset === "mtd" ? { ...p0, to: today } : p0;
   const [opts, todo] = await Promise.all([dealFormOptions(), todoQueue()]);
   const q = (patch: Record<string, string | undefined>) => ({ query: { ...sp, ...patch } });
 
   return (
     <>
       <PageHeader title="Фикс-дилы" sub="Прямые сделки вне аукциона AdSpyglass: что идёт, сколько принесло, кто нам должен"
-        period={tab === "deals" ? p : undefined} actions={<DealFormButton sites={opts.sites} advertisers={opts.advertisers} placements={opts.placements} label="Новый дил" />} />
+        period={tab === "deals" ? p : undefined} actions={<div className="flex items-center gap-2"><ReforecastButton /><DealFormButton sites={opts.sites} advertisers={opts.advertisers} placements={opts.placements} label="Новый дил" /></div>} />
       <nav className="flex gap-1 border-b border-border">
         {TABS.map(([t, label]) => (
           <Link key={t} href={q({ tab: t === "deals" ? undefined : t })} className={cn("-mb-px border-b-2 px-3 py-2 text-sm", tab === t ? "border-accent font-medium text-accent" : "border-transparent text-muted hover:text-text")}>
@@ -46,9 +50,13 @@ async function DealsTab({ sp, p, q }: { sp: Record<string, string | undefined>; 
   const rows = deals.filter((d) => !adv || d.advertiser === adv).map((d) => ({
     ...d, _key: d.id, _href: `/deals/${d.id}`, name: `${d.advertiser} · ${d.title}`, formatLabel: FORMAT_LABEL[d.format] ?? d.format,
     terms: `${BASIS_LABEL[d.basis]} · $${d.price}`, sitesLabel: d.sites.slice(0, 3).join(", ") + (d.sites.length > 3 ? ` +${d.sites.length - 3}` : ""),
+    dates: `${fmtDate(d.startsAt)} — ${d.endsAt ? fmtDate(d.endsAt) : "бессрочно"}`,
     statusLabel: { ACTIVE: "активен", PAUSED: "на паузе", ENDED: "завершён", DRAFT: "черновик" }[d.status],
     _dashed: { forecast: true }, _warn: d.multiplier != null && d.multiplier > 1.5,
-    _badges: d.billedVia === "VIA_ASG" ? { name: [{ label: "через ASG", tone: "neutral" as const }] } : undefined,
+    _badges: {
+      name: d.billedVia === "VIA_ASG" ? [{ label: "через ASG", tone: "neutral" as const }] : [],
+      forecast: d.startsAt > p.to ? [{ label: `начнётся ${fmtDate(d.startsAt)}`, tone: "neutral" as const }] : d.endsAt && d.endsAt < p.from ? [{ label: "закончился до периода", tone: "neutral" as const }] : [],
+    },
   }));
   const statuses = [["", "Текущие"], ["ACTIVE", "Активные"], ["PAUSED", "На паузе"], ["DRAFT", "Черновики"], ["archive", "Архив"]];
   const advertisers = [...new Set(deals.map((d) => d.advertiser))].sort();
@@ -66,7 +74,8 @@ async function DealsTab({ sp, p, q }: { sp: Record<string, string | undefined>; 
       <DataTable id="deals" exportName="deals" defaultSort={{ id: "forecast", dir: "desc" }} empty="Дилов пока нет — создайте первый"
         columns={[
           { id: "name", header: "Рекламодатель · дил", kind: "text" }, { id: "formatLabel", header: "Формат", kind: "text" }, { id: "terms", header: "Модель · цена", kind: "text" },
-          { id: "sitesLabel", header: "Сайты", kind: "mono" }, { id: "forecast", header: "Прогноз", kind: "money" }, { id: "invoiced", header: "Выставлено", kind: "money" },
+          { id: "sitesLabel", header: "Сайты", kind: "mono" }, { id: "dates", header: "Период", kind: "text" },
+          { id: "forecast", header: "Прогноз", kind: "money", tooltip: "Сумма за выбранный период страницы; флэт считается по дням календарного месяца" }, { id: "invoiced", header: "Выставлено", kind: "money" },
           { id: "confirmed", header: "Подтверждено", kind: "money" },
           { id: "multiplier", header: "Множитель", kind: "multiplier", tooltip: "Показы рекламодателя / наши. Больше 1.5× — рекламодатель засчитывает заметно больше" },
           { id: "statusLabel", header: "Статус", kind: "text" },
