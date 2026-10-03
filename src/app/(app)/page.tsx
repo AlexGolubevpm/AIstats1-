@@ -11,7 +11,7 @@ import { fmtMoney } from "@/lib/format";
 import { eachDay, periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
 import { dailyTotals, kpis } from "@/server/queries/common";
-import { bundlesTable, dataExists, overlappingSites, revenueSplitDaily, topMovers } from "@/server/queries/reports";
+import { bundlesTable, costSplitDaily, dataExists, opexDaily, overlappingSites, revenueSplitDaily, topMovers } from "@/server/queries/reports";
 
 type SP = Promise<Record<string, string | string[] | undefined>>;
 
@@ -25,27 +25,29 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
       </>
     );
   }
-  const [k, bundles, overlap, movers, split, daily, alerts, networks] = await Promise.all([
+  const [k, bundles, overlap, movers, split, daily, alerts, networks, costSplit, opex] = await Promise.all([
     kpis(p), bundlesTable(p), overlappingSites(), topMovers(p), revenueSplitDaily(p, {}, "networks"), dailyTotals(p),
     db.alert.findMany({ where: { resolvedAt: null, OR: [{ snoozedUntil: null }, { snoozedUntil: { lt: new Date() } }] }, orderBy: [{ level: "desc" }, { moneyAtRisk: "desc" }], take: 5 }),
-    db.network.findMany(),
+    db.network.findMany(), costSplitDaily(p), opexDaily(p),
   ]);
   const { data, series } = pivot(split, eachDay(p));
   const known = Object.fromEntries(networks.map((n) => [n.title, n.color]));
   known["Фикс-дилы"] = "#22C55E";
-  const costByDay = new Map(daily.map((d) => [d.date, Number.isNaN(d.revenue) ? null : d.cost]));
-  const chart = data.map((row) => ({ ...row, cost: costByDay.get(String(row.date)) ?? null }));
+  const costs = pivot(costSplit, eachDay(p));
+  const costKnown: Record<string, string> = { "Опер. расходы": "#94A3B8" };
+  // P&L by day: revenue and traffic cost from the facts, margin after operating expenses; empty days stay gaps.
+  const pnl = daily.map((d) => {
+    const gap = Number.isNaN(d.revenue), ox = opex.get(d.date) ?? 0;
+    return { date: d.date, revenue: gap ? null : d.revenue, cost: gap ? null : d.cost, opex: gap ? null : ox, margin: gap ? null : d.revenue - d.cost - ox };
+  });
 
   return (
     <>
       <PageHeader title="Сводка" sub="Маржа по всем сайтам и бандлам" period={p} />
       <KpiRow k={k} keys={["revenue", "cost", "margin", "romi", "uniques", "rpm"]} />
       <div className="grid gap-4 xl:grid-cols-3">
-        <Section title="Выручка по сеткам и расход" className="xl:col-span-2" sub="Столбцы — выручка по сеткам, линия — расход">
-          <TrendChart data={chart} series={[
-            ...series.map((s, i) => ({ key: s, label: s, color: colorFor(s, i, known), type: "bar" as const, stack: "rev" })),
-            { key: "cost", label: "Расход", color: "#F43F5E", type: "line" as const },
-          ]} />
+        <Section title="Выручка по сеткам" className="xl:col-span-2" sub="Столбцы — выручка по сеткам AdSpyglass и прямые фикс-дилы">
+          <TrendChart data={data} series={series.map((s, i) => ({ key: s, label: s, color: colorFor(s, i, known), type: "bar" as const, stack: "rev" }))} />
         </Section>
         <Section title="Алерты" actions={<Link href="/alerts" className="text-sm text-accent hover:underline">Все →</Link>}>
           {alerts.length === 0 ? <p className="py-6 text-center text-sm text-muted">Активных алертов нет</p> : (
@@ -53,6 +55,19 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
               {alerts.map((a) => <AlertBadge key={a.id} level={a.level} title={a.title} message={a.message} link={a.link} />)}
             </div>
           )}
+        </Section>
+      </div>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <Section title="Расходы" sub="Столбцы — расход на трафик по источникам и операционные расходы по дням">
+          <TrendChart data={costs.data} series={costs.series.map((s, i) => ({ key: s, label: s, color: colorFor(s, i, costKnown), type: "bar" as const, stack: "cost" }))} />
+        </Section>
+        <Section title="P&L" sub="Выручка и расход на трафик столбцами, маржа после опер. расходов линией">
+          <TrendChart data={pnl} series={[
+            { key: "revenue", label: "Выручка", color: "#3B82F6", type: "bar" as const },
+            { key: "cost", label: "Расход на трафик", color: "#F43F5E", type: "bar" as const },
+            { key: "opex", label: "Опер. расходы", color: "#94A3B8", type: "bar" as const },
+            { key: "margin", label: "Маржа", color: "#16A34A", type: "line" as const },
+          ]} />
         </Section>
       </div>
       <Section title="Бандлы" sub={overlap > 0 ? `Сумма по бандлам ≠ сети: ${overlap} ${overlap === 1 ? "сайт входит" : "сайта входят"} в несколько бандлов. Итог считается по сайтам.` : undefined}>

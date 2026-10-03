@@ -177,3 +177,26 @@ test("finance: an operating expense of a month lands in the month table, the KPI
   await opex.getByRole("button", { name: "Удалить" }).first().click();
   await expect(page.getByText("Расход удалён")).toBeVisible();
 });
+
+test("forecast: the month is drawn day by day, the pace switch changes the URL, sites are projected", async ({ page }) => {
+  await login(page, "/forecast");
+  await expect(page.getByRole("heading", { name: "Прогноз" })).toBeVisible();
+  await expect(page.getByText(/Прогноз выручки|Выручка за месяц/).first()).toBeVisible();
+  await page.getByRole("link", { name: "3 дн." }).click();
+  await expect(page).toHaveURL(/n=3/);
+  await expect(page.locator("tr[data-kind=actual]").first()).toBeVisible();
+  await expect(page.locator("tbody a[href^='/sites/']").first()).toBeVisible();
+  await page.getByRole("link", { name: /^← / }).click();
+  await expect(page).toHaveURL(/month=\d{4}-\d{2}/);
+  await expect(page.locator("tr[data-kind=forecast]")).toHaveCount(0); // a finished month has no forecast rows
+});
+
+test("recommendations: the list opens, scope chips filter and change the URL", async ({ page }) => {
+  await login(page, "/recommendations");
+  await expect(page.getByRole("heading", { name: "Рекомендации", exact: true }).first()).toBeVisible();
+  await expect(page.locator("li[data-scope]").first()).toBeVisible();
+  await page.locator("a[href*='scope=format']").click();
+  await expect(page).toHaveURL(/scope=format/);
+  await expect(page.locator("li[data-scope]:not([data-scope=format])")).toHaveCount(0);
+  await expect(page.getByText("Что сделать:").first()).toBeVisible();
+});

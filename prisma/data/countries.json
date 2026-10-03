@@ -254,4 +254,4 @@
 {"code":"ZM","nameEn":"Zambia","nameRu":"Замбия","tier":3},
 {"code":"ZW","nameEn":"Zimbabwe","nameRu":"Зимбабве","tier":3},
 {"code":"XX","nameEn":"Unknown","nameRu":"Не распознано","tier":0},
-{"code":"ZZ","nameEn":"All countries","nameRu":"Все страны","tier":0}]
+{"code":"ZZ","nameEn":"No country","nameRu":"Без страны","tier":0}]

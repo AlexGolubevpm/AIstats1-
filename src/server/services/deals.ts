@@ -26,7 +26,10 @@ export async function dealCounters(db: PrismaClient, dealId: string, from: strin
       out.push(...rows.map((r) => ({ date: isoOf(r.date), siteId: ds.siteId, countryCode: "ZZ", pageLoads: r.pageLoads, impsOwn: r.impsOwn })));
     } else if (deal.counterSource === "ASG_ZONE") {
       const rows = await db.factRevenueGeo.groupBy({ by: ["date", "countryCode"], _sum: { pageLoads: true, impsOwn: true }, where: { siteId: ds.siteId, date: range } });
-      out.push(...rows.filter((r) => inGeoScope(deal, r.countryCode)).map((r) => ({ date: isoOf(r.date), siteId: ds.siteId, countryCode: r.countryCode,
+      // A day with only the ZZ site total (no country cut yet) keeps it whatever the geo scope: otherwise a scoped deal gets no counters at all.
+      const onlyZZ = new Set(rows.filter((r) => r.countryCode === "ZZ").map((r) => isoOf(r.date)));
+      for (const r of rows) if (r.countryCode !== "ZZ") onlyZZ.delete(isoOf(r.date));
+      out.push(...rows.filter((r) => onlyZZ.has(isoOf(r.date)) || inGeoScope(deal, r.countryCode)).map((r) => ({ date: isoOf(r.date), siteId: ds.siteId, countryCode: r.countryCode,
         pageLoads: r._sum.pageLoads ?? 0, impsOwn: r._sum.impsOwn ?? 0 })));
     } else if (deal.counterSource === "METRIKA") {
       const rows = await db.factTraffic.groupBy({ by: ["date", "countryCode"], _sum: { pageviews: true }, where: { siteId: ds.siteId, date: range } });
@@ -63,8 +66,8 @@ async function enteredPeriods(db: PrismaClient, dealId: string) {
  * Nightly forecast: counters and forecast revenue for days not covered by an entered period.
  * Days inside entered periods keep their distributed amounts; only counters are refreshed.
  */
-export async function forecastDeals(db: PrismaClient, from: string, to: string): Promise<number> {
-  const deals = await db.deal.findMany({ where: { status: { in: ["ACTIVE", "PAUSED", "ENDED"] }, startsAt: { lte: d(to) } }, include: { sites: true } });
+export async function forecastDeals(db: PrismaClient, from: string, to: string, dealId?: string): Promise<number> {
+  const deals = await db.deal.findMany({ where: { status: { in: ["ACTIVE", "PAUSED", "ENDED"] }, startsAt: { lte: d(to) }, ...(dealId ? { id: dealId } : {}) }, include: { sites: true } });
   let rows = 0;
   for (const deal of deals) {
     const start = isoOf(deal.startsAt) > from ? isoOf(deal.startsAt) : from;
@@ -242,6 +245,7 @@ export async function saveDeal(db: PrismaClient, raw: DealInput, id?: string, re
   if (!id) {
     const deal = await db.deal.create({ data: { ...data, status: "ACTIVE", sites: { create: sites } } });
     await db.auditLog.create({ data: { entity: "Deal", entityId: deal.id, field: "created", after: `${i.paymentBasis} ${i.price}` } });
+    await reforecast(db, deal.id);
     return deal.id;
   }
   const before = await db.deal.findUniqueOrThrow({ where: { id } });
@@ -258,13 +262,26 @@ export async function saveDeal(db: PrismaClient, raw: DealInput, id?: string, re
       if (f === "price" ? !new Decimal(a || 0).equals(b || 0) : a !== b) await tx.auditLog.create({ data: { entity: "Deal", entityId: id, field: f, before: a, after: b, reason: reason || null } });
     }
   });
+  await reforecast(db, id);
   return id;
+}
+
+/** Forecast window after a save: from the deal's start (at most 92 days back) up to today, so the pages show it at once. */
+export const REFORECAST_DAYS = 92;
+async function reforecast(db: PrismaClient, id: string, today = isoOf(new Date())): Promise<void> {
+  const deal = await db.deal.findUniqueOrThrow({ where: { id } });
+  const floor = isoOf(new Date(d(today).getTime() - (REFORECAST_DAYS - 1) * DAY));
+  const from = isoOf(deal.startsAt) > floor ? isoOf(deal.startsAt) : floor;
+  // Rows after a new, earlier end date are stale: the forecast only rewrites days inside the window.
+  await db.factFixDeal.deleteMany({ where: { dealId: id, dealPeriodId: null, ...(deal.endsAt ? { date: { gt: deal.endsAt } } : {}) } });
+  if (from <= today) await forecastDeals(db, from, today, id);
 }
 
 export async function setDealStatus(db: PrismaClient, id: string, status: "ACTIVE" | "PAUSED" | "ENDED", endsAt?: string): Promise<void> {
   const before = await db.deal.findUniqueOrThrow({ where: { id } });
   await db.deal.update({ where: { id }, data: { status, ...(status === "ENDED" && !before.endsAt ? { endsAt: d(endsAt ?? isoOf(new Date())) } : {}) } });
   await db.auditLog.create({ data: { entity: "Deal", entityId: id, field: "status", before: before.status, after: status } });
+  await reforecast(db, id);
 }
 
 /** Only a draft deal without entered periods can be deleted; everything else keeps history. */

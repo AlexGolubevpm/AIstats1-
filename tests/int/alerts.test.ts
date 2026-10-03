@@ -14,6 +14,12 @@ beforeEach(async () => {
 });
 
 describe("alert rules", () => {
+  it("country ZZ (no country: source cost, flat deals) is never a loss-making geo", async () => {
+    await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 0, rateModel: "REVSHARE", rate: "1", cost: "500", origin: "ASG" } });
+    const c = await RULES.lossGeo(ctx());
+    expect(c.some((x) => x.entityKey.endsWith("country:ZZ"))).toBe(false);
+  });
+
   it("1: loss-making geo — JP on every site, not US", async () => {
     const c = await RULES.lossGeo(ctx());
     expect(c.map((x) => x.entityKey).sort()).toEqual(["site:s1|country:JP", "site:s2|country:JP", "site:s3|country:JP"]);

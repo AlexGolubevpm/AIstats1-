@@ -39,10 +39,10 @@ src/
     db.ts                    Prisma client (создаётся при первом обращении)
     config.ts                переменные окружения
     auth.ts, session.ts      пароль, сессии, MCP-токен
-    queries/                 чтение для страниц: common, reports, finance, deals, month-report
+    queries/                 чтение для страниц: common, reports, finance, deals, month-report, forecast, recommendations, inventory
     actions/                 server actions: auth, alerts, deals, finance, settings; result.ts — общий формат ответа
     services/                операции над базой: costs, deals, finance (выплаты ASG), settings
-    domain/                  чистая логика без базы: deals, costs, alerts/rules, errors (RuleError)
+    domain/                  чистая логика без базы: deals, costs, alerts/rules, inventory, recommendations, errors (RuleError); src/lib/forecast.ts — прогноз месяца
     ingest/
       adspyglass/            клиент с лимитами, маппинг, запись, пересчёт из сырья
       metrika/

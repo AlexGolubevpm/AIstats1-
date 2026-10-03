@@ -4,6 +4,7 @@ import { db } from "@/server/db";
 import type { Period } from "@/lib/period";
 import * as m from "@/lib/metrics";
 import { previousPeriod } from "@/lib/period";
+import { apportion } from "@/server/ingest/adspyglass/map";
 import { D, iso, type Scope } from "./common";
 
 type Raw = Record<string, unknown>;
@@ -79,7 +80,36 @@ export async function formatsTable(p: Period, s: Scope = {}) {
   });
 }
 
-export async function geoTable(p: Period, s: Scope = {}, top = 20) {
+export interface GeoRow {
+  country: string; name: string; tier: number | null; sites: number; uniques: number; pageLoads: number; revenue: number; cost: number; margin: number;
+  romi: number | null; revPer1k: number | null; costPerUnique: number | null;
+  /** Cost (and site-total revenue) that ADOK gives without a country was spread over this row by page loads. */
+  estimated: boolean;
+  [k: string]: unknown;
+}
+
+/**
+ * Country ZZ is "no country": ADOK has no traffic-source × country cut, so source cost (ADR 0006)
+ * and flat deals sit there. For the table that money is spread over the real countries pro rata
+ * to page loads (bought traffic is loads), to the cent; the ZZ row stays only when there is no
+ * country to spread it over. Rows that received a share carry `estimated`.
+ */
+export function spreadNoCountry<T extends { country: string; pageLoads: number; revenue: number; cost: number }>(rows: T[]): (T & { estimated: boolean; margin: number; romi: number | null; revPer1k: number | null })[] {
+  const zz = rows.find((r) => r.country === "ZZ");
+  const real = rows.filter((r) => r.country !== "ZZ");
+  const targets = real.filter((r) => r.pageLoads > 0);
+  const fin = (r: T, estimated: boolean) => ({ ...r, estimated, margin: r.revenue - r.cost, romi: m.romi(r.revenue, r.cost), revPer1k: m.revPer1kLoads(r.revenue, r.pageLoads) });
+  if (!zz || !targets.length) return rows.map((r) => fin(r, false));
+  const weights = targets.map((r) => r.pageLoads);
+  const costCents = apportion(Math.round(zz.cost * 100), weights), revCents = apportion(Math.round(zz.revenue * 100), weights);
+  const share = new Map(targets.map((r, i) => [r.country, { cost: costCents[i] / 100, revenue: revCents[i] / 100 }]));
+  return real.map((r) => {
+    const x = share.get(r.country);
+    return x ? fin({ ...r, cost: r.cost + x.cost, revenue: r.revenue + x.revenue }, zz.cost > 0 || zz.revenue > 0) : fin(r, false);
+  });
+}
+
+export async function geoTable(p: Period, s: Scope = {}, top = 20): Promise<GeoRow[]> {
   const rows = await db.$queryRaw<Raw[]>`
     SELECT g.country_code cc, c."nameRu" name, c.tier, count(DISTINCT g.site_id)::int sites,
       SUM(g.uniques)::float8 uniques, SUM(g.page_loads)::float8 loads, SUM(g.revenue)::float8 revenue, SUM(g.cost)::float8 cost,
@@ -87,17 +117,17 @@ export async function geoTable(p: Period, s: Scope = {}, top = 20) {
     FROM v_site_geo_daily g LEFT JOIN "Country" c ON c.code = g.country_code
     WHERE g.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`g.site_id`, s)}
     GROUP BY 1, 2, 3 ORDER BY loads DESC`;
-  const mapped = rows.map((r) => {
-    const revenue = n(r.revenue), cost = n(r.cost);
-    return { country: String(r.cc), name: String(r.name ?? r.cc), tier: n(r.tier) || null, sites: n(r.sites), uniques: n(r.uniques), pageLoads: n(r.loads),
-      revenue, cost, margin: revenue - cost, romi: m.romi(revenue, cost), revPer1k: m.revPer1kLoads(revenue, n(r.loads)), costPerUnique: m.costPerUnique(cost, n(r.bought)) };
-  });
+  const mapped = spreadNoCountry(rows.map((r) => ({
+    country: String(r.cc), name: String(r.name ?? r.cc), tier: n(r.tier) || null, sites: n(r.sites), uniques: n(r.uniques), pageLoads: n(r.loads),
+    revenue: n(r.revenue), cost: n(r.cost), costPerUnique: m.costPerUnique(n(r.cost), n(r.bought)) })))
+    .map((r) => (r.country === "ZZ" ? { ...r, romi: null, revPer1k: null } : r))
+    .sort((a, b) => (a.country === "ZZ" ? 1 : b.country === "ZZ" ? -1 : b.pageLoads - a.pageLoads));
   if (!top || mapped.length <= top) return mapped;
   const rest = mapped.slice(top);
   const sum = (k: "uniques" | "pageLoads" | "revenue" | "cost") => rest.reduce((a, r) => a + r[k], 0);
-  const other = { country: "", name: `Прочие (${rest.length})`, tier: null, sites: 0, uniques: sum("uniques"), pageLoads: sum("pageLoads"),
+  const other: GeoRow = { country: "", name: `Прочие (${rest.length})`, tier: null, sites: 0, uniques: sum("uniques"), pageLoads: sum("pageLoads"),
     revenue: sum("revenue"), cost: sum("cost"), margin: sum("revenue") - sum("cost"), romi: m.romi(sum("revenue"), sum("cost")),
-    revPer1k: m.revPer1kLoads(sum("revenue"), sum("pageLoads")), costPerUnique: null };
+    revPer1k: m.revPer1kLoads(sum("revenue"), sum("pageLoads")), costPerUnique: null, estimated: rest.some((r) => r.estimated) };
   return [...mapped.slice(0, top), other];
 }
 
@@ -219,17 +249,38 @@ export async function revenueSplitDaily(p: Period, s: Scope, by: SplitBy) {
   return rows.map((r) => ({ date: iso(r.date as Date), key: String(r.k), value: n(r.v) }));
 }
 
-/** Site × country ROMI for the top countries by cost (geo page matrix). */
-export async function geoMatrix(p: Period, top = 12) {
+/** Stacked daily cost: traffic cost by source (FactCost) plus operating expenses by day (v_opex_daily). */
+export async function costSplitDaily(p: Period, s: Scope = {}) {
   const rows = await db.$queryRaw<Raw[]>`
-    SELECT s.domain, g.country_code cc, SUM(g.revenue)::float8 revenue, SUM(g.cost)::float8 cost
+    SELECT c.date, COALESCE(cs.title, c."sourceSlug") k, SUM(c.cost)::float8 v FROM "FactCost" c LEFT JOIN "CostSource" cs ON cs.slug = c."sourceSlug"
+    WHERE c.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`c."siteId"`, s)} GROUP BY 1, 2
+    UNION ALL
+    SELECT o.date, 'Опер. расходы' k, SUM(o.amount)::float8 v FROM v_opex_daily o
+    WHERE o.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND (o.site_id IS NULL OR ${siteFilter(Prisma.sql`o.site_id`, s)}) GROUP BY 1, 2`;
+  return rows.map((r) => ({ date: iso(r.date as Date), key: String(r.k), value: n(r.v) }));
+}
+
+/** Operating expenses per day in the period (all entries). */
+export async function opexDaily(p: Period): Promise<Map<string, number>> {
+  const rows = await db.$queryRaw<Raw[]>`SELECT date, SUM(amount)::float8 v FROM v_opex_daily WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY 1`;
+  return new Map(rows.map((r) => [iso(r.date as Date), n(r.v)]));
+}
+
+/** Site × country ROMI for the top countries by cost (geo page matrix). No-country cost is spread per site by loads (see spreadNoCountry). */
+export async function geoMatrix(p: Period, top = 12) {
+  const raw = await db.$queryRaw<Raw[]>`
+    SELECT s.domain, g.country_code cc, SUM(g.revenue)::float8 revenue, SUM(g.cost)::float8 cost, SUM(g.page_loads)::float8 loads
     FROM v_site_geo_daily g JOIN "Site" s ON s.id = g.site_id
     WHERE g.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND s.status <> 'ARCHIVED' GROUP BY 1, 2`;
+  const perSite = new Map<string, Raw[]>();
+  for (const r of raw) perSite.set(String(r.domain), [...(perSite.get(String(r.domain)) ?? []), r]);
+  const rows = [...perSite.entries()].flatMap(([domain, list]) =>
+    spreadNoCountry(list.map((r) => ({ country: String(r.cc), pageLoads: n(r.loads), revenue: n(r.revenue), cost: n(r.cost) }))).map((r) => ({ domain, cc: r.country, revenue: r.revenue, cost: r.cost })));
   const byCountry = new Map<string, number>();
   for (const r of rows) byCountry.set(String(r.cc), (byCountry.get(String(r.cc)) ?? 0) + n(r.cost));
   const countries = [...byCountry].filter(([, c]) => c > 0).sort((a, b) => b[1] - a[1]).slice(0, top).map(([c]) => c);
   const sites = [...new Set(rows.map((r) => String(r.domain)))].sort();
-  const cell = new Map(rows.map((r) => [`${r.domain}|${r.cc}`, m.romi(n(r.revenue), n(r.cost))]));
+  const cell = new Map(rows.map((r) => [`${r.domain}|${r.cc}`, m.romi(r.revenue, r.cost)]));
   return { countries, sites, value: (site: string, cc: string) => cell.get(`${site}|${cc}`) ?? null, cells: Object.fromEntries(cell) };
 }
 
