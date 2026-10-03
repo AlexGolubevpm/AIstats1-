@@ -3,7 +3,8 @@
 // and the month's expected result "at the current pace of the last N complete days".
 import { daysInMonth } from "@/server/domain/deals";
 
-export interface DayInput { date: string; revenue: number | null; cost: number | null; opex?: number }
+/** `complete` — the day has AdSpyglass data; a day with only deal accruals or Metrika rows is not a complete day for the pace. */
+export interface DayInput { date: string; revenue: number | null; cost: number | null; opex?: number; complete?: boolean }
 export type DayKind = "actual" | "today" | "forecast";
 export interface DayOut { date: string; kind: DayKind; revenue: number | null; cost: number | null; opex: number; margin: number | null; cumRevenue: number; cumMargin: number }
 export interface Projection {
@@ -27,7 +28,7 @@ const addDays = (s: string, n: number) => new Date(Date.parse(`${s}T00:00:00Z`) 
 export function projectMonth(i: { month: string; today: string; days: DayInput[]; lookback: number; opexByDay?: Record<string, number> }): Projection {
   const first = `${i.month}-01`, count = daysInMonth(first), last = addDays(first, count - 1);
   const byDate = new Map(i.days.map((d) => [d.date, d]));
-  const complete = i.days.filter((d) => d.date < i.today && d.revenue != null && !Number.isNaN(d.revenue)).sort((a, b) => a.date.localeCompare(b.date));
+  const complete = i.days.filter((d) => d.date < i.today && d.revenue != null && !Number.isNaN(d.revenue) && d.complete !== false).sort((a, b) => a.date.localeCompare(b.date));
   const used = complete.slice(-Math.max(1, i.lookback));
   const rate = used.length
     ? { revenue: used.reduce((a, d) => a + (d.revenue ?? 0), 0) / used.length, cost: used.reduce((a, d) => a + (d.cost ?? 0), 0) / used.length, daysUsed: used.length }

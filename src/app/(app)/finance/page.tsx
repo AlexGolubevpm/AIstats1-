@@ -36,7 +36,10 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
     _badges: r.costGapDays ? { romi: [{ label: "неполный", tone: "warning" as const }] } : undefined,
     _children: r.months.map((x) => ({ ...x, month: monthLabel(x.month) })),
   }));
-  const tot = pnl.reduce((a, r) => ({ asg: a.asg + r.asg, deals: a.deals + r.deals, revenue: a.revenue + r.revenue, cost: a.cost + r.cost, opex: a.opex + r.opex }), { asg: 0, deals: 0, revenue: 0, cost: 0, opex: 0 });
+  const shown = pnl.filter((r) => !bundle || r.bundles.includes(bundle));
+  // Totals follow the bundle filter; without a filter, opex of sites that had no data in the period (not in any row) is added so the total equals the KPI.
+  const tot = shown.reduce((a, r) => ({ asg: a.asg + r.asg, deals: a.deals + r.deals, revenue: a.revenue + r.revenue, cost: a.cost + r.cost, opex: a.opex + r.opex }),
+    { asg: 0, deals: 0, revenue: 0, cost: 0, opex: bundle ? 0 : Math.max(0, k.opex - pnl.reduce((a, r) => a + r.opex, 0)) });
   const opexByMonth = new Map<string, typeof opex>();
   for (const e of opex) opexByMonth.set(e.month, [...(opexByMonth.get(e.month) ?? []), e]);
   const bundles = [...new Set(pnl.flatMap((r) => r.bundles))].sort();
@@ -71,7 +74,7 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
           { key: "asg", label: "AdSpyglass", color: "#4F8DF7", type: "bar", stack: "r" },
           { key: "dealsConfirmed", label: "Фикс-дилы подтв.", color: "#16A34A", type: "bar", stack: "r" },
           { key: "dealsExpected", label: "Фикс-дилы ожид.", color: "#86EFAC", type: "bar", stack: "r" },
-          { key: "cost", label: "Расход", color: "#F43F5E", type: "line" },
+          { key: "cost", label: "Расход на трафик", color: "#F43F5E", type: "line" },
         ]} />
       </Section>
 
@@ -133,10 +136,10 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
             { id: "romi", header: "ROMI", kind: "romi", heat: "vsMean" }, { id: "marginShare", header: "Доля маржи", kind: "share" }, { id: "completeness", header: "Полнота", kind: "text" },
           ]}
           nestedColumns={[{ id: "month", header: "Месяц", kind: "text" }, { id: "asg", header: "AdSpyglass", kind: "money" }, { id: "deals", header: "Фикс-дилы", kind: "money" },
-            { id: "cost", header: "Расход", kind: "money" }, { id: "margin", header: "Маржа", kind: "money", heat: "sign" }, { id: "romi", header: "ROMI", kind: "romi" }]}
+            { id: "cost", header: "Расход на трафик", kind: "money" }, { id: "margin", header: "Маржа до опер.", kind: "money", heat: "sign" }, { id: "romi", header: "ROMI", kind: "romi" }]}
           filters={[{ id: "loss", label: "Только убыточные", column: "margin", op: "lt", value: 0 }, { id: "inc", label: "С неполными данными", column: "incomplete", op: "truthy" }]}
           rows={rows}
-          totals={{ domain: "Итого по сети", ...tot, margin: tot.revenue - tot.cost - tot.opex, romi: tot.cost ? ((tot.revenue - tot.cost) / tot.cost) * 100 : null }} />
+          totals={{ domain: bundle ? `Итого по бандлу ${bundle}` : "Итого по сети", ...tot, margin: tot.revenue - tot.cost - tot.opex, romi: tot.cost ? ((tot.revenue - tot.cost) / tot.cost) * 100 : null }} />
       </Section>
 
       <div className="grid gap-4 xl:grid-cols-2">

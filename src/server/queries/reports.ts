@@ -119,7 +119,8 @@ export async function geoTable(p: Period, s: Scope = {}, top = 20): Promise<GeoR
     GROUP BY 1, 2, 3 ORDER BY loads DESC`;
   const mapped = spreadNoCountry(rows.map((r) => ({
     country: String(r.cc), name: String(r.name ?? r.cc), tier: n(r.tier) || null, sites: n(r.sites), uniques: n(r.uniques), pageLoads: n(r.loads),
-    revenue: n(r.revenue), cost: n(r.cost), costPerUnique: m.costPerUnique(n(r.cost), n(r.bought)) })))
+    revenue: n(r.revenue), cost: n(r.cost), bought: n(r.bought) })))
+    .map((r) => ({ ...r, costPerUnique: m.costPerUnique(r.cost, r.bought) }))
     .map((r) => (r.country === "ZZ" ? { ...r, romi: null, revPer1k: null } : r))
     .sort((a, b) => (a.country === "ZZ" ? 1 : b.country === "ZZ" ? -1 : b.pageLoads - a.pageLoads));
   if (!top || mapped.length <= top) return mapped;
@@ -209,14 +210,20 @@ export async function sourcesTable(p: Period, siteId: string) {
   }).sort((a, b) => b.loads - a.loads);
 }
 
-/** Geo rows for one site, each with networks in that country (the nested table). */
+/**
+ * Geo rows for one site with the site's networks nested under each country. ADOK has no
+ * network × country cut (real network rows sit in ZZ), so the nested table is the site's
+ * networks when the country itself has none — the page says so.
+ */
 export async function siteGeoWithNetworks(p: Period, siteId: string) {
   const geo = await geoTable(p, { siteIds: [siteId] }, 0);
   const nets = await db.$queryRaw<Raw[]>`
     SELECT country_code cc, network_title title, SUM(page_loads)::float8 loads, SUM(imps_own)::float8 imps, SUM(imps_network)::float8 imps_net, SUM(revenue)::float8 revenue
     FROM v_network_geo WHERE site_id = ${siteId} AND date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY 1, 2`;
+  const siteWide = nets.filter((r) => r.cc === "ZZ");
   return geo.map((g) => {
-    const mine = nets.filter((r) => r.cc === g.country);
+    const own = nets.filter((r) => r.cc === g.country);
+    const mine = own.length ? own : siteWide;
     const loads = mine.reduce((a, r) => a + n(r.loads), 0);
     const children = mine.map((r) => ({ network: String(r.title), pageLoads: n(r.loads), volShare: m.share(n(r.loads), loads),
       revPer1k: m.revPer1kLoads(n(r.revenue), n(r.loads)), discrepancy: m.discrepancy(n(r.imps), n(r.imps_net)), revenue: n(r.revenue) }))

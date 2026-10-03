@@ -58,10 +58,10 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
         </Section>
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
-        <Section title="Расходы" sub="Столбцы — расход на трафик по источникам и операционные расходы по дням">
+        <Section title="Расходы" sub="Столбцы — расход на трафик по источникам и операционные расходы по дням (KPI «Расход на трафик» выше — без опер. расходов)">
           <TrendChart data={costs.data} series={costs.series.map((s, i) => ({ key: s, label: s, color: colorFor(s, i, costKnown), type: "bar" as const, stack: "cost" }))} />
         </Section>
-        <Section title="P&L" sub="Выручка и расход на трафик столбцами, маржа после опер. расходов линией">
+        <Section title="P&L" sub="Выручка и расход на трафик столбцами, маржа после опер. расходов линией (KPI «Маржа» выше — до них)">
           <TrendChart data={pnl} series={[
             { key: "revenue", label: "Выручка", color: "#3B82F6", type: "bar" as const },
             { key: "cost", label: "Расход на трафик", color: "#F43F5E", type: "bar" as const },

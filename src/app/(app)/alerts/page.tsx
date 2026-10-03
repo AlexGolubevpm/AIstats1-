@@ -27,7 +27,7 @@ export default async function Alerts({ searchParams }: { searchParams: Promise<R
     orderBy: [{ moneyAtRisk: "desc" }, { lastSeenAt: "desc" }],
   });
   const bundles = await db.bundle.findMany({ orderBy: { title: "asc" } });
-  const groups = [["CRITICAL", "Critical"], ["WARNING", "Warning"]] as const;
+  const groups = [["CRITICAL", "Критичные"], ["WARNING", "Предупреждения"]] as const;
   const days = (a: Date, b: Date) => Math.max(1, Math.round((b.getTime() - a.getTime()) / 86_400_000) + 1);
   return (
     <>

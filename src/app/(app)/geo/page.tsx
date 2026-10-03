@@ -25,14 +25,14 @@ export default async function Geo({ searchParams }: { searchParams: Promise<Reco
         </Link>
       )}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <KpiCard label="Стран с расходом" value={withCost.length} format="count" />
-        <KpiCard label="Убыточных" value={losing.length} format="count" color="#E11D48" />
-        <KpiCard label="Расход в убыточных гео" value={losing.reduce((a, r) => a + r.cost, 0)} format="money" color="#E11D48" />
-        <KpiCard label="ROMI гео с расходом" value={cost ? ((rev - cost) / cost) * 100 : null} format="percent" color="#16A34A" />
+        <KpiCard label="Стран с расходом" value={withCost.length} format="count" sub="расход источников разложен по загрузкам" />
+        <KpiCard label="Убыточных" value={losing.length} format="count" color="#E11D48" sub="оценка" />
+        <KpiCard label="Расход в убыточных гео" value={losing.reduce((a, r) => a + r.cost, 0)} format="money" color="#E11D48" sub="оценка" />
+        <KpiCard label="ROMI гео с расходом" value={cost ? ((rev - cost) / cost) * 100 : null} format="percent" color="#16A34A" sub="оценка" />
       </div>
       <Section title="Страны">
         <DataTable id="geo" exportName="geo" defaultSort={{ id: "cost", dir: "desc" }}
-          columns={[...GEO_COLS.slice(0, 2), { id: "sites", header: "Сайтов", kind: "int" }, GEO_COLS[2], { id: "costPerUnique", header: "Cost/unique", kind: "cpm" }, ...GEO_COLS.slice(4)]}
+          columns={[...GEO_COLS.slice(0, 2), { id: "sites", header: "Сайтов", kind: "int" }, ...GEO_COLS.slice(2, 4), { id: "costPerUnique", header: "Cost/unique", kind: "cpm" }, ...GEO_COLS.slice(4)]}
           rows={geoRows(rows)}
           filters={[{ id: "loss", label: "Только убыточные", column: "margin", op: "lt", value: 0 }, { id: "paid", label: "Только с расходом", column: "cost", op: "gt", value: 0 }]} />
       </Section>

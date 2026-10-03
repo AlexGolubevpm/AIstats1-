@@ -34,5 +34,6 @@ export const FORMAT_LABEL: Record<string, string> = {
 export const DEVICE_LABEL: Record<string, string> = { DESKTOP: "Десктоп", MOBILE: "Мобильные", TABLET: "Планшеты", TV: "TV", CONSOLE: "Консоли", UNKNOWN: "Не определено" };
 
 /** Maps geo query rows into table rows (country column carries its name for the flag cell). */
-export const geoRows = <T extends { country: string; name: string }>(rows: T[]) =>
-  rows.map((r) => ({ ...r, country__name: r.name, _key: r.country || r.name }));
+export const geoRows = <T extends { country: string; name: string; estimated?: boolean }>(rows: T[]) =>
+  rows.map((r) => ({ ...r, country__name: r.name, _key: r.country || r.name,
+    _badges: r.estimated ? { country: [{ label: "оценка", tone: "neutral" as const }] } : undefined }));

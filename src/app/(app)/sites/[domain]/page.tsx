@@ -28,11 +28,13 @@ const ZONE_COLS: Column[] = [
 ];
 const SOURCE_COLS: Column[] = [
   { id: "source", header: "Источник трафика", kind: "text" }, { id: "loads", header: "Page loads", kind: "int" }, { id: "loadsShare", header: "Доля трафика", kind: "share" },
-  { id: "cost", header: "Расход", kind: "money", tooltip: "Сколько заплачено источнику: сумма из ADOK (там поле называется «выручка») × доля источника из Настройки → Расход" },
+  { id: "reported", header: "Сумма в ADOK", kind: "money", tooltip: "Поле, которое ADOK называет «выручкой» источника — по словам владельца, это сколько заплачено источнику" },
+  { id: "revShare", header: "В расход", kind: "share", tooltip: "Доля суммы ADOK, идущая в расход: Настройки → Расход. 0% — бесплатный трафик (Direct, Organic SE, No source)" },
+  { id: "cost", header: "Расход", kind: "money", tooltip: "Сумма в ADOK × доля" },
   { id: "costPer1k", header: "Цена 1000 loads", kind: "cpm" }, { id: "share", header: "Доля расхода", kind: "share" },
 ];
 const NESTED_NET: Column[] = [
-  { id: "network", header: "Сетка в этой стране", kind: "text" }, { id: "pageLoads", header: "Page loads", kind: "int" }, { id: "volShare", header: "Доля объёма", kind: "share" },
+  { id: "network", header: "Сетка", kind: "text", tooltip: "ADOK не даёт сетку × страну: показаны сетки сайта за период" }, { id: "pageLoads", header: "Page loads", kind: "int" }, { id: "volShare", header: "Доля объёма", kind: "share" },
   { id: "revPer1k", header: "Rev/1000 loads", kind: "cpm" }, { id: "rank", header: "Ранг", kind: "int" }, { id: "discrepancy", header: "Дискрепанси", kind: "discrepancy" },
   { id: "revenue", header: "Выручка", kind: "money" },
 ];
@@ -75,7 +77,7 @@ export default async function SitePage({ params, searchParams }: Props) {
   } else if (by === "sources") {
     const src = await sourcesTable(p, site.id);
     table = <DataTable id="s" exportName={`${site.domain}-sources`} defaultSort={{ id: "loads", dir: "desc" }} columns={SOURCE_COLS}
-      rows={src.map((r) => ({ ...r, _key: r.source }))} />;
+      rows={src.map((r) => ({ ...r, _key: r.source, _badges: r.revShare === 0 ? { source: [{ label: "бесплатно", tone: "neutral" as const }] } : undefined }))} />;
   } else {
     const d = await devicesTable(p, site.id);
     table = <DataTable id="d" exportName={`${site.domain}-devices`} defaultSort={{ id: "revenue", dir: "desc" }}
@@ -100,7 +102,7 @@ export default async function SitePage({ params, searchParams }: Props) {
       <KpiRow k={k} keys={["revenue", "cost", "margin", "romi", "uniques", "rpm", "depth"]} />
       <Section title="Выручка и расход" sub="Красная линия выше синей — дни, когда сайт работал в минус">
         <TrendChart data={daily.map((d) => ({ date: d.date, revenue: Number.isNaN(d.revenue) ? null : d.revenue, cost: Number.isNaN(d.revenue) ? null : d.cost }))}
-          series={[{ key: "revenue", label: "Выручка", color: "#3B82F6", type: "area" }, { key: "cost", label: "Расход", color: "#F43F5E", type: "line" }]} />
+          series={[{ key: "revenue", label: "Выручка", color: "#3B82F6", type: "area" }, { key: "cost", label: "Расход на трафик", color: "#F43F5E", type: "line" }]} />
       </Section>
       <Section title="Разрезы">
         <div className="-mx-5 -mt-2 mb-3 px-5"><BreakdownTabs tabs={TABS} active={by} hrefFor={tabHref} /></div>

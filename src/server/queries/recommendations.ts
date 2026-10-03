@@ -16,10 +16,11 @@ export async function recommendations(today = iso(new Date())): Promise<Recommen
     db.alert.findMany({ where: { resolvedAt: null, OR: [{ snoozedUntil: null }, { snoozedUntil: { lt: new Date() } }] } }),
     sitesTable(p7),
     db.$queryRaw<Raw[]>`
-      SELECT z.site_id, s.domain, z.zone_name zone, z.format, SUM(z.imps_own)::float8 imps, SUM(z.views)::float8 views, SUM(z.revenue)::float8 revenue,
+      SELECT z.zone_id, z.site_id, s.domain, z.zone_name zone, z.format, SUM(z.imps_own)::float8 imps, SUM(z.revenue)::float8 revenue,
+             SUM(z.imps_own) FILTER (WHERE z.date >= ${D(p7.from)})::float8 imps7, SUM(z.views) FILTER (WHERE z.date >= ${D(p7.from)})::float8 views7,
              SUM(SUM(z.revenue)) OVER (PARTITION BY z.site_id) site_revenue, SUM(SUM(z.imps_own)) OVER (PARTITION BY z.site_id) site_imps
       FROM v_zone_daily z JOIN "Site" s ON s.id = z.site_id
-      WHERE z.date BETWEEN ${D(p30.from)} AND ${D(p30.to)} AND s.status <> 'ARCHIVED' GROUP BY 1, 2, 3, 4`,
+      WHERE z.date BETWEEN ${D(p30.from)} AND ${D(p30.to)} AND s.status <> 'ARCHIVED' GROUP BY 1, 2, 3, 4, 5`,
     db.$queryRaw<Raw[]>`
       SELECT c."siteId" site_id, s.domain, cs.title source, SUM(c.cost)::float8 cost,
              (SELECT SUM(revenue) FROM v_site_geo_daily g WHERE g.site_id = c."siteId" AND g.date BETWEEN ${D(p7.from)} AND ${D(p7.to)})::float8 site_revenue,
@@ -42,11 +43,11 @@ export async function recommendations(today = iso(new Date())): Promise<Recommen
     return { siteId: g.id, domain: g.domain, free: g.free, places: grid.places.length, revenue: ranked[rank - 1]?.revenue ?? 0, rank: rank || 999 };
   });
   return mergeRecs([
-    alerts.map((a) => fromAlert({ id: a.id, rule: a.rule, level: a.level, title: a.title, message: a.message, link: a.link, siteId: a.siteId, domain: a.siteId ? domainOf.get(a.siteId) ?? null : null, moneyAtRisk: Number(a.moneyAtRisk) })),
+    alerts.map((a) => fromAlert({ id: a.id, rule: a.rule, entityKey: a.entityKey, level: a.level, title: a.title, message: a.message, link: a.link, siteId: a.siteId, domain: a.siteId ? domainOf.get(a.siteId) ?? null : null, moneyAtRisk: Number(a.moneyAtRisk) })),
     lossSites(live, 7),
-    zoneRecs(zones.map((z) => ({ siteId: String(z.site_id), domain: String(z.domain), zone: String(z.zone), format: String(z.format), imps: n(z.imps), revenue: n(z.revenue),
-      share: m.share(n(z.revenue), n(z.site_revenue)), impShare: m.share(n(z.imps), n(z.site_imps)),
-      viewRate: z.format === "BANNER" || z.format === "NATIVE" ? m.viewRate(n(z.views), n(z.imps)) : null })), 30),
+    zoneRecs(zones.map((z) => ({ zoneId: String(z.zone_id), siteId: String(z.site_id), domain: String(z.domain), zone: String(z.zone), format: String(z.format), imps: n(z.imps), revenue: n(z.revenue),
+      share: m.share(n(z.revenue), n(z.site_revenue)), impShare: m.share(n(z.imps), n(z.site_imps)), imps7: n(z.imps7),
+      viewRate7: z.format === "BANNER" || z.format === "NATIVE" ? m.viewRate(n(z.views7), n(z.imps7)) : null }))),
     floorRecs(nets, 7),
     sourceRecs(sources.map((r) => ({ siteId: String(r.site_id), domain: String(r.domain), source: String(r.source), cost: n(r.cost), siteRevenue: n(r.site_revenue), loadsShare: m.share(n(r.loads), n(r.site_loads)) })), 7),
     freePlaceRecs(free),

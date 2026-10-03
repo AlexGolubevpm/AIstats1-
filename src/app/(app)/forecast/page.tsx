@@ -64,8 +64,8 @@ export default async function Forecast({ searchParams }: { searchParams: Promise
         <TrendChart data={chart} height={320} series={[
           { key: "revenue", label: "Выручка", color: "#3B82F6", type: "bar", stack: "rev" },
           { key: "revenueForecast", label: "Выручка · прогноз", color: "#BFDBFE", type: "bar", stack: "rev" },
-          { key: "cost", label: "Расход", color: "#F43F5E", type: "line" },
-          { key: "costForecast", label: "Расход · прогноз", color: "#F43F5E", type: "line", dashed: true },
+          { key: "cost", label: "Расход на трафик", color: "#F43F5E", type: "line" },
+          { key: "costForecast", label: "Расход на трафик · прогноз", color: "#F43F5E", type: "line", dashed: true },
           { key: "cumMargin", label: "Маржа накопленно", color: "#16A34A", type: "line" },
         ]} />
         <div className="-mx-5 mt-4 overflow-x-auto">

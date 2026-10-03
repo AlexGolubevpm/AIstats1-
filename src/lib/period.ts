@@ -34,7 +34,8 @@ export function presetPeriod(preset: Preset, today = iso(new Date())): Period {
     }
     case "quarter": {
       const q = Math.floor(t.getUTCMonth() / 3) * 3;
-      return { from: iso(new Date(Date.UTC(t.getUTCFullYear(), q, 1))), to: yesterday, preset };
+      const start = iso(new Date(Date.UTC(t.getUTCFullYear(), q, 1)));
+      return { from: start, to: today === start ? today : yesterday, preset };
     }
   }
 }

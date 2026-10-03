@@ -5,6 +5,8 @@
 export type RecScope = "site" | "geo" | "zone" | "network" | "deal" | "source" | "format" | "system";
 export interface Recommendation {
   id: string; scope: RecScope; site: { id: string; domain: string } | null;
+  /** What the recommendation is about (site, zone id, network…): an alert and a rule about the same object share it. */
+  objectKey: string;
   title: string; why: string; action: string; impact: number; link: string; source: "alert" | "rule"; level: "WARNING" | "CRITICAL" | "INFO";
 }
 export const SCOPE_LABEL: Record<RecScope, string> = {
@@ -19,7 +21,7 @@ const ALERT_SCOPE: Record<string, RecScope> = {
   deal_no_numbers: "deal", overdue_payment: "deal", ingest_down: "system", deal_ending: "deal",
 };
 
-export interface AlertRow { id: string; rule: string; level: "WARNING" | "CRITICAL"; title: string; message: string; link: string; siteId: string | null; domain: string | null; moneyAtRisk: number }
+export interface AlertRow { id: string; rule: string; entityKey: string; level: "WARNING" | "CRITICAL"; title: string; message: string; link: string; siteId: string | null; domain: string | null; moneyAtRisk: number }
 
 /** Every alert ends with its recommended action: split it off the "why". */
 export function fromAlert(a: AlertRow): Recommendation {
@@ -27,32 +29,36 @@ export function fromAlert(a: AlertRow): Recommendation {
   const action = sentences.length > 1 ? sentences[sentences.length - 1] : a.message;
   const why = sentences.length > 1 ? sentences.slice(0, -1).join(" ") : "";
   return { id: `alert:${a.id}`, scope: ALERT_SCOPE[a.rule] ?? "site", site: a.siteId && a.domain ? { id: a.siteId, domain: a.domain } : null,
-    title: a.title, why, action, impact: a.moneyAtRisk, link: a.link, source: "alert", level: a.level };
+    objectKey: `${a.rule}|${a.entityKey}`, title: a.title, why, action, impact: a.moneyAtRisk, link: a.link, source: "alert", level: a.level };
 }
 
 export interface SiteRow { id: string; domain: string; revenue: number; cost: number; margin: number; romi: number | null }
 /** A site in the red over the window: cost above revenue. */
 export function lossSites(rows: SiteRow[], days: number): Recommendation[] {
   return rows.filter((r) => r.cost > 0 && r.margin < 0).map((r) => ({
-    id: `site-loss:${r.id}`, scope: "site" as const, site: { id: r.id, domain: r.domain }, title: `${r.domain} работает в минус`,
+    id: `site-loss:${r.id}`, scope: "site" as const, site: { id: r.id, domain: r.domain }, objectKey: `site-loss|site:${r.id}`, title: `${r.domain} работает в минус`,
     why: `За ${days} дн. выручка ${money(r.revenue)} при расходе на трафик ${money(r.cost)} (ROMI ${r.romi == null ? "—" : `${r.romi.toFixed(1)}%`}).`,
     action: "Снизить закупку или поднять флор; проверить убыточные гео сайта.", impact: -r.margin, link: `/sites/${r.domain}?by=geo&preset=7d`, source: "rule" as const, level: "CRITICAL" as const,
   }));
 }
 
-export interface ZoneRow { siteId: string; domain: string; zone: string; format: string; revenue: number; share: number | null; impShare: number | null; viewRate: number | null; imps: number }
-/** Zones that earn under 1% of the site while taking impressions, and banner zones nobody sees. */
-export function zoneRecs(rows: ZoneRow[], days: number): Recommendation[] {
+export interface ZoneRow { zoneId: string; siteId: string; domain: string; zone: string; format: string; revenue: number; share: number | null; impShare: number | null; imps: number; imps7: number; viewRate7: number | null }
+/**
+ * Zones the alerts would flag (same thresholds, docs 06): dead — under 1% of the site's zone
+ * revenue with over 5% of its impressions in 30 days; invisible — view rate under 15% on more
+ * than 50 000 impressions in 7 days. Between two nightly runs the rule fills in for the alert.
+ */
+export function zoneRecs(rows: ZoneRow[]): Recommendation[] {
   const out: Recommendation[] = [];
   for (const z of rows) {
     const site = { id: z.siteId, domain: z.domain }, link = `/sites/${z.domain}?by=zones&preset=30d`;
-    if (z.share != null && z.share < 0.01 && z.imps >= 1000) out.push({
-      id: `zone-dead:${z.siteId}:${z.zone}`, scope: "zone", site, title: `Зона «${z.zone}» на ${z.domain} почти не зарабатывает`,
-      why: `За ${days} дн. ${pct(z.share)} выручки сайта${z.impShare != null ? ` при ${pct(z.impShare)} показов` : ""} (${money(z.revenue)}).`,
+    if (z.share != null && z.share < 0.01 && (z.impShare ?? 0) > 0.05) out.push({
+      id: `zone-dead:${z.zoneId}`, scope: "zone", site, objectKey: `dead_zone|zone:${z.zoneId}`, title: `Мёртвая зона: ${z.zone} на ${z.domain}`,
+      why: `За 30 дн. ${pct(z.share)} выручки зон сайта при ${pct(z.impShare ?? 0)} показов (${money(z.revenue)}).`,
       action: "Снести зону или отдать место формату с более высоким CPM.", impact: 0, link, source: "rule", level: "WARNING" });
-    if (z.viewRate != null && z.viewRate < 0.15 && z.imps >= 1000) out.push({
-      id: `zone-invisible:${z.siteId}:${z.zone}`, scope: "zone", site, title: `Зона «${z.zone}» на ${z.domain} не видна`,
-      why: `View rate ${pct(z.viewRate)} за ${days} дн. — ниже 15%, баннер показывается за пределами экрана.`,
+    if (z.viewRate7 != null && z.viewRate7 < 0.15 && z.imps7 > 50_000) out.push({
+      id: `zone-invisible:${z.zoneId}`, scope: "zone", site, objectKey: `invisible_zone|zone:${z.zoneId}`, title: `Зона не видна: ${z.zone} на ${z.domain}`,
+      why: `View rate ${pct(z.viewRate7)} за 7 дн. — ниже 15%, баннер показывается за пределами экрана.`,
       action: "Поднять зону выше фолда или сменить место.", impact: 0, link, source: "rule", level: "WARNING" });
   }
   return out;
@@ -62,7 +68,7 @@ export interface NetworkRow { siteId: string; domain: string; network: string; r
 /** A network under the site's floor that still takes a notable share of volume. */
 export function floorRecs(rows: NetworkRow[], days: number): Recommendation[] {
   return rows.filter((r) => r.belowFloor && (r.volShare ?? 0) >= 0.1 && r.floor != null && r.revPer1k != null).map((r) => ({
-    id: `floor:${r.siteId}:${r.network}`, scope: "network" as const, site: { id: r.siteId, domain: r.domain },
+    id: `floor:${r.siteId}:${r.network}`, scope: "network" as const, site: { id: r.siteId, domain: r.domain }, objectKey: `floor|site:${r.siteId}|net:${r.network}`,
     title: `${r.network} на ${r.domain} ниже флора`,
     why: `Rev/1000 loads ${money(r.revPer1k!)} при флоре ${money(r.floor!)}; держит ${pct(r.volShare ?? 0)} объёма за ${days} дн.`,
     action: `Поднять флор ${r.network} до ${money(r.floor!)} за 1000 загрузок или опустить в waterfall.`,
@@ -74,7 +80,7 @@ export interface SourceRow { siteId: string; domain: string; source: string; cos
 /** A traffic source whose cost eats most of the site's revenue. */
 export function sourceRecs(rows: SourceRow[], days: number): Recommendation[] {
   return rows.filter((r) => r.siteRevenue > 0 && r.cost / r.siteRevenue >= 0.6 && r.cost > 5).map((r) => ({
-    id: `source:${r.siteId}:${r.source}`, scope: "source" as const, site: { id: r.siteId, domain: r.domain },
+    id: `source:${r.siteId}:${r.source}`, scope: "source" as const, site: { id: r.siteId, domain: r.domain }, objectKey: `source|site:${r.siteId}|${r.source}`,
     title: `${r.source} съедает ${pct(r.cost / r.siteRevenue)} выручки ${r.domain}`,
     why: `За ${days} дн. источнику ушло ${money(r.cost)} из ${money(r.siteRevenue)} выручки сайта${r.loadsShare != null ? `, это ${pct(r.loadsShare)} загрузок` : ""}.`,
     action: "Снизить закупку у источника или договориться о меньшей доле; проверить, что сумма ADOK — действительно расход.",
@@ -86,21 +92,19 @@ export interface FreeRow { siteId: string; domain: string; free: number; places:
 /** Free ad places on the sites that earn the most: inventory nobody sells. */
 export function freePlaceRecs(rows: FreeRow[], topN = 10): Recommendation[] {
   return rows.filter((r) => r.rank <= topN && r.free > 0).map((r) => ({
-    id: `free:${r.siteId}`, scope: "format" as const, site: { id: r.siteId, domain: r.domain },
+    id: `free:${r.siteId}`, scope: "format" as const, site: { id: r.siteId, domain: r.domain }, objectKey: `free|site:${r.siteId}`,
     title: `${r.free} свободных ${r.free === 1 ? "место" : r.free < 5 ? "места" : "мест"} на ${r.domain}`,
     why: `Сайт №${r.rank} по выручке (${money(r.revenue)} за 7 дн.), ${r.free} из ${r.places} мест ничем не заняты.`,
     action: "Продать фикс-дил на свободное место или включить ротацию AdSpyglass.", impact: 0, link: `/inventory?free=1`, source: "rule" as const, level: "INFO" as const,
   }));
 }
 
-/** Alerts win over rules about the same object; then by impact, critical first. */
+/** Alerts win over rules about the same object (same objectKey; lists are given alerts first); then critical first, by impact. */
 export function mergeRecs(lists: Recommendation[][]): Recommendation[] {
   const seen = new Set<string>(), out: Recommendation[] = [];
-  const objectKey = (r: Recommendation) => `${r.scope}|${r.site?.id ?? ""}|${r.title.replace(/[^а-яa-z0-9]+/gi, "").toLowerCase()}`;
   for (const r of lists.flat()) {
-    const k = objectKey(r);
-    if (seen.has(k)) continue;
-    seen.add(k); out.push(r);
+    if (seen.has(r.objectKey)) continue;
+    seen.add(r.objectKey); out.push(r);
   }
   const order = { CRITICAL: 0, WARNING: 1, INFO: 2 };
   return out.sort((a, b) => order[a.level] - order[b.level] || b.impact - a.impact);

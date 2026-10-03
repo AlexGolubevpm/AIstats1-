@@ -52,7 +52,7 @@ export default async function BundlePage({ params, searchParams }: Props) {
           ))}
         </div>}>
         <TrendChart data={chart} series={[...series.map((s, i) => ({ key: s, label: s, color: colorFor(s, i, known), type: "bar" as const, stack: "rev" })),
-          { key: "cost", label: "Расход", color: "#F43F5E", type: "line" as const }]} />
+          { key: "cost", label: "Расход на трафик", color: "#F43F5E", type: "line" as const }]} />
       </Section>
       <Section title="Сайты бандла" sub="Сортировка по марже: сразу видно, кто тащит бандл, а кто в минусе">
         <DataTable id="sites" exportName={`bundle-${slug}-sites`} defaultSort={{ id: "margin", dir: "desc" }} columns={SITE_COLS}

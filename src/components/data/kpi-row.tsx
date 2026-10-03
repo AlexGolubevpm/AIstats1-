@@ -10,10 +10,10 @@ export function KpiRow({ k, keys, partial }: { k: KpiSet; keys: KpiKey[]; partia
   const cards: Record<KpiKey, React.ReactNode> = {
     revenue: <KpiCard key="revenue" label="Выручка" value={k.cur.revenue} format="money" icon={DollarSign} color="#3B82F6"
       delta={delta(k.cur.revenue, k.prev.revenue, "percent")} spark={sparkOf(k, (t) => t.revenue)} />,
-    cost: <KpiCard key="cost" label="Расход" value={k.cur.cost} format="money" icon={Wallet} color="#F59E0B" tone="inverse"
+    cost: <KpiCard key="cost" label="Расход на трафик" value={k.cur.cost} format="money" icon={Wallet} color="#F43F5E" tone="inverse"
       delta={delta(k.cur.cost, k.prev.cost, "percent")} spark={sparkOf(k, (t) => t.cost)} warn={partial} />,
     margin: <KpiCard key="margin" label="Маржа" value={k.cur.margin} format="money" icon={PiggyBank} color="#8B5CF6" negativeFrame={k.cur.margin < 0}
-      delta={delta(k.cur.margin, k.prev.margin, "percent")} spark={sparkOf(k, (t) => t.margin)} />,
+      delta={delta(k.cur.margin, k.prev.margin, "percent")} spark={sparkOf(k, (t) => t.margin)} sub="до опер. расходов" />,
     romi: <KpiCard key="romi" label="ROMI" value={k.cur.romi} format="percent" icon={TrendingUp} color="#16A34A" emphasis deltaMode="pp"
       delta={delta(k.cur.romi, k.prev.romi, "pp")} spark={sparkOf(k, (t) => t.romi)} negativeFrame={(k.cur.romi ?? 0) < 0} warn={partial} />,
     uniques: <KpiCard key="uniques" label="Уники" value={k.cur.uniques} format="compact" icon={Users} color="#06B6D4"

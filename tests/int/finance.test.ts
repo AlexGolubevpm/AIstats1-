@@ -1,7 +1,8 @@
 import Decimal from "decimal.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildNetwork } from "@tests/factories/network";
-import { payoutDiff, recordAsgPayout } from "@/server/services/finance";
+import { applyPayout, payoutDiff, reapplyPayouts, recordAsgPayout } from "@/server/services/finance";
+import { writeGeo } from "@/server/ingest/adspyglass/ingest";
 import { saveDeal, deleteDeal, setDealStatus } from "@/server/services/deals";
 import { resetDb, testDb } from "./helpers";
 
@@ -70,5 +71,21 @@ describe("month report", () => {
     expect(csv).toContain("2026-09,three.test,deal:Acme Ads / Sponsor banner,confirmed,3.0000");
     expect(csv.some((l) => l.startsWith("2026-09,one.test,cost:tubecrown,rate,-34"))).toBe(true);
     expect(csv.some((l) => l.includes("Own popunder"))).toBe(false); // via ASG: already in adspyglass
+  });
+});
+
+describe("payouts survive a re-ingest", () => {
+  it("rewriting a day's geo rows keeps the month confirmed: the payout is re-applied over the new rows", async () => {
+    await recordAsgPayout(db, { month: "2026-09", amountReceived: "122", receivedAt: "2026-10-05" });
+    const net = await db.network.findUniqueOrThrow({ where: { slug: "adpulsar" } });
+    // The nightly job replaces s1's rows for 2026-09-20 with a new country cut (revenue 12 + 10 instead of 10 + 10 + 2 own).
+    await writeGeo(db, "2026-09-20", "s1", [
+      { countryCode: "JP", m: { pageLoads: 10_000, impsOwn: 8_000, impsNetwork: 7_600, clicks: 0, revenue: 12, predicted: 0 } },
+      { countryCode: "US", m: { pageLoads: 10_000, impsOwn: 8_000, impsNetwork: 7_600, clicks: 0, revenue: 10, predicted: 0 } }], "country", net.id);
+    expect((await db.factRevenueGeo.findMany({ where: { siteId: "s1", date: new Date("2026-09-20T00:00:00Z") } })).every((r) => r.revenueConfirmed == null)).toBe(true);
+    expect(await reapplyPayouts(db, ["2026-09-20"])).toBe(1);
+    const [v] = await db.$queryRaw<{ c: number }[]>`SELECT SUM("revenueConfirmed")::float8 c FROM "FactRevenueGeo"`;
+    expect(v.c).toBeCloseTo(122, 4);
+    expect(await applyPayout(db, "2026-08")).toBe(false); // no payout for August
   });
 });
