@@ -6,15 +6,17 @@ import { config } from "@/server/config";
 import { db } from "@/server/db";
 import { asgPause, asgRequestsToday } from "@/server/ingest/run";
 import { SCHEDULES } from "@/server/jobs/handlers";
+import { daysBetween, defaultWindow, readBackfill, requestsPerDay } from "@/server/jobs/backfill";
 import { isDemo } from "@/server/seed/demo";
-import { AliasRow, DemoButtons, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
+import { AliasRow, BackfillBlock, DemoButtons, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
 
 const JOB_LABEL: Record<string, string> = {
   "asg:sites": "AdSpyglass: все разрезы по сайтам — страны, сетки, устройства, источники трафика, зоны + расход (ночной, ~4 запроса на сайт в день)",
   "asg:totals": "AdSpyglass: только итоги по сайтам (1 запрос в день окна, без разрезов)",
+  "asg:backfill": "AdSpyglass: бэкфилл прошлых дней порциями под бюджет (окно — в блоке ниже)",
   metrika: "Метрика: трафик", derive: "Расход → прогноз дилов → алерты", "geo:reprocess": "Пересчитать гео из сырья (без запросов к API)",
 };
-const CRON: Record<string, string> = { "5 * * * *": "каждый час в :05", "0 4 * * *": "ежедневно 04:00 UTC", "15 * * * *": "каждый час в :15", "45 4 * * *": "ежедневно 04:45 UTC" };
+const CRON: Record<string, string> = { "5 * * * *": "каждый час в :05", "0 4 * * *": "ежедневно 04:00 UTC", "*/30 * * * *": "каждые 30 минут, если есть что догружать", "15 * * * *": "каждый час в :15", "45 4 * * *": "ежедневно 04:45 UTC" };
 const tail = (s: string) => (s ? `задан · …${s.slice(-4)}` : "не задан");
 
 export default async function Integrations() {
@@ -30,6 +32,13 @@ export default async function Integrations() {
     db.site.findMany({ where: { status: { not: "ARCHIVED" } }, orderBy: { domain: "asc" } }),
     isDemo(db), db.site.count().then((n) => n > 0),
   ]);
+  const backfill = await readBackfill(db);
+  const today = new Date().toISOString().slice(0, 10);
+  const asgSites = sites.filter((s) => s.status === "ACTIVE" && s.adsgSiteId).length;
+  const perNight = Math.max(0, Math.floor((cfg.asg.dailyBudget - cfg.asg.backfillReserve) / requestsPerDay(backfill?.siteId ? 1 : Math.max(1, asgSites))));
+  const backfillView = backfill ? { from: backfill.from, to: backfill.to, siteDomain: backfill.siteId ? sites.find((s) => s.id === backfill.siteId)?.domain ?? null : null,
+    total: daysBetween(backfill.from, backfill.to).length, done: backfill.done.length, failed: backfill.failed.length, pending: backfill.pending.length,
+    updatedAt: backfill.updatedAt, lastStop: backfill.lastStop ?? null, cancelled: Boolean(backfill.cancelled) } : null;
   const lastBy = (job: string) => runs.find((r) => r.job === job);
   const dur = (a: Date, b: Date | null) => (b ? `${Math.max(1, Math.round((b.getTime() - a.getTime()) / 1000))} с` : "идёт");
   const conn = [
@@ -73,7 +82,12 @@ export default async function Integrations() {
           );
         })}</div>
         <div className="border-t border-border pt-4">
-          <h3 className="mb-2 text-sm font-medium">Ручной перезапуск и бэкфилл</h3>
+          <h3 className="mb-1 text-sm font-medium">Бэкфилл AdSpyglass</h3>
+          <p className="mb-3 text-xs text-muted">Догружает прошлые дни со всеми разрезами, от новых к старым, порциями под дневной бюджет (резерв {cfg.asg.backfillReserve} запросов остаётся ночному прогону): джоба проверяет окно каждые 30 минут и продолжает на следующие сутки сама. В конце пересчитывает расход, прогноз дилов и алерты за окно.</p>
+          <BackfillBlock state={backfillView} sites={sites.map((s) => ({ id: s.id, domain: s.domain }))} defaults={defaultWindow(today)} perNight={perNight} />
+        </div>
+        <div className="border-t border-border pt-4">
+          <h3 className="mb-2 text-sm font-medium">Ручной перезапуск</h3>
           <RunJobForm jobs={Object.entries(JOB_LABEL).map(([id, label]) => ({ id, label }))} sites={sites.map((s) => ({ id: s.id, domain: s.domain }))} />
         </div>
       </Section>

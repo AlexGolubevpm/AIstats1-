@@ -207,3 +207,16 @@ test("recommendations: the list opens, scope chips filter and change the URL", a
   await expect(page.locator("li[data-scope]:not([data-scope=format])")).toHaveCount(0);
   await expect(page.getByText("Что сделать:").first()).toBeVisible();
 });
+
+test("integrations: the backfill block shows the window, queues the job and reports progress", async ({ page }) => {
+  await login(page, "/settings/integrations");
+  await expect(page.getByRole("heading", { name: "Бэкфилл AdSpyglass" })).toBeVisible();
+  const from = page.locator("input[name=from]").first();
+  await expect(from).not.toHaveValue("");
+  await page.getByRole("button", { name: "Запустить бэкфилл" }).click();
+  await expect(page.getByText(/Бэкфилл: \d+ из \d+ дней/).first()).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("backfill-progress")).toContainText(/готово 0 из \d+ дней/);
+  await page.getByRole("button", { name: "Отменить" }).click();
+  await expect(page.getByText("Бэкфилл отменён")).toBeVisible();
+});

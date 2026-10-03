@@ -7,7 +7,8 @@ export function config(env: Record<string, string | undefined> = process.env) {
       email: (env.ASG_AUTH_EMAIL ?? "").trim(),
       token: (env.ASG_AUTH_TOKEN ?? "").trim(),
       minIntervalMs: int(env.ASG_MIN_INTERVAL_MS, 5_000),
-      dailyBudget: int(env.ASG_DAILY_BUDGET, 500),
+      dailyBudget: int(env.ASG_DAILY_BUDGET, 800),
+      backfillReserve: int(env.ASG_BACKFILL_RESERVE, 300), // kept for the nightly run and the hourly totals
       restateDays: int(env.ASG_RESTATE_DAYS, 2),
       get configured() { return Boolean(this.email && this.token); },
     },
