@@ -212,9 +212,11 @@ test("integrations: the backfill block shows the window, queues the job and repo
   await login(page, "/settings/integrations");
   await expect(page.getByRole("heading", { name: "Бэкфилл AdSpyglass" })).toBeVisible();
   const from = page.locator("input[name=from]").first();
-  await expect(from).not.toHaveValue("");
+  const before = await from.inputValue();
+  await page.locator("select[name=mode]").selectOption("totals"); // switches the default window to the previous month
+  await expect(from).not.toHaveValue(before);
   await page.getByRole("button", { name: "Запустить бэкфилл" }).click();
-  await expect(page.getByText(/Бэкфилл: \d+ из \d+ дней/).first()).toBeVisible();
+  await expect(page.getByText(/Бэкфилл \(только итоги\): \d+ из \d+ дней/).first()).toBeVisible();
   await page.reload();
   await expect(page.getByTestId("backfill-progress")).toContainText(/готово 0 из \d+ дней/);
   await page.getByRole("button", { name: "Отменить" }).click();

@@ -35,8 +35,10 @@ export default async function Integrations() {
   const backfill = await readBackfill(db);
   const today = new Date().toISOString().slice(0, 10);
   const asgSites = sites.filter((s) => s.status === "ACTIVE" && s.adsgSiteId).length;
-  const perNight = Math.max(0, Math.floor((cfg.asg.dailyBudget - cfg.asg.backfillReserve) / requestsPerDay(backfill?.siteId ? 1 : Math.max(1, asgSites))));
-  const backfillView = backfill ? { from: backfill.from, to: backfill.to, siteDomain: backfill.siteId ? sites.find((s) => s.id === backfill.siteId)?.domain ?? null : null,
+  const nSites = backfill?.siteId ? 1 : Math.max(1, asgSites);
+  const perNight = { full: Math.max(0, Math.floor((cfg.asg.dailyBudget - cfg.asg.backfillReserve) / requestsPerDay(nSites, "full"))),
+    totals: Math.max(0, Math.floor((cfg.asg.dailyBudget - cfg.asg.backfillReserve) / requestsPerDay(nSites, "totals"))) };
+  const backfillView = backfill ? { from: backfill.from, to: backfill.to, mode: backfill.mode ?? "full", siteDomain: backfill.siteId ? sites.find((s) => s.id === backfill.siteId)?.domain ?? null : null,
     total: daysBetween(backfill.from, backfill.to).length, done: backfill.done.length, failed: backfill.failed.length, pending: backfill.pending.length,
     updatedAt: backfill.updatedAt, lastStop: backfill.lastStop ?? null, cancelled: Boolean(backfill.cancelled) } : null;
   const lastBy = (job: string) => runs.find((r) => r.job === job);
@@ -83,8 +85,8 @@ export default async function Integrations() {
         })}</div>
         <div className="border-t border-border pt-4">
           <h3 className="mb-1 text-sm font-medium">Бэкфилл AdSpyglass</h3>
-          <p className="mb-3 text-xs text-muted">Догружает прошлые дни со всеми разрезами, от новых к старым, порциями под дневной бюджет (резерв {cfg.asg.backfillReserve} запросов остаётся ночному прогону): джоба проверяет окно каждые 30 минут и продолжает на следующие сутки сама. В конце пересчитывает расход, прогноз дилов и алерты за окно.</p>
-          <BackfillBlock state={backfillView} sites={sites.map((s) => ({ id: s.id, domain: s.domain }))} defaults={defaultWindow(today)} perNight={perNight} />
+          <p className="mb-3 text-xs text-muted">Догружает прошлые дни от новых к старым порциями под дневной бюджет (резерв {cfg.asg.backfillReserve} запросов остаётся ночному прогону): джоба проверяет окно каждые 30 минут и продолжает на следующие сутки сама. «Все разрезы» — страны, сетки, устройства, источники, зоны и расход (2 + 4 × сайтов запросов на день); «только итоги по сайтам» — один запрос на день, хватает для графиков, прогноза и сравнения месяцев. В конце пересчитывает прогноз дилов и алерты за окно.</p>
+          <BackfillBlock state={backfillView} sites={sites.map((s) => ({ id: s.id, domain: s.domain }))} defaults={{ full: defaultWindow(today, "full"), totals: defaultWindow(today, "totals") }} perNight={perNight} />
         </div>
         <div className="border-t border-border pt-4">
           <h3 className="mb-2 text-sm font-medium">Ручной перезапуск</h3>

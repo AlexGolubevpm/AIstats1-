@@ -5,8 +5,11 @@ import { addDays } from "@/lib/period";
 
 export const BACKFILL_KEY = "asg_backfill";
 
+/** full — every per-site cut, zones and cost (2 + 4 × sites requests a day); totals — site totals only (1 request a day). */
+export type BackfillMode = "full" | "totals";
+
 export interface BackfillState {
-  from: string; to: string; siteId?: string;
+  from: string; to: string; siteId?: string; mode: BackfillMode;
   pending: string[]; done: string[]; failed: string[];
   startedAt: string; updatedAt: string; cancelled?: boolean; lastStop?: string;
 }
@@ -17,16 +20,20 @@ export const daysBetween = (from: string, to: string): string[] => {
   return out;
 };
 
-/** Requests one day costs: website + spot for the account, four cuts per site. */
-export const requestsPerDay = (sites: number) => 2 + 4 * sites;
+/** Requests one day costs: website + spot for the account, four cuts per site; totals mode is one website request. */
+export const requestsPerDay = (sites: number, mode: BackfillMode = "full") => (mode === "totals" ? 1 : 2 + 4 * sites);
 
 /** How many whole days still fit today once the nightly reserve is kept. */
 export const daysThatFit = (used: number, budget: number, reserve: number, perDay: number) => Math.max(0, Math.floor((budget - reserve - used) / perDay));
 
-/** Default window: the first day of the previous month up to T-3 (the nightly job covers T-2 and T-1). */
-export function defaultWindow(today: string): { from: string; to: string } {
+/**
+ * Default window up to T-3 (the nightly job covers T-2 and T-1): full cuts from the first day of
+ * the current month (analysis starts with the month the cuts exist for); totals from the first
+ * day of the previous month (one request a day buys the month-over-month comparison).
+ */
+export function defaultWindow(today: string, mode: BackfillMode = "full"): { from: string; to: string } {
   const t = new Date(`${today}T00:00:00Z`);
-  const from = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() - 1, 1)).toISOString().slice(0, 10);
+  const from = new Date(Date.UTC(t.getUTCFullYear(), t.getUTCMonth() - (mode === "totals" ? 1 : 0), 1)).toISOString().slice(0, 10);
   return { from, to: addDays(today, -3) };
 }
 
@@ -45,12 +52,13 @@ export async function saveBackfill(db: PrismaClient, state: BackfillState): Prom
  * Starts a backfill or widens the running one: days already done for the same site filter are
  * kept, everything else in the window is pending, newest first.
  */
-export async function startBackfill(db: PrismaClient, w: { from: string; to: string; siteId?: string | null }): Promise<BackfillState> {
+export async function startBackfill(db: PrismaClient, w: { from: string; to: string; siteId?: string | null; mode?: BackfillMode }): Promise<BackfillState> {
   const prev = await readBackfill(db);
-  const same = prev && !prev.cancelled && (prev.siteId ?? null) === (w.siteId ?? null);
+  const mode = w.mode ?? "full";
+  const same = prev && !prev.cancelled && (prev.siteId ?? null) === (w.siteId ?? null) && (prev.mode ?? "full") === mode;
   const done = same ? prev.done.filter((d) => d >= w.from && d <= w.to) : [];
   const pending = daysBetween(w.from, w.to).filter((d) => !done.includes(d)).sort().reverse();
-  const state: BackfillState = { from: w.from, to: w.to, ...(w.siteId ? { siteId: w.siteId } : {}), pending, done, failed: [],
+  const state: BackfillState = { from: w.from, to: w.to, ...(w.siteId ? { siteId: w.siteId } : {}), mode, pending, done, failed: [],
     startedAt: same ? prev.startedAt : new Date().toISOString(), updatedAt: new Date().toISOString() };
   await saveBackfill(db, state);
   return state;

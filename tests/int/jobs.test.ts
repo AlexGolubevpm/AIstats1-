@@ -128,3 +128,27 @@ describe("asg:backfill", () => {
     expect(widened.startedAt).toBe(s.startedAt);
   });
 });
+
+describe("asg:backfill — только итоги", () => {
+  it("one website request per day writes ZZ site totals, leaves days with a country cut alone, and ends with derive", async () => {
+    const urls: string[] = [];
+    const fetchImpl = (async (u: URL | string) => {
+      urls.push(String(u));
+      return new Response(JSON.stringify([1, 2, 3].map((i) => ({ name: `${i}. ${["one", "two", "three"][i - 1]}.test`, hits: 500, broker_income: 7 }))));
+    }) as typeof fetch;
+    const cfg = config({ ASG_AUTH_EMAIL: "e", ASG_AUTH_TOKEN: "t", ASG_MIN_INTERVAL_MS: "0", ASG_DAILY_BUDGET: "100", ASG_BACKFILL_RESERVE: "10" });
+    const ctx = { db, cfg, raw, today, fetchImpl };
+    // 2026-09-20 already has JP/US rows from the factory; 09-18 and 09-19 are empty.
+    const r = await runJob("asg:backfill", ctx, { from: "2026-09-18", to: "2026-09-20", mode: "totals" });
+    expect(r.status).toBe("ok");
+    expect(urls).toHaveLength(3);
+    expect(urls.every((u) => new URL(u).searchParams.get("group_by") === "website" && !new URL(u).searchParams.has("platforms_ids[]"))).toBe(true);
+    const zz = await db.factRevenueGeo.findMany({ where: { countryCode: "ZZ" }, orderBy: [{ date: "asc" }, { siteId: "asc" }] });
+    expect(zz.map((x) => [x.date.toISOString().slice(0, 10), Number(x.revenueReported)])).toEqual([
+      ["2026-09-18", 7], ["2026-09-18", 7], ["2026-09-18", 7], ["2026-09-19", 7], ["2026-09-19", 7], ["2026-09-19", 7]]);
+    expect(await db.factRevenueGeo.count({ where: { date: new Date("2026-09-20T00:00:00Z"), countryCode: "JP" } })).toBe(4); // untouched: 3 sites + the own-deals row on s1
+    const { readBackfill } = await import("@/server/jobs/backfill");
+    expect((await readBackfill(db))!).toMatchObject({ mode: "totals", pending: [], done: ["2026-09-20", "2026-09-19", "2026-09-18"] });
+    expect(await db.ingestRun.count({ where: { source: "derive" } })).toBe(1);
+  });
+});

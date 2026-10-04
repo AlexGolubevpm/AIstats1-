@@ -10,13 +10,13 @@ import { ingestMetrika } from "@/server/ingest/metrika/ingest";
 import type { RawStore } from "@/server/ingest/raw-store";
 import { AsgError } from "@/server/ingest/adspyglass/client";
 import { asgPause, asgRequestsToday, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
-import { daysThatFit, defaultWindow, readBackfill, requestsPerDay, saveBackfill, startBackfill } from "./backfill";
+import { daysThatFit, defaultWindow, readBackfill, requestsPerDay, saveBackfill, startBackfill, type BackfillMode } from "./backfill";
 import { recalcCosts, revshareCosts } from "@/server/services/costs";
 import { matchZonesToPlacements } from "@/server/services/inventory";
 import { forecastDeals } from "@/server/services/deals";
 
 export interface JobContext { db: PrismaClient; cfg: Config; raw: RawStore; today?: string; fetchImpl?: typeof fetch }
-export interface JobData { from?: string; to?: string; siteId?: string }
+export interface JobData { from?: string; to?: string; siteId?: string; mode?: BackfillMode }
 
 export const JOB_NAMES = ["asg:totals", "asg:sites", "asg:backfill", "metrika", "derive", "geo:reprocess"] as const;
 export type JobName = (typeof JOB_NAMES)[number];
@@ -41,7 +41,7 @@ export function windowFor(name: JobName, ctx: JobContext, data: JobData): { from
   switch (name) {
     case "asg:totals": return { from: addDays(t, -1), to: t };
     case "asg:sites": return { from: addDays(t, -ctx.cfg.asg.restateDays), to: addDays(t, -1) };
-    case "asg:backfill": return defaultWindow(t);
+    case "asg:backfill": return defaultWindow(t, data.mode);
     case "metrika": return { from: addDays(t, -1), to: t };
     case "derive": return { from: addDays(t, -4), to: addDays(t, -1) };
     case "geo:reprocess": return { from: addDays(t, -90), to: t };
@@ -108,10 +108,11 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
 async function runBackfill(ctx: JobContext, client: AsgClient, w: { from: string; to: string }, data: JobData) {
   const { db, cfg, raw } = ctx;
   let state = await readBackfill(db);
-  if (data.from && data.to && (!state || state.cancelled || state.from !== data.from || state.to !== data.to)) state = await startBackfill(db, { ...w, siteId: data.siteId });
+  if (data.from && data.to && (!state || state.cancelled || state.from !== data.from || state.to !== data.to)) state = await startBackfill(db, { ...w, siteId: data.siteId, mode: data.mode });
   if (!state || state.cancelled || !state.pending.length) return { status: "skipped", skipped: "бэкфилл: нечего догружать" };
+  const mode: BackfillMode = state.mode ?? "full";
   const sites = await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(state.siteId ? { id: state.siteId } : {}) } });
-  const perDay = requestsPerDay(sites);
+  const perDay = requestsPerDay(sites, mode);
   const first = state.pending[0];
   return withIngestRun(db, { source: "adspyglass", job: "asg:backfill", from: first, to: first }, async (runId) => {
     const deps = { db, client, raw, runId };
@@ -121,10 +122,14 @@ async function runBackfill(ctx: JobContext, client: AsgClient, w: { from: string
       const used = await asgRequestsToday(db); // same UTC-day key the budget counter uses
       if (daysThatFit(used, cfg.asg.dailyBudget, cfg.asg.backfillReserve, perDay) < 1) { stop = `бюджет: использовано ${used} из ${cfg.asg.dailyBudget}, резерв ${cfg.asg.backfillReserve}`; break; }
       try {
-        const g = await ingestSiteGeo(deps, [day], state!.siteId);
-        const z = await ingestSiteZones(deps, [day], state!.siteId);
-        rows += g.rows + z.rows + await revshareCosts(db, day, day, state!.siteId);
-        partial.push(...g.failed, ...z.failed);
+        if (mode === "totals") {
+          rows += (await ingestSiteTotals(deps, [day])).rows; // site totals only; days that already have countries are left alone
+        } else {
+          const g = await ingestSiteGeo(deps, [day], state!.siteId);
+          const z = await ingestSiteZones(deps, [day], state!.siteId);
+          rows += g.rows + z.rows + await revshareCosts(db, day, day, state!.siteId);
+          partial.push(...g.failed, ...z.failed);
+        }
         state!.done.push(day); lo = day < lo ? day : lo; hi = day > hi ? day : hi;
       } catch (e) {
         if (e instanceof AsgError && (e.kind === "budget" || e.pausesQueue)) { stop = e.message; break; }
