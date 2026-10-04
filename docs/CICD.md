@@ -82,6 +82,7 @@ Settings → Branches → Add rule для `main`: *Require a pull request*, *Req
 1. Работа в ветке, PR в `main` — на PR бегут проверки.
 2. Merge → собирается образ, деплой на сервер. Статус — во вкладке Actions.
 3. Если healthcheck не прошёл, job падает с логами `web`; прошлые контейнеры Postgres/Redis не трогаются, бэкап БД перед деплоем лежит в `/opt/tubestat/backups` (последние 10).
+4. Если упал шаг `Upload stack files` или `Deploy` с `ssh: connect to host … port 22: Connection timed out`, это сеть до сервера, а не код: образ собран и лежит в реестре. Перезапуск деплоя из API GitHub App недоступен (403), поэтому деплой повторяется следующим merge в `main` (годится любой PR, например с правкой документации) или кнопкой «Re-run failed jobs» во вкладке Actions. Доступность сервера по SSH проверяет воркфлоу `Readiness check` (`.github/readiness.request`).
 
 **Бэкапы.** Перед каждым деплоем — `backups/pre-deploy-*.dump` (последние 10). Ежедневно в 03:30 UTC — `backups/daily-YYYYMMDD.dump` (последние 14): `deploy.sh` ставит cron пользователю `deploy`, скрипт — `deploy/backup.sh`, лог — `backups/backup.log`. Восстановление: `docker compose exec -T postgres pg_restore -U tubestat -d tubestat --clean < backups/<файл>.dump`.
 
