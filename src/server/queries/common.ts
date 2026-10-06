@@ -57,6 +57,21 @@ export async function kpis(p: Period, s: Scope = {}): Promise<KpiSet> {
   return { cur, prev, spark };
 }
 
+/**
+ * Days of the period that have AdSpyglass revenue but no per-site traffic-source cut: their cost is
+ * 0 not because traffic was free but because it was never loaded (totals-only backfill, a skipped
+ * night). Margin and ROMI over such days are overstated; the KPI row shows a warning.
+ */
+export async function costCoverage(p: Period, s: Scope = {}): Promise<{ days: number; missing: number; warn?: string }> {
+  const rows = await db.$queryRaw<{ date: Date; has: boolean }[]>`
+    SELECT g.date, EXISTS (SELECT 1 FROM "FactTrafficSource" f WHERE f.date = g.date AND f."siteId" = g.site_id) has
+    FROM v_site_geo_daily g WHERE ${where(p, s)} AND g.revenue_mediated > 0 GROUP BY g.date, g.site_id`;
+  const byDay = new Map<string, boolean>();
+  for (const r of rows) byDay.set(iso(r.date), (byDay.get(iso(r.date)) ?? false) || r.has);
+  const days = byDay.size, missing = [...byDay.values()].filter((h) => !h).length;
+  return { days, missing, warn: missing ? `Расход не загружен за ${missing} из ${days} дн. с выручкой: маржа и ROMI за период завышены` : undefined };
+}
+
 export function shift(s: string, n: number): string {
   return iso(new Date(D(s).getTime() + n * 86_400_000));
 }

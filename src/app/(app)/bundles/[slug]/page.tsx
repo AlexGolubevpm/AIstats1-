@@ -12,7 +12,7 @@ import { colorFor, pivot } from "@/lib/charts";
 import { cn } from "@/lib/cn";
 import { eachDay, periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
-import { bundleSiteIds, dailyTotals, kpis } from "@/server/queries/common";
+import { bundleSiteIds, costCoverage, dailyTotals, kpis } from "@/server/queries/common";
 import { formatsTable, geoTable, networksTable, revenueSplitDaily, sitesTable, type SplitBy } from "@/server/queries/reports";
 
 type Props = { params: Promise<{ slug: string }>; searchParams: Promise<Record<string, string | undefined>> };
@@ -31,9 +31,9 @@ export default async function BundlePage({ params, searchParams }: Props) {
   }
   const scope = { siteIds };
   const split = (["formats", "sites", "networks"].includes(sp.split ?? "") ? sp.split : "formats") as SplitBy;
-  const [k, sites, formats, geo, nets, splitRows, daily, networks] = await Promise.all([
+  const [k, sites, formats, geo, nets, splitRows, daily, networks, coverage] = await Promise.all([
     kpis(p, scope), sitesTable(p, scope), formatsTable(p, scope), geoTable(p, scope, 20), networksTable(p, scope), revenueSplitDaily(p, scope, split),
-    dailyTotals(p, scope), db.network.findMany(),
+    dailyTotals(p, scope), db.network.findMany(), costCoverage(p, scope),
   ]);
   const { data, series } = pivot(splitRows.map((r) => ({ ...r, key: split === "formats" ? FORMAT_LABEL[r.key] ?? r.key : r.key })), eachDay(p));
   const known = Object.fromEntries(networks.map((n) => [n.title, n.color]));
@@ -44,7 +44,7 @@ export default async function BundlePage({ params, searchParams }: Props) {
   return (
     <>
       {header}
-      <KpiRow k={k} keys={["revenue", "cost", "margin", "romi", "uniques", "rpm"]} />
+      <KpiRow k={k} keys={["revenue", "cost", "margin", "romi", "uniques", "rpm"]} partial={coverage.warn} />
       <Section title="Динамика" sub="Выручка по дням и расход: видно, пробивает ли выручка расход каждый день"
         actions={<div className="flex rounded-lg border border-border p-0.5 text-xs">
           {([["formats", "Форматы"], ["sites", "Сайты"], ["networks", "Сетки"]] as const).map(([id, label]) => (

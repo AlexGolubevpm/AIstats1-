@@ -25,7 +25,7 @@ export async function monthForecast(today = iso(new Date()), lookback: Lookback 
   const first = `${month}-01`, last = addDays(first, daysInMonth(first) - 1);
   const from = addDays(first, -21), to = last < today ? last : today; // extra days before the month only feed the pace (lookback ≤ 14 plus gaps)
   const pm = prevMonth(month), pmFirst = `${pm}-01`, pmLast = addDays(pmFirst, daysInMonth(pmFirst) - 1);
-  const [days, opex, perSite, prevSites, prevOpex, deals] = await Promise.all([
+  const [days, opex, perSite, prevSites, prevOpex, deals, srcDays] = await Promise.all([
     db.$queryRaw<Raw[]>`SELECT date, SUM(revenue)::float8 revenue, SUM(cost)::float8 cost, SUM(revenue_mediated)::float8 asg FROM v_site_geo_daily
       WHERE date BETWEEN ${D(from)} AND ${D(to)} AND site_id IN ${LIVE} GROUP BY 1`,
     db.$queryRaw<Raw[]>`SELECT date, SUM(amount)::float8 v FROM v_opex_daily WHERE date BETWEEN ${D(first)} AND ${D(last)} GROUP BY 1`,
@@ -36,16 +36,20 @@ export async function monthForecast(today = iso(new Date()), lookback: Lookback 
     db.$queryRaw<Raw[]>`SELECT SUM(amount)::float8 v FROM v_opex_daily WHERE date BETWEEN ${D(pmFirst)} AND ${D(pmLast)}`,
     db.deal.findMany({ where: { status: "ACTIVE", billedVia: "DIRECT", paymentBasis: { in: ["FLAT_DAILY", "FLAT_PERIOD"] }, startsAt: { lte: D(last) },
       OR: [{ endsAt: null }, { endsAt: { gte: D(today) } }] }, include: { sites: true } }),
+    db.$queryRaw<Raw[]>`SELECT date, "siteId" site_id FROM "FactTrafficSource" WHERE date BETWEEN ${D(from)} AND ${D(to)} GROUP BY 1, 2`,
   ]);
+  // Cost comes only with the per-site traffic-source cut: a day without it is not complete for the pace (its cost would read 0).
+  const srcAt = new Set(srcDays.map((r) => `${iso(r.date as Date)}|${String(r.site_id)}`));
+  const srcDay = new Set(srcDays.map((r) => iso(r.date as Date)));
   const opexByDay = Object.fromEntries(opex.map((r) => [iso(r.date as Date), n(r.v)]));
-  const input = days.map((r) => ({ date: iso(r.date as Date), revenue: n(r.revenue), cost: n(r.cost), complete: n(r.asg) > 0 }));
+  const input = days.map((r) => ({ date: iso(r.date as Date), revenue: n(r.revenue), cost: n(r.cost), complete: n(r.asg) > 0 && srcDay.has(iso(r.date as Date)) }));
   const projection = projectMonth({ month, today, lookback, days: input, opexByDay });
 
   const bySite = new Map<string, { domain: string; days: { date: string; revenue: number; cost: number; complete: boolean }[] }>();
   for (const r of perSite) {
     const id = String(r.site_id);
     if (!bySite.has(id)) bySite.set(id, { domain: String(r.domain), days: [] });
-    bySite.get(id)!.days.push({ date: iso(r.date as Date), revenue: n(r.revenue), cost: n(r.cost), complete: n(r.asg) > 0 });
+    bySite.get(id)!.days.push({ date: iso(r.date as Date), revenue: n(r.revenue), cost: n(r.cost), complete: n(r.asg) > 0 && srcAt.has(`${iso(r.date as Date)}|${id}`) });
   }
   const prevBy = new Map(prevSites.map((r) => [String(r.site_id), { revenue: n(r.revenue), cost: n(r.cost) }]));
   const sites: SiteForecast[] = [...bySite.entries()].map(([id, s]) => {

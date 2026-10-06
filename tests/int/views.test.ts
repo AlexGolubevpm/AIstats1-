@@ -23,6 +23,9 @@ describe("v_site_geo_daily", () => {
     expect(num(s3.revenue)).toBe(46);
     expect(num(s3.revenue_direct)).toBe(6);
     expect(num(s3.revenue_confirmed)).toBe(3); // only the CONFIRMED deal day; mediated not yet paid out
+    // Deal page loads are the site's own traffic counted again: they stay out of page_loads.
+    const [loads] = await db.$queryRaw<{ page_loads: unknown; deal_loads: unknown }[]>`SELECT SUM(page_loads) page_loads, SUM(deal_loads) deal_loads FROM v_site_geo_daily WHERE site_id = 's3'`;
+    expect([num(loads.page_loads), num(loads.deal_loads)]).toEqual([40_000, 6_000]);
   });
 
   it("joins traffic and cost on the same grain and computes margin", async () => {
@@ -52,6 +55,14 @@ describe("v_site_geo_daily", () => {
 });
 
 describe("v_bundle_daily", () => {
+  it("v_bundle_daily leaves archived sites out, like the page totals", async () => {
+    const [before] = await db.$queryRaw<{ revenue: unknown }[]>`SELECT SUM(revenue) revenue FROM v_bundle_daily WHERE bundle_slug = 'jav'`;
+    await db.site.update({ where: { id: "s1" }, data: { status: "ARCHIVED" } });
+    const [after] = await db.$queryRaw<{ revenue: unknown }[]>`SELECT SUM(revenue) revenue FROM v_bundle_daily WHERE bundle_slug = 'jav'`;
+    expect(num(after.revenue)).toBeLessThan(num(before.revenue));
+    await db.site.update({ where: { id: "s1" }, data: { status: "ACTIVE" } });
+  });
+
   it("bundle total equals the sum of its sites", async () => {
     const [b] = await db.$queryRaw<{ revenue: unknown }[]>`SELECT SUM(revenue) revenue FROM v_bundle_daily WHERE bundle_slug = 'jav'`;
     const [s] = await db.$queryRaw<{ revenue: unknown }[]>`SELECT SUM(revenue) revenue FROM v_site_geo_daily WHERE site_id IN ('s1','s2')`;

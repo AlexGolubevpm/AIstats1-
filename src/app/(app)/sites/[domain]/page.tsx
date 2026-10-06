@@ -14,7 +14,7 @@ import { fmtDate, fmtInt, fmtMultiplier } from "@/lib/format";
 import { dealMultiplier } from "@/lib/metrics";
 import { periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
-import { D, dailyTotals, kpis } from "@/server/queries/common";
+import { D, costCoverage, dailyTotals, kpis } from "@/server/queries/common";
 import { devicesTable, formatsTable, networksTable, siteGeoWithNetworks, sourcesTable, zonesTable } from "@/server/queries/reports";
 
 type Props = { params: Promise<{ domain: string }>; searchParams: Promise<Record<string, string | undefined>> };
@@ -47,10 +47,11 @@ export default async function SitePage({ params, searchParams }: Props) {
   if (!site) notFound();
   const by = TABS.some((t) => t.id === sp.by) ? sp.by! : "zones";
   const scope = { siteIds: [site.id] };
-  const [k, daily, alerts, deals] = await Promise.all([
+  const [k, daily, alerts, deals, coverage] = await Promise.all([
     kpis(p, scope), dailyTotals(p, scope),
     db.alert.findMany({ where: { siteId: site.id, resolvedAt: null }, orderBy: [{ level: "desc" }, { moneyAtRisk: "desc" }] }),
     db.deal.findMany({ where: { sites: { some: { siteId: site.id } }, status: { in: ["ACTIVE", "PAUSED"] } }, include: { advertiser: true } }),
+    costCoverage(p, scope),
   ]);
   const dealFacts = await db.factFixDeal.groupBy({ by: ["dealId", "revenueState"], where: { siteId: site.id, date: { gte: D(p.from), lte: D(p.to) } },
     _sum: { revenue: true, impsOwn: true, impsReported: true } });
@@ -99,7 +100,7 @@ export default async function SitePage({ params, searchParams }: Props) {
           <a className="inline-flex items-center gap-1 hover:text-accent" href={`https://${site.domain}`} target="_blank" rel="noreferrer">Открыть сайт <ExternalLink className="size-3" /></a>
           {site.adsgSiteId && <span>AdSpyglass ID {site.adsgSiteId}</span>}
         </span>} />
-      <KpiRow k={k} keys={["revenue", "cost", "margin", "romi", "uniques", "rpm", "depth"]} />
+      <KpiRow k={k} keys={["revenue", "cost", "margin", "romi", "uniques", "rpm", "depth"]} partial={coverage.warn} />
       <Section title="Выручка и расход" sub="Красная линия выше синей — дни, когда сайт работал в минус">
         <TrendChart data={daily.map((d) => ({ date: d.date, revenue: Number.isNaN(d.revenue) ? null : d.revenue, cost: Number.isNaN(d.revenue) ? null : d.cost }))}
           series={[{ key: "revenue", label: "Выручка", color: "#3B82F6", type: "area" }, { key: "cost", label: "Расход на трафик", color: "#F43F5E", type: "line" }]} />

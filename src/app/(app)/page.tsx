@@ -10,7 +10,7 @@ import { colorFor, pivot } from "@/lib/charts";
 import { fmtMoney } from "@/lib/format";
 import { eachDay, periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
-import { dailyTotals, kpis } from "@/server/queries/common";
+import { costCoverage, dailyTotals, kpis } from "@/server/queries/common";
 import { bundlesTable, costSplitDaily, dataExists, opexDaily, overlappingSites, revenueSplitDaily, topMovers } from "@/server/queries/reports";
 
 type SP = Promise<Record<string, string | string[] | undefined>>;
@@ -25,10 +25,10 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
       </>
     );
   }
-  const [k, bundles, overlap, movers, split, daily, alerts, networks, costSplit, opex] = await Promise.all([
+  const [k, bundles, overlap, movers, split, daily, alerts, networks, costSplit, opex, coverage] = await Promise.all([
     kpis(p), bundlesTable(p), overlappingSites(), topMovers(p), revenueSplitDaily(p, {}, "networks"), dailyTotals(p),
     db.alert.findMany({ where: { resolvedAt: null, OR: [{ snoozedUntil: null }, { snoozedUntil: { lt: new Date() } }] }, orderBy: [{ level: "desc" }, { moneyAtRisk: "desc" }], take: 5 }),
-    db.network.findMany(), costSplitDaily(p), opexDaily(p),
+    db.network.findMany(), costSplitDaily(p), opexDaily(p), costCoverage(p),
   ]);
   const { data, series } = pivot(split, eachDay(p));
   const known = Object.fromEntries(networks.map((n) => [n.title, n.color]));
@@ -44,7 +44,7 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
   return (
     <>
       <PageHeader title="Сводка" sub="Маржа по всем сайтам и бандлам" period={p} />
-      <KpiRow k={k} keys={["revenue", "cost", "margin", "romi", "uniques", "rpm"]} />
+      <KpiRow k={k} keys={["revenue", "cost", "margin", "romi", "uniques", "rpm"]} partial={coverage.warn} />
       <div className="grid gap-4 xl:grid-cols-3">
         <Section title="Выручка по сеткам" className="min-w-0 xl:col-span-2" sub="Столбцы — выручка по сеткам AdSpyglass и прямые фикс-дилы">
           <TrendChart data={data} series={series.map((s, i) => ({ key: s, label: s, color: colorFor(s, i, known), type: "bar" as const, stack: "rev" }))} />

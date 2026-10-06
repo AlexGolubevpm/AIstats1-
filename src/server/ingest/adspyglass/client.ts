@@ -77,6 +77,8 @@ export class AsgClient {
           signal: AbortSignal.timeout(60_000),
         });
       } catch (e) {
+        // One timeout must not lose the whole night: retry like a 5xx, pause the queue only when it keeps failing.
+        if (attempt < delays.length) { await this.sleep(delays[attempt]); continue; }
         throw new AsgError("connection", `Соединение с AdSpyglass не удалось: ${(e as Error).message}`);
       }
       if (res.status >= 300 && res.status < 400) {

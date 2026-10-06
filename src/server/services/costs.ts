@@ -51,10 +51,11 @@ export async function revshareCosts(db: PrismaClient, from: string, to: string, 
     db.factCost.findMany({ where: { ...where, origin: "IMPORT" }, select: { date: true, siteId: true, countryCode: true, sourceSlug: true } }),
   ]);
   const share = new Map(sources.map((s) => [s.slug, new Decimal(s.revShare.toString())]));
-  const skip = new Set(imported.map((c) => `${isoOf(c.date)}|${c.siteId}|${c.countryCode}|${c.sourceSlug}`));
+  // An import for (day, site, source) in any country replaces the revshare figure: the invoice knows better than the share.
+  const skip = new Set(imported.map((c) => `${isoOf(c.date)}|${c.siteId}|${c.sourceSlug}`));
   const rows = facts.flatMap((f) => {
     const k = share.get(f.sourceSlug) ?? new Decimal(0);
-    if (k.lte(0) || skip.has(`${isoOf(f.date)}|${f.siteId}|ZZ|${f.sourceSlug}`)) return [];
+    if (k.lte(0) || skip.has(`${isoOf(f.date)}|${f.siteId}|${f.sourceSlug}`)) return [];
     return [{ date: f.date, siteId: f.siteId, countryCode: "ZZ", sourceSlug: f.sourceSlug, uniquesBought: f.pageLoads,
       rateModel: "REVSHARE" as const, rate: k.toString(), cost: new Decimal(f.revenueReported.toString()).mul(k).toDecimalPlaces(4).toString(), origin: "ASG" as const }];
   });
@@ -126,5 +127,6 @@ export async function revertCostImport(db: PrismaClient, batchId: string): Promi
   if (rows.length) {
     const ds = rows.map((r) => isoOf(r.date)).sort();
     await recalcCosts(db, ds[0], ds[ds.length - 1]);
+    await revshareCosts(db, ds[0], ds[ds.length - 1]); // the import had replaced the revshare figure for those days
   }
 }

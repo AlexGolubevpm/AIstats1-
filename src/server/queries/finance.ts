@@ -77,10 +77,11 @@ export async function pnlTable(p: Period): Promise<PnlRow[]> {
     db.$queryRaw<Raw[]>`SELECT site_id, SUM(revenue)::float8 total, SUM(revenue) FILTER (WHERE revenue_state = 'CONFIRMED')::float8 confirmed,
       SUM(revenue) FILTER (WHERE revenue_state = 'INVOICED')::float8 invoiced FROM v_deal_daily
       WHERE billed_via = 'DIRECT' AND date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY 1`,
-    // Days with traffic but no cost at all: ROMI for those sites is incomplete.
+    // Days with AdSpyglass traffic but no traffic-source cut (the cost base): ROMI for those sites is incomplete.
     db.$queryRaw<Raw[]>`SELECT site_id, count(*)::int days FROM (
-      SELECT site_id, date FROM v_site_geo_daily WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)}
-      GROUP BY 1, 2 HAVING SUM(uniques) > 0 AND SUM(cost) = 0) x GROUP BY 1`,
+      SELECT g.site_id, g.date FROM v_site_geo_daily g WHERE g.date BETWEEN ${D(p.from)} AND ${D(p.to)}
+      GROUP BY 1, 2 HAVING SUM(g.page_loads) > 0 AND SUM(g.cost) = 0
+        AND NOT EXISTS (SELECT 1 FROM "FactTrafficSource" f WHERE f."siteId" = g.site_id AND f.date = g.date)) x GROUP BY 1`,
     db.site.findMany({ where: { status: { not: "ARCHIVED" } }, include: { bundles: { include: { bundle: true } } } }),
     db.alert.findMany({ where: { resolvedAt: null, rule: "deal_no_numbers" }, select: { siteId: true } }),
     db.$queryRaw<Raw[]>`SELECT site_id, SUM(amount)::float8 opex FROM v_opex_daily WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY 1`,
@@ -153,8 +154,8 @@ export async function monthlyPnl(count = 6, today = iso(new Date())): Promise<Mo
   const since = new Date(Date.UTC(+today.slice(0, 4), +today.slice(5, 7) - count, 1));
   const [geo, opex] = await Promise.all([
     db.$queryRaw<Raw[]>`SELECT to_char(date, 'YYYY-MM') mo, SUM(revenue_mediated)::float8 asg, SUM(revenue_direct)::float8 deals, SUM(cost)::float8 cost
-      FROM v_site_geo_daily WHERE date >= ${since} AND date <= ${D(today)} AND site_id IN ${LIVE} GROUP BY 1`,
-    db.$queryRaw<Raw[]>`SELECT to_char(date, 'YYYY-MM') mo, SUM(amount)::float8 opex FROM v_opex_daily WHERE date >= ${since} AND date <= ${D(today)} GROUP BY 1`,
+      FROM v_site_geo_daily WHERE date >= ${since} AND date < ${D(today)} AND site_id IN ${LIVE} GROUP BY 1`, // today is partial (hourly totals, no cost): stop at yesterday like the KPIs
+    db.$queryRaw<Raw[]>`SELECT to_char(date, 'YYYY-MM') mo, SUM(amount)::float8 opex FROM v_opex_daily WHERE date >= ${since} AND date < ${D(today)} GROUP BY 1`,
   ]);
   const g = new Map(geo.map((r) => [String(r.mo), r])), o = new Map(opex.map((r) => [String(r.mo), n(r.opex)]));
   const out: MonthRow[] = [];
