@@ -9,6 +9,7 @@ import { seedReference } from "@/server/seed/reference";
 import { evaluateAlerts } from "@/server/domain/alerts/rules";
 import { revshareCosts } from "@/server/services/costs";
 import { REFORECAST_DAYS, forecastDeals } from "@/server/services/deals";
+import { planCatchUp } from "@/server/jobs/backfill";
 
 const cfg = config();
 const raw = rawStoreFromEnv();
@@ -31,6 +32,14 @@ for (const s of SCHEDULES) {
   await queue(s.queue).upsertJobScheduler(s.name, { pattern: s.pattern, tz: "UTC" }, { name: s.name, data: {} });
 }
 log("schedules registered", { schedules: SCHEDULES.map((s) => `${s.name} ${s.pattern}`) });
+// Downtime catch-up: days of this month without a per-site country cut are backfilled right away
+// (full mode, within the request budget) instead of waiting for someone to notice on the UI.
+if (cfg.asg.configured) {
+  try {
+    const missing = await planCatchUp(db, new Date().toISOString().slice(0, 10));
+    if (missing.length) { await queue("asg").add("asg:backfill", {}); log("catch-up backfill queued", { days: missing }); }
+  } catch (e) { log("catch-up backfill failed", { error: (e as Error).message }); }
+}
 
 const handle = async (job: { id?: string; name: string; data: JobData }) => {
   if (!JOB_NAMES.includes(job.name as JobName)) throw new Error(`unknown job ${job.name}`);
