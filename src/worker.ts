@@ -10,6 +10,7 @@ import { evaluateAlerts } from "@/server/domain/alerts/rules";
 import { revshareCosts } from "@/server/services/costs";
 import { REFORECAST_DAYS, forecastDeals } from "@/server/services/deals";
 import { planCatchUp } from "@/server/jobs/backfill";
+import { matchZonesToPlacements } from "@/server/services/inventory";
 
 const cfg = config();
 const raw = rawStoreFromEnv();
@@ -26,7 +27,8 @@ try {
   const costs = await revshareCosts(db, daysAgo(62), today);
   const sources = [cfg.asg.configured && "adspyglass", cfg.metrika.configured && "metrika"].filter(Boolean) as string[];
   const alerts = await evaluateAlerts({ db, asOf: today, configuredSources: sources });
-  log("startup catch-up", { deals, costs, alerts: alerts.active });
+  const zones = await matchZonesToPlacements(db); // zone names → places (ADR 0010)
+  log("startup catch-up", { deals, costs, alerts: alerts.active, zones });
 } catch (e) { log("startup catch-up failed", { error: (e as Error).message }); }
 for (const s of SCHEDULES) {
   await queue(s.queue).upsertJobScheduler(s.name, { pattern: s.pattern, tz: "UTC" }, { name: s.name, data: {} });

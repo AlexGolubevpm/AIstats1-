@@ -70,7 +70,7 @@ export function DealFormButton({ sites, advertisers, placements = [], values = {
               </div>
             </FormField>
             <FormField name="placeSlugs" label={`Зоны · выбрано ${zones.size}`}
-              hint="Какие зоны (места) занимает дил на каждом из выбранных сайтов: таблинки, футер, попсы… Они закрасятся во вкладке «Форматы». Без зон — дил считается, место не занимает">
+              hint="Какие зоны занимает дил на каждом из выбранных сайтов. Список — зоны AdSpyglass всех сайтов и места, добавленные во вкладке «Форматы»; там же они закрасятся. Без зон — дил считается, место не занимает">
               <div className="rounded-lg border border-border">
                 <div className="max-h-72 overflow-y-auto p-1">
                   {placements.map((p) => (

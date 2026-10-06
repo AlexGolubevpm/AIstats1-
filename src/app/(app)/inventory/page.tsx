@@ -80,7 +80,7 @@ export default async function Inventory({ searchParams }: Props) {
                 {grid.places.map((pl) => (
                   <th key={pl.slug} className="h-10 min-w-24 border-b border-border px-2 text-left font-medium">
                     <div className="leading-4">{pl.title}</div>
-                    <div className="text-[11px] font-normal text-faint">{fmtMoney(sum([...shown.values()], pl.slug))} · своб. {pl.free}</div>
+                    <div className="text-[11px] font-normal text-faint">{fmtMoney(sum([...shown.values()], pl.slug))} · своб. {pl.free}{pl.zones ? ` · зон ${pl.zones}` : ""}</div>
                   </th>
                 ))}
                 <th className="h-10 border-b border-border px-3 text-right font-medium">Итого</th>

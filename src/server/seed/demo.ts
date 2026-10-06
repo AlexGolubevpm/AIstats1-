@@ -24,8 +24,8 @@ const GEOS: [string, number, number][] = [ // code, traffic weight, $ per 1000 l
 ];
 const NETS: [string, number][] = [["adpulsar", 0.4], ["trafficstars", 0.25], ["clickadu", 0.15], ["exoclick", 0.12], ["marketplace", 0.08]];
 const ZONES: [string, "POPUNDER" | "BANNER" | "NATIVE" | "SLIDER" | "INVIDEO", number, number][] = [ // name, format, revenue share, view rate
-  ["Popunder", "POPUNDER", 0.42, 0], ["Banners_Footer_A", "BANNER", 0.04, 0.09], ["Banners_Footer_B", "BANNER", 0.006, 0.07],
-  ["Banners_Sidebar", "BANNER", 0.08, 0.38], ["Native_Grid", "NATIVE", 0.14, 0.55], ["Slider", "SLIDER", 0.18, 0], ["Preroll_VAST", "INVIDEO", 0.12, 0],
+  ["POP player", "POPUNDER", 0.3, 0], ["POP thumbs", "POPUNDER", 0.12, 0], ["footer_1", "BANNER", 0.04, 0.09], ["footer_2", "BANNER", 0.006, 0.07],
+  ["ntv_1", "NATIVE", 0.14, 0.55], ["slider", "SLIDER", 0.18, 0], ["InVideo", "INVIDEO", 0.12, 0], ["Tablink 1", "BANNER", 0.08, 0.38],
 ];
 
 export async function isDemo(db: PrismaClient): Promise<boolean> {

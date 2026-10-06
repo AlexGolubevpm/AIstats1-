@@ -49,6 +49,10 @@ describe("normalizers", () => {
     expect(normalizeFormat("Banners_Footer_A")).toBe("BANNER");
     expect(normalizeFormat("VAST preroll")).toBe("INVIDEO");
     expect(normalizeFormat("Native")).toBe("NATIVE");
+    expect(normalizeFormat("POP player")).toBe("POPUNDER");
+    expect(normalizeFormat("POP thumbs")).toBe("POPUNDER");
+    expect(normalizeFormat("ntv_1")).toBe("NATIVE");
+    expect(normalizeFormat("Tablink 1")).toBe("OTHER");
     expect(normalizeFormat("weird")).toBe("OTHER");
   });
   it("parses ASG names", () => {

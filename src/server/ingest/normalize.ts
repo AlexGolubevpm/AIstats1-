@@ -63,9 +63,9 @@ export function normalizeDevice(raw: string | null | undefined): DeviceCode {
 export function normalizeFormat(raw: string | null | undefined): FormatCode {
   const v = (raw ?? "").toLowerCase().replace(/[^a-z]/g, "");
   if (!v) return "OTHER";
-  if (v.includes("popunder") || v === "pop" || v.includes("popup") || v.includes("tabunder")) return "POPUNDER";
+  if (v.includes("popunder") || v.startsWith("pop") || v.includes("popup") || v.includes("tabunder")) return "POPUNDER"; // "POP player", "POP thumbs"
   if (v.includes("inpage") || v.includes("push")) return "INPAGEPUSH";
-  if (v.includes("native")) return "NATIVE";
+  if (v.includes("native") || v.startsWith("ntv")) return "NATIVE";
   if (v.includes("slider")) return "SLIDER";
   if (v.includes("outstream")) return "OUTSTREAM";
   if (v.includes("invideo") || v.includes("instream") || v.includes("vast") || v.includes("preroll")) return "INVIDEO";

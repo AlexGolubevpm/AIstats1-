@@ -172,18 +172,21 @@ test("formats: period in the URL, bundle filter and grouping, a zone mapped by h
   await expect(page.getByRole("cell", { name: /^JAV · 4 сайтов/ })).toBeVisible();
   await expect(page.getByRole("cell", { name: /^Топ-сайты · 3 сайтов/ })).toBeVisible();
   await page.getByRole("link", { name: "Без группировки" }).click();
-  // Demo zones carry no place name, so every site shows "N зон без формата"; mapping one moves its money into the column.
+  // Every AdSpyglass zone is a place: the grid has columns for the real zone names, nothing is "без формата".
+  await expect(page.getByRole("columnheader", { name: /InVideo/ })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: /POP player/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /зон без формата/ })).toHaveCount(0);
+  // A zone can still be moved into another place by hand: footer_1's money then shows in "Under bar".
   const row = page.locator("tbody tr").first();
-  await expect(row.getByRole("button", { name: /зон без формата/ })).toBeVisible();
-  const freeBefore = await row.getByRole("button", { name: "свободно" }).count(); // an earlier test may have marked one CPA
-  await row.getByRole("button", { name: /зон без формата/ }).click();
+  const underBar = row.getByRole("cell").nth(1 + (await page.getByRole("columnheader").allInnerTexts()).findIndex((t) => /^Under bar/.test(t)) - 1);
+  await expect(underBar.getByRole("button", { name: "свободно" })).toBeVisible();
+  await row.getByRole("button", { name: /^\d+ зон$/ }).click();
   const sheet = page.getByRole("dialog");
-  await expect(sheet.getByRole("cell", { name: "Banners_Sidebar" })).toBeVisible();
-  await sheet.getByLabel("Формат зоны Banners_Sidebar").selectOption("under_bar");
+  await expect(sheet.getByRole("cell", { name: "footer_1", exact: true }).first()).toBeVisible(); // the name cell; the select cell reads its chosen option
+  await sheet.getByLabel("Формат зоны footer_1").selectOption("under_bar");
   await expect(page.getByText("Формат зоны сохранён")).toBeVisible();
   await page.keyboard.press("Escape");
-  await expect(row.getByRole("button", { name: "свободно" })).toHaveCount(freeBefore - 1);
-  await expect(row.getByRole("button", { name: /^\$[\d,.]+/ }).first()).toBeVisible();
+  await expect(underBar.getByRole("button", { name: /^\$[\d,.]+/ })).toBeVisible();
 });
 
 test("finance: an operating expense of a month lands in the month table, the KPIs and the P&L", async ({ page }) => {

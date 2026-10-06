@@ -16,6 +16,7 @@ import Decimal from "decimal.js";
 import { reapplyPayouts } from "@/server/services/finance";
 import type { PrismaClient } from "@/generated/prisma/client";
 import { matchPlacement } from "@/server/domain/inventory";
+import { matchZonesToPlacements } from "@/server/services/inventory";
 import { CountryResolver } from "@/server/ingest/normalize";
 import { rawKey, type RawStore } from "@/server/ingest/raw-store";
 import { AsgClient, AsgError } from "./client";
@@ -158,7 +159,7 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
         } else failed.push(`${s.domain} ${date}: источники трафика не по сайту — пропущены`);
         const gap = reconcile(rawCells.reduce((a, c) => a + c.m.predicted, 0), siteTotal.get(s.adsgSiteId!)?.predicted);
         if (gap != null) failed.push(`${s.domain} ${date}: сверка с итогом ADOK — выручка по странам расходится на ${(gap * 100).toFixed(1)}%`);
-      } catch (e) {
+    } catch (e) {
         if (e instanceof AsgError && (e.pausesQueue || e.kind === "budget")) throw e; // stop the whole run
         failed.push(`${s.domain} ${date}: ${(e as Error).message}`);
       }
@@ -275,7 +276,7 @@ export async function ingestSiteZones(deps: AsgIngestDeps, dates: string[], site
             const zone = await tx.zone.upsert({
               where: { adsgZoneId: c.adsgZoneId },
               create: { adsgZoneId: c.adsgZoneId, siteId, name: c.name, format: c.format, position: c.position, placementSlug: matchPlacement(c.name, places) },
-              update: { name: c.name },
+              update: { name: c.name, format: c.format, position: c.position },
             });
             await tx.factRevenueZone.upsert({
               where: { date_zoneId: { date: d(date), zoneId: zone.id } },
@@ -287,6 +288,7 @@ export async function ingestSiteZones(deps: AsgIngestDeps, dates: string[], site
           }
         });
       }
+      await matchZonesToPlacements(db); // new zone names become places at once (ADR 0010)
     } catch (e) {
       if (e instanceof AsgError && (e.pausesQueue || e.kind === "budget")) throw e;
       failed.push(`зоны ${date}: ${(e as Error).message}`);

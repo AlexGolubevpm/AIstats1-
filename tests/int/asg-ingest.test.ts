@@ -89,7 +89,8 @@ describe("AdSpyglass ingest", () => {
     ]);
     await ingestSiteZones({ db, client, raw, runId: "r4" }, [DATE], "a");
     const zones = await db.zone.findMany({ orderBy: { adsgZoneId: "asc" } });
-    expect(zones.map((z) => [z.format, z.position, z.placementSlug])).toEqual([["BANNER", "footer", null], ["POPUNDER", null, null], ["OTHER", null, "tablink_2"]]);
+    expect(zones.map((z) => [z.format, z.position, z.placementSlug])).toEqual([["BANNER", "footer", "banners_footer_a"], ["POPUNDER", null, "popunder"], ["OTHER", null, "tablink_2"]]);
+    expect((await db.placement.findMany({ where: { slug: { in: ["banners_footer_a", "popunder"] } } })).map((p) => p.title).sort()).toEqual(["Banners_Footer_A", "Popunder"]);
     const facts = await db.factRevenueZone.findMany({ orderBy: { impsOwn: "desc" } });
     expect(facts.map((f) => f.views)).toEqual([600, 0, 0]);
   });

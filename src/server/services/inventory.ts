@@ -3,13 +3,30 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import { RuleError } from "@/server/domain/errors";
 import { matchPlacement, placementSlug, type PlaceUse } from "@/server/domain/inventory";
 
-/** Maps zones without a place to one by their name. Never overrides a mapping already set. */
+/**
+ * The place catalog = the owner's defaults ∪ every distinct AdSpyglass zone name (ADR 0010): a zone
+ * is a place. Creates the missing places (after the defaults, by name) and maps every zone without
+ * a place: to an existing place whose title is in the zone name ("Tablink 1" → tablink_1), else to
+ * the place of its own name. A mapping already set, by hand or earlier, is never overridden.
+ * Returns the number of zones mapped.
+ */
 export async function matchZonesToPlacements(db: PrismaClient): Promise<number> {
-  const places = await db.placement.findMany();
-  if (!places.length) return 0;
+  const unmapped = await db.zone.findMany({ where: { placementSlug: null, isActive: true } });
+  if (!unmapped.length) return 0;
+  let places = await db.placement.findMany();
+  let order = Math.max(0, ...places.map((p) => p.sortOrder));
+  const have = new Set(places.map((p) => p.slug));
+  const names = [...new Map(unmapped.map((z) => [placementSlug(z.name), z.name.trim()])).entries()].sort(([, a], [, b]) => a.localeCompare(b));
+  for (const [slug, title] of names) {
+    if (have.has(slug) || matchPlacement(title, places)) continue;
+    order += 10;
+    await db.placement.create({ data: { slug, title, sortOrder: order } });
+    have.add(slug);
+  }
+  places = await db.placement.findMany();
   let n = 0;
-  for (const z of await db.zone.findMany({ where: { placementSlug: null } })) {
-    const slug = matchPlacement(z.name, places);
+  for (const z of unmapped) {
+    const slug = matchPlacement(z.name, places) ?? (have.has(placementSlug(z.name)) ? placementSlug(z.name) : null);
     if (slug) { await db.zone.update({ where: { id: z.id }, data: { placementSlug: slug } }); n++; }
   }
   return n;
