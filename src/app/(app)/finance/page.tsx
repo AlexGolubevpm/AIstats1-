@@ -11,6 +11,7 @@ import { fmtDate, fmtMoney, fmtPercent } from "@/lib/format";
 import { daysBetween, periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
 import { asgPayouts, financeKpis, monthlyPnl, opexEntries, pnlTable, receivables, revenueStructure } from "@/server/queries/finance";
+import { monthForecast } from "@/server/queries/forecast";
 import { OPEX_LABEL, type OpexCategory } from "@/server/services/opex";
 import { DeleteOpex, OpexButton } from "./opex";
 import { PayoutButton } from "./payout";
@@ -24,7 +25,11 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
   const monthly = daysBetween(p.from, p.to) > 62;
   const [k, structure, pnl, payouts, recv, months, opex, sites] = await Promise.all([financeKpis(p), revenueStructure(p, monthly), pnlTable(p), asgPayouts(), receivables(),
     monthlyPnl(), opexEntries(), db.site.findMany({ where: { status: { not: "ARCHIVED" } }, orderBy: { domain: "asc" }, select: { id: true, domain: true } })]);
-  const thisMonth = new Date().toISOString().slice(0, 7);
+  const today = new Date().toISOString().slice(0, 10);
+  const thisMonth = today.slice(0, 7);
+  // Month-end projection beside the month-to-date figures: only while the period is this month from its 1st day (ADR 0008 pace).
+  const monthEnd = p.from === `${thisMonth}-01` && p.to <= today ? (await monthForecast(today)).projection.projected : null;
+  const eom = (v: number | null | undefined) => (v == null ? null : `на конец месяца ${fmtMoney(v).replace(/\.\d\d$/, "")}`);
   const seg = (v: number) => (k.revenue > 0 ? `${(v / k.revenue) * 100}%` : "0%");
   const bundle = sp.bundle;
   const rows: Row[] = pnl.filter((r) => !bundle || r.bundles.includes(bundle)).map((r) => ({
@@ -57,14 +62,14 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
             <span className="bg-positive" style={{ width: seg(k.confirmed) }} /><span className="bg-accent" style={{ width: seg(k.invoiced) }} />
             <span className="bg-border-strong" style={{ width: seg(k.forecast) }} />
           </div>
-          <span className="text-[11px] text-faint">подтв. · выставл. · прогноз</span>
+          <span className="text-[11px] text-faint">{monthEnd ? eom(monthEnd.revenue) : "подтв. · выставл. · прогноз"}</span>
         </div>
         <KpiCard label="Подтверждено" value={k.confirmed} format="money" color="#16A34A" />
         <KpiCard label="Ожидается" value={k.expected} format="money" sub="прогноз + выставлено" />
-        <KpiCard label="Расход на трафик" value={k.cost} format="money" color="#F43F5E" />
-        <KpiCard label="Опер. расходы" value={k.opex} format="money" color="#F97316" sub="хостинг, люди, софт" />
-        <KpiCard label="Маржа" value={k.margin} format="money" negativeFrame={k.margin < 0} sub="после опер. расходов" />
-        <KpiCard label="ROMI" value={k.romi} format="percent" sub="на расход на трафик" />
+        <KpiCard label="Расход на трафик" value={k.cost} format="money" color="#F43F5E" sub={eom(monthEnd?.cost) ?? undefined} />
+        <KpiCard label="Опер. расходы" value={k.opex} format="money" color="#F97316" sub={monthEnd ? eom(monthEnd.opex) ?? undefined : "хостинг, люди, софт"} />
+        <KpiCard label="Маржа" value={k.margin} format="money" negativeFrame={k.margin < 0} sub={monthEnd ? `${eom(monthEnd.margin)} · после опер. расходов` : "после опер. расходов"} />
+        <KpiCard label="ROMI" value={k.romi} format="percent" sub={monthEnd?.romi != null ? `на конец месяца ${fmtPercent(monthEnd.romi, true)}` : "на расход на трафик"} />
         <KpiCard label="Дебиторка просрочена" value={k.overdue} format="money" color="#E11D48"
           sub={k.overduePeriods ? `${k.overduePeriods} счетов` : "нет просрочки"} warn={k.overdue > 0 ? "Выставлено и не оплачено дольше срока" : undefined} />
       </div>

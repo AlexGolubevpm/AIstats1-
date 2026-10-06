@@ -12,8 +12,8 @@ export interface DealFormValues {
   id?: string; title?: string; advertiser?: string; paymentBasis?: string; price?: string; siteIds?: string[]; zoneBySite?: Record<string, string | null>;
   geoScope?: string; geoExclude?: boolean; startsAt?: string; endsAt?: string | null; billingPeriod?: string; paymentTermsDays?: number;
   counterSource?: string; billedVia?: string; notes?: string | null; hasPeriods?: boolean;
-  /** Places on sites as `siteId|placementSlug`. */
-  places?: string[];
+  /** Zones (ad places) the deal occupies on every one of its sites. */
+  placeSlugs?: string[];
 }
 const BASIS = [["PER_1000_LOADS", "За 1000 загрузок"], ["CPM_ADVERTISER", "CPM по счётчику рекламодателя"], ["CPM_OWN", "CPM по нашему счётчику"], ["FLAT_DAILY", "Флэт в сутки"], ["FLAT_PERIOD", "Флэт за период"]];
 
@@ -24,16 +24,10 @@ export function DealFormButton({ sites, advertisers, placements = [], values = {
 }) {
   const [open, setOpen] = useState(false);
   useEffect(() => { if (autoOpen) setOpen(true); }, [autoOpen]);
-  const [picked, setPicked] = useState<Set<string>>(new Set([...(values.siteIds ?? []), ...(values.places ?? []).map((k) => k.split("|")[0])]));
-  const [places, setPlaces] = useState<Set<string>>(new Set(values.places ?? []));
-  const togglePlace = (key: string, on: boolean) => {
-    const n = new Set(places); on ? n.add(key) : n.delete(key); setPlaces(n);
-    if (on) { const s = new Set(picked); s.add(key.split("|")[0]); setPicked(s); }
-  };
-  const toggleSite = (id: string, on: boolean) => {
-    const s = new Set(picked); on ? s.add(id) : s.delete(id); setPicked(s);
-    if (!on) setPlaces(new Set([...places].filter((k) => !k.startsWith(`${id}|`))));
-  };
+  const [picked, setPicked] = useState<Set<string>>(new Set(values.siteIds ?? []));
+  const [zones, setZones] = useState<Set<string>>(new Set(values.placeSlugs ?? []));
+  const toggleSite = (id: string, on: boolean) => { const s = new Set(picked); on ? s.add(id) : s.delete(id); setPicked(s); };
+  const toggleZone = (slug: string, on: boolean) => { const z = new Set(zones); on ? z.add(slug) : z.delete(slug); setZones(z); };
   const [q, setQ] = useState("");
   const [basis, setBasis] = useState(values.paymentBasis ?? "PER_1000_LOADS");
   const edit = Boolean(values.id);
@@ -61,40 +55,35 @@ export function DealFormButton({ sites, advertisers, placements = [], values = {
             </FormField>
           </div>
 
-          <FormField name="place" label={`Места на сайтах · сайтов ${picked.size}, мест ${places.size}`}
-            hint="Отметьте места, которые занимает дил; они закрасятся во вкладке «Форматы». Сайт без мест — дил считается, но места не занимает">
-            <div className="rounded-lg border border-border">
-              <Input placeholder="Поиск по домену" value={q} onChange={(e) => setQ(e.target.value)} className="rounded-b-none border-0 border-b" />
-              <div className="max-h-80 overflow-y-auto p-1">
-                {sites.filter((s) => s.domain.includes(q.toLowerCase()) || picked.has(s.id)).map((s) => (
-                  <div key={s.id} className="rounded px-2 py-1 hover:bg-surface-hover">
-                    <div className="flex items-center gap-2">
+          <div className="grid gap-4 sm:grid-cols-[3fr_2fr]">
+            <FormField name="siteIds" label={`Сайты · выбрано ${picked.size}`}>
+              <div className="rounded-lg border border-border">
+                <Input placeholder="Поиск по домену" value={q} onChange={(e) => setQ(e.target.value)} className="rounded-b-none border-0 border-b" />
+                <div className="max-h-72 overflow-y-auto p-1">
+                  {sites.filter((s) => s.domain.includes(q.toLowerCase()) || picked.has(s.id)).map((s) => (
+                    <div key={s.id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-surface-hover">
                       <input type="checkbox" name="siteIds" value={s.id} id={`site-${s.id}`} checked={picked.has(s.id)} onChange={(e) => toggleSite(s.id, e.target.checked)} />
                       <label htmlFor={`site-${s.id}`} className="flex-1 font-mono text-xs">{s.domain}</label>
-                      {picked.has(s.id) && s.zones.length > 0 && (
-                        <select name={`zone_${s.id}`} defaultValue={values.zoneBySite?.[s.id] ?? ""} className="h-7 rounded border border-border bg-surface px-1 text-xs" aria-label={`Зона-счётчик ${s.domain}`}>
-                          <option value="">все зоны</option>{s.zones.map((z) => <option key={z.id} value={z.id}>{z.name}</option>)}
-                        </select>
-                      )}
                     </div>
-                    {placements.length > 0 && (
-                      <div className="mt-1 flex flex-wrap gap-1 pl-5">
-                        {placements.map((p) => {
-                          const key = `${s.id}|${p.slug}`, on = places.has(key);
-                          return (
-                            <label key={p.slug} className={`cursor-pointer select-none rounded-full border px-2 py-0.5 text-[11px] ${on ? "border-accent bg-accent-soft text-accent" : "border-border text-muted hover:border-border-strong"}`}>
-                              <input type="checkbox" name="place" value={key} checked={on} onChange={(e) => togglePlace(key, e.target.checked)} className="sr-only" aria-label={`${p.title} на ${s.domain}`} />
-                              {p.title}
-                            </label>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
-            </div>
-          </FormField>
+            </FormField>
+            <FormField name="placeSlugs" label={`Зоны · выбрано ${zones.size}`}
+              hint="Какие зоны (места) занимает дил на каждом из выбранных сайтов: таблинки, футер, попсы… Они закрасятся во вкладке «Форматы». Без зон — дил считается, место не занимает">
+              <div className="rounded-lg border border-border">
+                <div className="max-h-72 overflow-y-auto p-1">
+                  {placements.map((p) => (
+                    <div key={p.slug} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-surface-hover">
+                      <input type="checkbox" name="placeSlugs" value={p.slug} id={`place-${p.slug}`} checked={zones.has(p.slug)} onChange={(e) => toggleZone(p.slug, e.target.checked)} />
+                      <label htmlFor={`place-${p.slug}`} className="flex-1 text-xs">{p.title}</label>
+                    </div>
+                  ))}
+                  {!placements.length && <p className="px-2 py-1 text-xs text-muted">Зон пока нет — добавьте во вкладке «Форматы»</p>}
+                </div>
+              </div>
+            </FormField>
+          </div>
 
           <div className="grid gap-4 sm:grid-cols-[1fr_auto]">
             <FormField name="geoScope" label="Гео-скоуп" hint="Коды ISO через запятую или T1/T2/T3; пусто — все страны">

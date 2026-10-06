@@ -30,8 +30,8 @@ export function TrendChart({ data, series, kind = "money", height = 280, xKey = 
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   if (!data.length) return <div className="flex items-center justify-center text-sm text-muted" style={{ height }}>Нет данных за период</div>;
   return (
-    <div style={{ height }}>
-      <ResponsiveContainer width="100%" height="100%">
+    <div className="min-w-0 overflow-hidden" style={{ height }}>
+      <ResponsiveContainer width="100%" height="100%" debounce={50}>
         <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid vertical={false} stroke="var(--border)" />
           <XAxis dataKey={xKey} tick={tick} tickLine={false} axisLine={false} tickFormatter={shortDate} minTickGap={16} />

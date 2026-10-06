@@ -37,7 +37,7 @@ export default async function DealPage({ params }: { params: Promise<{ id: strin
     siteIds: deal.sites.map((s) => s.siteId), zoneBySite: Object.fromEntries(deal.sites.map((s) => [s.siteId, s.zoneId])), geoScope: deal.geoScope.join(", "),
     geoExclude: deal.geoExclude, startsAt: iso(deal.startsAt), endsAt: deal.endsAt ? iso(deal.endsAt) : null, billingPeriod: deal.billingPeriod,
     paymentTermsDays: deal.paymentTermsDays, counterSource: deal.counterSource, billedVia: deal.billedVia, notes: deal.notes, hasPeriods: entered.length > 0,
-    places: deal.places.map((p) => `${p.siteId}|${p.placementSlug}`),
+    placeSlugs: [...new Set(deal.places.map((p) => p.placementSlug))],
   };
   return (
     <>
