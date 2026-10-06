@@ -11,7 +11,7 @@ const LIVE = Prisma.sql`(SELECT id FROM "Site" WHERE status <> 'ARCHIVED')`;
 
 /** Operating expenses (all entries, network-wide and per site) that fall into the period. */
 export async function opexInPeriod(p: Period): Promise<number> {
-  const [r] = await db.$queryRaw<Raw[]>`SELECT SUM(amount)::float8 opex FROM v_opex_daily WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)}`;
+  const [r] = await db.$queryRaw<Raw[]>`SELECT SUM(amount)::float8 opex FROM v_opex_daily WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} AND (site_id IS NULL OR site_id IN ${LIVE})`;
   return n(r?.opex);
 }
 
@@ -22,8 +22,10 @@ export async function financeKpis(p: Period, today = iso(new Date())) {
       FROM v_site_geo_daily WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} AND site_id IN ${LIVE}`,
     db.$queryRaw<Raw[]>`SELECT SUM(revenue) FILTER (WHERE revenue_state = 'INVOICED')::float8 invoiced FROM v_deal_daily
       WHERE billed_via = 'DIRECT' AND date BETWEEN ${D(p.from)} AND ${D(p.to)} AND site_id IN ${LIVE}`,
-    db.$queryRaw<Raw[]>`SELECT SUM(COALESCE("amountInvoiced", 0) - COALESCE("amountPaid", 0))::float8 overdue, count(*)::int periods
-      FROM "DealPeriod" WHERE "supersededById" IS NULL AND status IN ('INVOICED', 'PARTIAL') AND "dueAt" < ${D(today)}`,
+    db.$queryRaw<Raw[]>`SELECT SUM(COALESCE(p."amountInvoiced", 0) - COALESCE(p."amountPaid", 0))::float8 overdue, count(*)::int periods
+      FROM "DealPeriod" p JOIN "Deal" d ON d.id = p."dealId"
+      WHERE p."supersededById" IS NULL AND p.status IN ('INVOICED', 'PARTIAL') AND p."dueAt" < ${D(today)} AND d."billedVia" = 'DIRECT'
+        AND COALESCE(p."amountInvoiced", 0) - COALESCE(p."amountPaid", 0) > 0`,
     opexInPeriod(p),
   ]);
   const revenue = n(g?.revenue), confirmed = n(g?.confirmed), invoiced = n(f?.invoiced), cost = n(g?.cost);
@@ -84,26 +86,29 @@ export async function pnlTable(p: Period): Promise<PnlRow[]> {
         AND NOT EXISTS (SELECT 1 FROM "FactTrafficSource" f WHERE f."siteId" = g.site_id AND f.date = g.date)) x GROUP BY 1`,
     db.site.findMany({ where: { status: { not: "ARCHIVED" } }, include: { bundles: { include: { bundle: true } } } }),
     db.alert.findMany({ where: { resolvedAt: null, rule: "deal_no_numbers" }, select: { siteId: true } }),
-    db.$queryRaw<Raw[]>`SELECT site_id, SUM(amount)::float8 opex FROM v_opex_daily WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY 1`,
+    db.$queryRaw<Raw[]>`SELECT site_id, SUM(amount)::float8 opex FROM v_opex_daily WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} AND (site_id IS NULL OR site_id IN ${LIVE}) GROUP BY 1`,
   ]);
   const by = <T extends Raw>(list: T[]) => new Map(list.map((r) => [String(r.site_id), r]));
   const rowBy = by(rows), dealBy = by(deals), gapBy = by(gaps);
   const noNumbers = new Set(alerts.map((a) => a.siteId));
-  const live = sites.filter((s) => rowBy.has(s.id));
-  const networkOpex = n(opex.find((o) => o.site_id == null)?.opex);
   const siteOpex = new Map(opex.filter((o) => o.site_id != null).map((o) => [String(o.site_id), n(o.opex)]));
-  const totalRevenue = live.reduce((a, s) => a + n(rowBy.get(s.id)!.revenue), 0);
+  // A site with its own opex but no data in the period still has a row: its money must not vanish from the table.
+  const live = sites.filter((s) => rowBy.has(s.id) || siteOpex.has(s.id));
+  const empty: Raw = { revenue: 0, asg: 0, confirmed: 0, cost: 0, uniques: 0 };
+  const networkOpex = n(opex.find((o) => o.site_id == null)?.opex);
+  const totalRevenue = live.reduce((a, s) => a + n((rowBy.get(s.id) ?? empty).revenue), 0);
   const opexOf = (id: string, revenue: number) =>
     (siteOpex.get(id) ?? 0) + (totalRevenue > 0 ? (networkOpex * revenue) / totalRevenue : live.length ? networkOpex / live.length : 0);
-  const totalMargin = live.reduce((a, s) => { const r = rowBy.get(s.id)!; return a + n(r.revenue) - n(r.cost) - opexOf(s.id, n(r.revenue)); }, 0);
+  // Share of margin is of the positive margins only: a site in the red must not push the others above 100%.
+  const positiveMargin = live.reduce((a, s) => { const r = rowBy.get(s.id) ?? empty; const mg = n(r.revenue) - n(r.cost) - opexOf(s.id, n(r.revenue)); return a + Math.max(0, mg); }, 0);
   return live.map((s) => {
-    const r = rowBy.get(s.id)!, dl = dealBy.get(s.id);
+    const r = rowBy.get(s.id) ?? empty, dl = dealBy.get(s.id);
     const revenue = n(r.revenue), cost = n(r.cost), opx = opexOf(s.id, revenue), margin = revenue - cost - opx;
     const dealsConfirmed = n(dl?.confirmed);
     return {
       siteId: s.id, domain: s.domain, bundles: s.bundles.map((b) => b.bundle.title),
       asg: n(r.asg), asgConfirmed: Math.max(0, n(r.confirmed) - dealsConfirmed), deals: n(dl?.total), dealsConfirmed, dealsInvoiced: n(dl?.invoiced),
-      revenue, cost, opex: opx, margin, romi: m.romi(revenue, cost), marginShare: totalMargin > 0 && margin > 0 ? margin / totalMargin : null,
+      revenue, cost, opex: opx, margin, romi: m.romi(revenue, cost), marginShare: positiveMargin > 0 && margin > 0 ? margin / positiveMargin : null,
       costGapDays: n(gapBy.get(s.id)?.days), noTraffic: n(r.uniques) === 0, dealNoNumbers: noNumbers.has(s.id),
       months: months.filter((x) => x.site_id === s.id).sort((a, b) => String(a.mo).localeCompare(String(b.mo))).map((x) => {
         const rev = n(x.asg) + n(x.deals);
@@ -155,7 +160,7 @@ export async function monthlyPnl(count = 6, today = iso(new Date())): Promise<Mo
   const [geo, opex] = await Promise.all([
     db.$queryRaw<Raw[]>`SELECT to_char(date, 'YYYY-MM') mo, SUM(revenue_mediated)::float8 asg, SUM(revenue_direct)::float8 deals, SUM(cost)::float8 cost
       FROM v_site_geo_daily WHERE date >= ${since} AND date < ${D(today)} AND site_id IN ${LIVE} GROUP BY 1`, // today is partial (hourly totals, no cost): stop at yesterday like the KPIs
-    db.$queryRaw<Raw[]>`SELECT to_char(date, 'YYYY-MM') mo, SUM(amount)::float8 opex FROM v_opex_daily WHERE date >= ${since} AND date < ${D(today)} GROUP BY 1`,
+    db.$queryRaw<Raw[]>`SELECT to_char(date, 'YYYY-MM') mo, SUM(amount)::float8 opex FROM v_opex_daily WHERE date >= ${since} AND date < ${D(today)} AND (site_id IS NULL OR site_id IN ${LIVE}) GROUP BY 1`,
   ]);
   const g = new Map(geo.map((r) => [String(r.mo), r])), o = new Map(opex.map((r) => [String(r.mo), n(r.opex)]));
   const out: MonthRow[] = [];

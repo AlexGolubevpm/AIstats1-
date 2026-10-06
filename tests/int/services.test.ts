@@ -122,14 +122,51 @@ describe("deals service", () => {
 
     await expect(recordPayment(db, id, { amountPaid: "30", paidAt: "2026-10-05" })).rejects.toThrow(/остатком/);
     expect(await recordPayment(db, id, { amountPaid: "30", paidAt: "2026-10-05", remainder: "open" })).toBe("PARTIAL");
-    expect(await sumRevenue(net.direct.id)).toBe("30");
-    expect(new Set((await db.factFixDeal.findMany({ where: { dealId: net.direct.id } })).map((f) => f.revenueState))).toEqual(new Set(["CONFIRMED"]));
+    expect(await sumRevenue(net.direct.id)).toBe("40.01"); // the unpaid $10.01 is still owed revenue, not a loss
+    expect(new Set((await db.factFixDeal.findMany({ where: { dealId: net.direct.id } })).map((f) => f.revenueState))).toEqual(new Set(["INVOICED"]));
 
     const v2 = await correctPeriod(db, id, { from: "2026-09-20", to: "2026-09-21", amountInvoiced: "35", overrideReason: "скидка", impsReported: 4001 }, "пересчёт по акту");
     const old = await db.dealPeriod.findUniqueOrThrow({ where: { id } });
     expect(old.supersededById).toBe(v2);
     expect((await db.dealPeriod.findUniqueOrThrow({ where: { id: v2 } })).version).toBe(2);
     expect(await db.auditLog.count({ where: { entity: "DealPeriod" } })).toBe(3);
+  });
+
+  it("an invoice for one site leaves the other sites' forecast alone; a paused deal stops earning from its pause day", async () => {
+    await db.factFixDeal.deleteMany();
+    // Put the direct deal on two sites: s3 (factory) and s1.
+    await db.dealSite.create({ data: { dealId: net.direct.id, siteId: "s1" } });
+    await forecastDeals(db, "2026-09-20", "2026-09-21");
+    const s1Before = Number((await db.factFixDeal.aggregate({ _sum: { revenue: true }, where: { dealId: net.direct.id, siteId: "s1" } }))._sum.revenue);
+    expect(s1Before).toBeGreaterThan(0);
+    await enterPeriod(db, net.direct.id, { from: "2026-09-20", to: "2026-09-21", siteId: "s3", amountInvoiced: "3", overrideReason: "акт", impsReported: 100 });
+    await forecastDeals(db, "2026-09-20", "2026-09-21");
+    const s1After = Number((await db.factFixDeal.aggregate({ _sum: { revenue: true }, where: { dealId: net.direct.id, siteId: "s1" } }))._sum.revenue);
+    expect(s1After).toBeCloseTo(s1Before, 4); // not wiped by s3's invoice
+    expect(Number((await db.factFixDeal.aggregate({ _sum: { revenue: true }, where: { dealId: net.direct.id, siteId: "s3" } }))._sum.revenue)).toBe(3);
+    // Pause on 09-21: 09-21 earns nothing, 09-20 keeps its forecast.
+    const { setDealStatus } = await import("@/server/services/deals");
+    await db.dealPeriod.deleteMany(); await db.factFixDeal.deleteMany();
+    await setDealStatus(db, net.direct.id, "PAUSED");
+    await db.auditLog.updateMany({ where: { entityId: net.direct.id, field: "status", after: "PAUSED" }, data: { at: new Date("2026-09-21T10:00:00Z") } });
+    await forecastDeals(db, "2026-09-20", "2026-09-21");
+    const days = (await db.factFixDeal.findMany({ where: { dealId: net.direct.id } })).map((f) => f.date.toISOString().slice(0, 10));
+    expect(new Set(days)).toEqual(new Set(["2026-09-20"]));
+  });
+
+  it("a deal without a zone is counted on the zones of its places, not on every impression of the site", async () => {
+    await db.factFixDeal.deleteMany();
+    // Site s1 has the factory banner zone (60 000 imps on D1). Add a second zone with 1M imps and put the deal on the banner's place only.
+    await db.zone.update({ where: { id: net.zone.id }, data: { placementSlug: "under_bar" } });
+    await db.placement.create({ data: { slug: "pop_player", title: "POP player", sortOrder: 500 } });
+    const big = await db.zone.create({ data: { adsgZoneId: 777, siteId: "s1", name: "POP player", format: "POPUNDER", placementSlug: "pop_player" } });
+    await db.factRevenueZone.create({ data: { date: D1, siteId: "s1", zoneId: big.id, format: "POPUNDER", pageLoads: 10_000, impsOwn: 1_000_000, revenueReported: "100" } });
+    const id = await db.deal.create({ data: { title: "Banner CPM", advertiserId: net.direct.advertiserId, format: "BANNER", price: "1", paymentBasis: "CPM_OWN", startsAt: D1,
+      billedVia: "DIRECT", counterSource: "ASG_ZONE", sites: { create: [{ siteId: "s1" }] }, places: { create: [{ siteId: "s1", placementSlug: "under_bar" }] } } });
+    await forecastDeals(db, "2026-09-20", "2026-09-20", id.id);
+    const f = await db.factFixDeal.findMany({ where: { dealId: id.id } });
+    expect(f.reduce((a, x) => a + x.impsOwn, 0)).toBe(60_000); // the banner's impressions, not 1 060 000 (or the site's geo imps)
+    expect(Number(f.reduce((a, x) => a + Number(x.revenue), 0).toFixed(4))).toBe(60); // $1 CPM × 60 000
   });
 
   it("disputed period counts as invoiced amount, needs a reason", async () => {

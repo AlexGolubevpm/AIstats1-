@@ -43,6 +43,18 @@ describe("operating expenses per calendar month", () => {
     expect(by.s1.margin).toBeCloseTo(by.s1.revenue - by.s1.cost - by.s1.opex, 6);
   });
 
+  it("opex of an archived site is out of the KPIs; a site with opex but no data still has a P&L row", async () => {
+    await saveOpex(db, { month: "2026-09", title: "Server s2", category: "HOSTING", amount: "90", siteId: "s2" });
+    await db.site.create({ data: { id: "s9", domain: "nine.test", title: "Nine" } });
+    await saveOpex(db, { month: "2026-09", title: "Server s9", category: "HOSTING", amount: "30", siteId: "s9" });
+    expect((await financeKpis(SEP, "2026-09-22")).opex).toBe(120);
+    const pnl = await pnlTable(SEP);
+    expect(pnl.find((r) => r.domain === "nine.test")).toMatchObject({ revenue: 0, opex: 30, margin: -30 });
+    expect(pnl.filter((r) => (r.marginShare ?? 0) > 0).reduce((a, r) => a + (r.marginShare ?? 0), 0)).toBeCloseTo(1, 6); // shares of the positive margins add up to 100%
+    await db.site.update({ where: { id: "s2" }, data: { status: "ARCHIVED" } });
+    expect((await financeKpis(SEP, "2026-09-22")).opex).toBe(30);
+  });
+
   it("the month table carries AdSpyglass, deals, traffic cost, opex and margin per calendar month; entries list newest first", async () => {
     await saveOpex(db, { month: "2026-09", title: "Servers", category: "HOSTING", amount: "300", note: "Hetzner" });
     const months = await monthlyPnl(6, "2026-10-03");

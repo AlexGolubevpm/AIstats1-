@@ -70,10 +70,13 @@ export function DataTable({ id, columns, rows, totals, defaultSort, pageSize = 2
   const pages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const cur = Math.min(page, pages);
   const visible = sorted.slice((cur - 1) * pageSize, cur * pageSize);
+  // Heat reference: the totals row (a ratio of sums) when the table has one; a plain mean of rows otherwise.
   const means = useMemo(() => Object.fromEntries(columns.filter((c) => c.heat === "vsMean").map((c) => {
+    const t = totals?.[c.id];
+    if (typeof t === "number" && Number.isFinite(t)) return [c.id, t];
     const vals = filtered.map((r) => r[c.id]).filter((v): v is number => typeof v === "number");
     return [c.id, vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null];
-  })), [columns, filtered]);
+  })), [columns, filtered, totals]);
 
   const rowH = density === "compact" ? "h-[30px]" : "h-9";
   const toggleSort = (c: Column) => {
