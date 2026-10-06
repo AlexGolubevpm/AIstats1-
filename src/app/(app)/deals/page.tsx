@@ -30,7 +30,7 @@ export default async function Deals({ searchParams }: { searchParams: Promise<Re
       <PageHeader title="Фикс-дилы" sub="Прямые сделки вне аукциона AdSpyglass: что идёт, сколько принесло, кто нам должен"
         period={tab === "deals" ? p : undefined} actions={<div className="flex items-center gap-2"><ReforecastButton />
           <DealFormButton sites={opts.sites} advertisers={opts.advertisers} placements={opts.placements} label="Новый дил"
-            autoOpen={sp.new === "1"} values={sp.place ? { places: sp.place.split(",").filter(Boolean) } : {}} /></div>} />
+            autoOpen={sp.new === "1"} values={sp.place?.includes("|") ? { siteIds: [sp.place.split("|")[0]], placeSlugs: [sp.place.split("|")[1]] } : {}} /></div>} />
       <nav className="flex gap-1 border-b border-border">
         {TABS.map(([t, label]) => (
           <Link key={t} href={q({ tab: t === "deals" ? undefined : t })} className={cn("-mb-px border-b-2 px-3 py-2 text-sm", tab === t ? "border-accent font-medium text-accent" : "border-transparent text-muted hover:text-text")}>

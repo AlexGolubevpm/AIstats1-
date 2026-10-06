@@ -1,7 +1,7 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { parseGeoList, parsePlaceKey, type BillingPeriod, type DealInput, type PaymentBasis } from "@/server/domain/deals";
+import { parseGeoList, type BillingPeriod, type DealInput, type PaymentBasis } from "@/server/domain/deals";
 import { db } from "@/server/db";
 import { requireSession } from "@/server/session";
 import {
@@ -16,8 +16,9 @@ async function dealInput(f: FormData): Promise<DealInput> {
   const codes = parseGeoList(str(f, "geoScope"));
   const tiers = codes.filter((c) => c in TIERS).map((c) => TIERS[c]);
   const tierCodes = tiers.length ? (await db.country.findMany({ where: { tier: { in: tiers } } })).map((c) => c.code) : [];
-  const places = f.getAll("place").map(String).map(parsePlaceKey).filter((p): p is NonNullable<typeof p> => p != null);
-  const siteIds = [...new Set([...f.getAll("siteIds").map(String).filter(Boolean), ...places.map((p) => p.siteId)])];
+  const siteIds = [...new Set(f.getAll("siteIds").map(String).filter(Boolean))];
+  const slugs = [...new Set(f.getAll("placeSlugs").map(String).filter(Boolean))];
+  const places = siteIds.flatMap((siteId) => slugs.map((placementSlug) => ({ siteId, placementSlug }))); // every chosen zone on every chosen site
   return {
     title: str(f, "title"), advertiser: str(f, "advertiser"), paymentBasis: (str(f, "paymentBasis") || "PER_1000_LOADS") as PaymentBasis,
     price: money(f, "price"), siteIds, geoScope: [...new Set([...codes.filter((c) => !(c in TIERS)), ...tierCodes])], geoExclude: str(f, "geoExclude") === "1",

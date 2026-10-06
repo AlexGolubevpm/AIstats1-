@@ -46,8 +46,8 @@ test("4. new deal → enter period → payment → paid in the payments register
   await page.locator("input[name=advertiser]").fill("E2E Media");
   await page.locator("input[name=title]").fill("E2E баннер");
   await page.locator("input[name=price]").fill("0.8");
-  await page.locator("label", { has: page.getByRole("checkbox", { name: "Tablink 1 на japan-tube.demo" }) }).last().click(); // the chip (the outer label is the field)
-  await expect(page.getByRole("checkbox", { name: "japan-tube.demo", exact: true })).toBeChecked();
+  await page.getByRole("checkbox", { name: "japan-tube.demo" }).check();
+  await page.locator("#place-tablink_1").check(); // zones are one list: the deal takes Tablink 1 on every chosen site
   await page.locator("input[name=startsAt]").fill("2026-08-01");
   await page.locator("input[name=endsAt]").fill("2026-08-31");
   await page.getByRole("button", { name: "Создать дил" }).click();

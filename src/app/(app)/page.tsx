@@ -46,10 +46,10 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
       <PageHeader title="Сводка" sub="Маржа по всем сайтам и бандлам" period={p} />
       <KpiRow k={k} keys={["revenue", "cost", "margin", "romi", "uniques", "rpm"]} />
       <div className="grid gap-4 xl:grid-cols-3">
-        <Section title="Выручка по сеткам" className="xl:col-span-2" sub="Столбцы — выручка по сеткам AdSpyglass и прямые фикс-дилы">
+        <Section title="Выручка по сеткам" className="min-w-0 xl:col-span-2" sub="Столбцы — выручка по сеткам AdSpyglass и прямые фикс-дилы">
           <TrendChart data={data} series={series.map((s, i) => ({ key: s, label: s, color: colorFor(s, i, known), type: "bar" as const, stack: "rev" }))} />
         </Section>
-        <Section title="Алерты" actions={<Link href="/alerts" className="text-sm text-accent hover:underline">Все →</Link>}>
+        <Section title="Алерты" className="min-w-0" actions={<Link href="/alerts" className="text-sm text-accent hover:underline">Все →</Link>}>
           {alerts.length === 0 ? <p className="py-6 text-center text-sm text-muted">Активных алертов нет</p> : (
             <div className="-mx-2 flex flex-col">
               {alerts.map((a) => <AlertBadge key={a.id} level={a.level} title={a.title} message={a.message} link={a.link} />)}
@@ -58,10 +58,10 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
         </Section>
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
-        <Section title="Расходы" sub="Столбцы — расход на трафик по источникам и операционные расходы по дням (KPI «Расход на трафик» выше — без опер. расходов)">
+        <Section title="Расходы" className="min-w-0" sub="Столбцы — расход на трафик по источникам и операционные расходы по дням (KPI «Расход на трафик» выше — без опер. расходов)">
           <TrendChart data={costs.data} series={costs.series.map((s, i) => ({ key: s, label: s, color: colorFor(s, i, costKnown), type: "bar" as const, stack: "cost" }))} />
         </Section>
-        <Section title="P&L" sub="Выручка и расход на трафик столбцами, маржа после опер. расходов линией (KPI «Маржа» выше — до них)">
+        <Section title="P&L" className="min-w-0" sub="Выручка и расход на трафик столбцами, маржа после опер. расходов линией (KPI «Маржа» выше — до них)">
           <TrendChart data={pnl} series={[
             { key: "revenue", label: "Выручка", color: "#3B82F6", type: "bar" as const },
             { key: "cost", label: "Расход на трафик", color: "#F43F5E", type: "bar" as const },
