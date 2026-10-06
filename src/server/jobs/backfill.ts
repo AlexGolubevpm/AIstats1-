@@ -64,6 +64,28 @@ export async function startBackfill(db: PrismaClient, w: { from: string; to: str
   return state;
 }
 
+/**
+ * Catch-up after downtime: the days of the current month up to yesterday that have no per-site
+ * country cut (only ZZ totals, or nothing at all) become a full-mode backfill, newest first, unless
+ * a backfill is already running. Returns the days queued, oldest first.
+ */
+export async function planCatchUp(db: PrismaClient, today: string): Promise<string[]> {
+  const prev = await readBackfill(db);
+  if (prev && !prev.cancelled && prev.pending.length) return [];
+  const yesterday = addDays(today, -1);
+  const first = `${today.slice(0, 7)}-01`;
+  if (yesterday < first) return [];
+  const rows = await db.$queryRaw<{ day: string }[]>`
+    SELECT DISTINCT to_char(date, 'YYYY-MM-DD') AS day FROM "FactRevenueGeo"
+    WHERE date BETWEEN ${first}::date AND ${yesterday}::date AND "countryCode" <> 'ZZ'`;
+  const have = new Set(rows.map((r) => r.day));
+  const missing = daysBetween(first, yesterday).filter((d) => !have.has(d));
+  if (!missing.length) return [];
+  await saveBackfill(db, { from: missing[0], to: missing[missing.length - 1], mode: "full", pending: [...missing].reverse(), done: [], failed: [],
+    startedAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+  return missing;
+}
+
 export async function cancelBackfill(db: PrismaClient): Promise<void> {
   const s = await readBackfill(db);
   if (s) await saveBackfill(db, { ...s, cancelled: true, pending: [] });

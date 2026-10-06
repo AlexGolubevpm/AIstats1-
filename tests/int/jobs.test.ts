@@ -116,6 +116,23 @@ describe("asg:backfill", () => {
     expect((await runJob("asg:backfill", ctx, {})).skipped).toContain("нечего");
   });
 
+  it("planCatchUp queues the days of the month without a country cut, newest first, and yields to a running backfill", async () => {
+    const { planCatchUp, readBackfill, startBackfill, cancelBackfill } = await import("@/server/jobs/backfill");
+    // Factory data: JP/US rows on 09-20 and 09-21. Totals-only day 09-22 has just ZZ.
+    const s1 = await db.site.findFirstOrThrow();
+    const net = await db.network.findFirstOrThrow({ where: { slug: { not: "own_deals" } } });
+    await db.factRevenueGeo.create({ data: { date: new Date("2026-09-22T00:00:00Z"), siteId: s1.id, networkId: net.id, countryCode: "ZZ", device: "DESKTOP", pageLoads: 1, revenueReported: "1" } });
+    expect(await planCatchUp(db, "2026-09-23")).toEqual([...Array.from({ length: 19 }, (_, i) => `2026-09-${String(i + 1).padStart(2, "0")}`), "2026-09-22"]);
+    const s = (await readBackfill(db))!;
+    expect([s.from, s.to, s.mode, s.pending[0], s.pending.at(-1)]).toEqual(["2026-09-01", "2026-09-22", "full", "2026-09-22", "2026-09-01"]);
+    expect(await planCatchUp(db, "2026-09-23")).toEqual([]); // already pending: no second plan
+    await cancelBackfill(db);
+    await startBackfill(db, { from: "2026-09-10", to: "2026-09-12" });
+    expect(await planCatchUp(db, "2026-09-23")).toEqual([]); // a backfill set by hand is left alone
+    await cancelBackfill(db);
+    expect(await planCatchUp(db, "2026-09-01")).toEqual([]); // the 1st: nothing before today
+  });
+
   it("a cancelled backfill does nothing; a new window keeps the days already done", async () => {
     const { startBackfill, cancelBackfill, readBackfill } = await import("@/server/jobs/backfill");
     await startBackfill(db, { from: "2026-09-01", to: "2026-09-02" });
