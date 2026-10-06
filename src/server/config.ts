@@ -17,6 +17,7 @@ export function config(env: Record<string, string | undefined> = process.env) {
       get configured() { return Boolean(this.token); },
     },
     redisUrl: env.REDIS_URL ?? "redis://127.0.0.1:6379",
+    appLogin: (env.APP_LOGIN ?? "Admin").trim() || "Admin",
     appPassword: env.APP_PASSWORD ?? "",
     mcpToken: env.MCP_TOKEN ?? "",
     s3Configured: Boolean(env.S3_ENDPOINT && env.S3_BUCKET),

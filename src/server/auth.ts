@@ -1,5 +1,6 @@
-// Single-password access (internal tool, no roles). The password hash lives in AppSetting and
-// is initialised from APP_PASSWORD; sessions are random tokens, stored hashed, 30-day cookie.
+// Single-user access (internal tool, no roles): login name from APP_LOGIN (default "Admin"), the
+// password hash lives in AppSetting and is initialised from APP_PASSWORD; sessions are random
+// tokens, stored hashed, 30-day cookie.
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import bcrypt from "bcryptjs";
 import type { PrismaClient } from "@/generated/prisma/client";
@@ -39,13 +40,18 @@ export function resetLoginGuard() { failures.clear(); }
 
 export type LoginResult = { ok: true; token: string } | { ok: false; error: string };
 
-export async function login(db: PrismaClient, password: string, ip: string, envPassword: string): Promise<LoginResult> {
+export type Credentials = { login: string; password: string };
+
+/** Login names are compared case-insensitively; a wrong name costs an attempt like a wrong password. */
+export const sameLogin = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+export async function login(db: PrismaClient, creds: Credentials, ip: string, env: { login: string; password: string }): Promise<LoginResult> {
   if (loginLocked(ip)) return { ok: false, error: "Слишком много попыток. Подождите 15 минут." };
-  const hash = await passwordHash(db, envPassword);
+  const hash = await passwordHash(db, env.password);
   if (!hash) return { ok: false, error: "Пароль не задан: добавьте APP_PASSWORD в /opt/tubestat/.env на сервере." };
-  if (!(await bcrypt.compare(password, hash))) {
+  if (!sameLogin(creds.login, env.login) || !(await bcrypt.compare(creds.password, hash))) {
     recordFailure(ip);
-    return { ok: false, error: "Неверный пароль" };
+    return { ok: false, error: "Неверный логин или пароль" };
   }
   failures.delete(ip);
   const token = randomBytes(32).toString("base64url");

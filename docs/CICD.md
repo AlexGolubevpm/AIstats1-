@@ -42,6 +42,7 @@ nano /opt/tubestat/.env       # шаблон — .env.example в репозит�
 
 | Строка | Зачем |
 | --- | --- |
+| `APP_LOGIN=Admin` | Логин единственного пользователя (по умолчанию `Admin`) |
 | `APP_PASSWORD=…` | Пароль входа (потом меняется в Настройки → Доступ) |
 | `COMPOSE_PROFILES=worker` | Включает воркер ингеста |
 | `COOKIE_SECURE=1` | Когда сайт открывается по HTTPS |
@@ -50,7 +51,9 @@ nano /opt/tubestat/.env       # шаблон — .env.example в репозит�
 
 После правки `.env` — `cd /opt/tubestat && docker compose up -d` (или дождаться следующего деплоя).
 
-**Без ручной правки.** Воркфлоу `Sync server .env` (`.github/workflows/sync-env.yml`, вручную или при изменении `.github/sync-env.request`) переносит `ASG_AUTH_EMAIL`, `ASG_AUTH_TOKEN` и `METRIKA_TOKEN` из секретов окружения `production` в `/opt/tubestat/.env`, один раз генерирует `APP_PASSWORD`, если его нет, включает `COMPOSE_PROFILES=worker`, убирает `COOKIE_SECURE=1`, пока сайт открыт по HTTP (`APP_DOMAIN` пустой или `:80`), и перезапускает стек. Значения идут через stdin SSH и в лог не попадают; другие ключи скрипт не трогает. Пароль читается только на сервере: `grep APP_PASSWORD /opt/tubestat/.env`.
+**Без ручной правки.** Воркфлоу `Sync server .env` (`.github/workflows/sync-env.yml`, вручную или при изменении `.github/sync-env.request`) переносит `ASG_AUTH_EMAIL`, `ASG_AUTH_TOKEN`, `METRIKA_TOKEN` и `APP_PASSWORD` из секретов окружения `production` в `/opt/tubestat/.env`, один раз генерирует `APP_PASSWORD`, если его нет и секрета нет, включает `COMPOSE_PROFILES=worker`, убирает `COOKIE_SECURE=1`, пока сайт открыт по HTTP (`APP_DOMAIN` пустой или `:80`), и перезапускает стек. Значения идут через stdin SSH и в лог не попадают; другие ключи скрипт не трогает. Пароль читается только на сервере: `grep APP_PASSWORD /opt/tubestat/.env`.
+
+**Смена пароля без сервера.** Задать секрет `APP_PASSWORD` в окружении `production` (GitHub → Settings → Environments → production) и запустить `Sync server .env`: скрипт запишет значение в `.env`, удалит сохранённый в базе хеш и все сессии, и следующий вход пройдёт по новому паролю. Логин задаётся `APP_LOGIN` в `.env` (по умолчанию `Admin`). Пока секрета нет, пароль остаётся сгенерированным.
 
 ### 4. Секреты в GitHub
 
