@@ -1,3 +1,4 @@
+import { Badge } from "@/components/ui/badge";
 import { Section } from "@/components/ui/card";
 import { fmtDate, fmtMoney } from "@/lib/format";
 import { db } from "@/server/db";
@@ -63,7 +64,8 @@ export default async function CostsSettings() {
         {asgSources.length === 0 ? <p className="text-sm text-muted">Появятся после первой ночной выгрузки AdSpyglass</p> : (
           <ul className="divide-y divide-border">{asgSources.map((s) => (
             <li key={s.slug} className="flex flex-wrap items-end justify-between gap-4 py-3">
-              <span className="text-sm">{s.title} <span className="font-mono text-xs text-faint">{s.slug}</span></span>
+              <span className="text-sm">{s.title} <span className="font-mono text-xs text-faint">{s.slug}</span>
+                {!s.confirmed && <Badge tone="warning" className="ml-2">доля не подтверждена</Badge>}</span>
               <SourceShare slug={s.slug} percent={Number(s.revShare) * 100} />
             </li>
           ))}</ul>

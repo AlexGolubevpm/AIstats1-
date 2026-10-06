@@ -252,6 +252,8 @@ model CostSource {
   // 1 = all of it (cost = that revenue), 0 = free traffic (Direct).
   revShare Decimal @default(1) @db.Decimal(5, 4)
   asgName  String? @unique // name in ADOK group_by=traffic_source
+  /// false for a source ADOK created with the default share until the owner sets it (alert 11)
+  confirmed Boolean @default(true)
 
   traffic FactTrafficSource[]
 }
