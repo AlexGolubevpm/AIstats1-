@@ -49,6 +49,13 @@ describe("operating expenses per calendar month", () => {
     const sep = months.find((m) => m.month === "2026-09")!, oct = months.find((m) => m.month === "2026-10")!;
     expect(sep).toMatchObject({ asg: 122, deals: 6, revenue: 128, cost: 102, opex: 300, margin: 128 - 102 - 300, isCurrent: false });
     expect(oct).toMatchObject({ asg: 0, revenue: 0, opex: 0, isCurrent: true });
+    // Today's partial hourly total (no cost yet) is not in the current month row; yesterday is.
+    const netId = (await db.network.findUniqueOrThrow({ where: { slug: "adpulsar" } })).id;
+    await db.factRevenueGeo.createMany({ data: [
+      { date: new Date("2026-10-03T00:00:00Z"), siteId: "s1", networkId: netId, countryCode: "ZZ", device: "UNKNOWN", pageLoads: 10, revenueReported: "999" },
+      { date: new Date("2026-10-02T00:00:00Z"), siteId: "s1", networkId: netId, countryCode: "ZZ", device: "UNKNOWN", pageLoads: 10, revenueReported: "7" },
+    ] });
+    expect((await monthlyPnl(6, "2026-10-03")).find((m) => m.month === "2026-10")).toMatchObject({ asg: 7 });
     expect(months.find((m) => m.month === "2026-05")).toBeUndefined(); // nothing before the data start
     const list = await opexEntries(6, "2026-10-03");
     expect(list).toHaveLength(1);

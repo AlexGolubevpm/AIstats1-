@@ -119,6 +119,7 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
   const netId = await networkId(db);
   let rows = 0;
   const failed: string[] = [];
+  try {
   for (const date of dates) {
     const websiteBody = await client.report({ from: date, to: date, groupBy: "website" });
     await raw.put(rawKey("adspyglass", "website", date, runId), websiteBody); // the split's reference, kept for reprocessing
@@ -138,7 +139,12 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
           return { rows, failed };
         }
         await raw.put(rawKey("adspyglass", `country/${s.adsgSiteId}`, date, runId), body);
-        rows += await writeGeo(db, date, s.id, cells, "country", netId);
+        const total = siteTotal.get(s.adsgSiteId!);
+        if (!cells.length && total && (total.pageLoads > 0 || total.revenue > 0)) {
+          // An empty country response must not wipe the day: keep (or write) the site total as ZZ.
+          rows += await writeGeo(db, date, s.id, [{ countryCode: "ZZ", m: total }], "site", netId);
+          failed.push(`${s.domain} ${date}: разрез по странам пуст — оставлен итог сайта`);
+        } else rows += await writeGeo(db, date, s.id, cells, "country", netId);
         const netBody = await client.report({ from: date, to: date, groupBy: "adnetwork_squashed", websiteId: s.adsgSiteId! });
         const nets = mapNetworkRows(netBody);
         if (scopedToSite(nets.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
@@ -165,8 +171,11 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
       }
     }
   }
-  await saveUnresolved(db, resolver);
-  await reapplyPayouts(db, dates);
+  } finally {
+    // Even a run stopped by the budget or a pause must leave a paid month confirmed over the rows it rewrote.
+    await saveUnresolved(db, resolver);
+    await reapplyPayouts(db, dates);
+  }
   return { rows, failed };
 }
 

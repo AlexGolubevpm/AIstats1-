@@ -12,6 +12,7 @@ import { daysBetween, periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
 import { asgPayouts, financeKpis, monthlyPnl, opexEntries, pnlTable, receivables, revenueStructure } from "@/server/queries/finance";
 import { monthForecast } from "@/server/queries/forecast";
+import { costCoverage } from "@/server/queries/common";
 import { OPEX_LABEL, type OpexCategory } from "@/server/services/opex";
 import { DeleteOpex, OpexButton } from "./opex";
 import { PayoutButton } from "./payout";
@@ -23,8 +24,8 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
   const sp = await searchParams;
   const p = periodFromParams(sp, "mtd");
   const monthly = daysBetween(p.from, p.to) > 62;
-  const [k, structure, pnl, payouts, recv, months, opex, sites] = await Promise.all([financeKpis(p), revenueStructure(p, monthly), pnlTable(p), asgPayouts(), receivables(),
-    monthlyPnl(), opexEntries(), db.site.findMany({ where: { status: { not: "ARCHIVED" } }, orderBy: { domain: "asc" }, select: { id: true, domain: true } })]);
+  const [k, structure, pnl, payouts, recv, months, opex, sites, coverage] = await Promise.all([financeKpis(p), revenueStructure(p, monthly), pnlTable(p), asgPayouts(), receivables(),
+    monthlyPnl(), opexEntries(), db.site.findMany({ where: { status: { not: "ARCHIVED" } }, orderBy: { domain: "asc" }, select: { id: true, domain: true } }), costCoverage(p)]);
   const today = new Date().toISOString().slice(0, 10);
   const thisMonth = today.slice(0, 7);
   // Month-end projection beside the month-to-date figures: only while the period is this month from its 1st day (ADR 0008 pace).
@@ -66,7 +67,7 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
         </div>
         <KpiCard label="Подтверждено" value={k.confirmed} format="money" color="#16A34A" />
         <KpiCard label="Ожидается" value={k.expected} format="money" sub="прогноз + выставлено" />
-        <KpiCard label="Расход на трафик" value={k.cost} format="money" color="#F43F5E" sub={eom(monthEnd?.cost) ?? undefined} />
+        <KpiCard label="Расход на трафик" value={k.cost} format="money" color="#F43F5E" sub={eom(monthEnd?.cost) ?? undefined} warn={coverage.warn} />
         <KpiCard label="Опер. расходы" value={k.opex} format="money" color="#F97316" sub={monthEnd ? eom(monthEnd.opex) ?? undefined : "хостинг, люди, софт"} />
         <KpiCard label="Маржа" value={k.margin} format="money" negativeFrame={k.margin < 0} sub={monthEnd ? `${eom(monthEnd.margin)} · после опер. расходов` : "после опер. расходов"} />
         <KpiCard label="ROMI" value={k.romi} format="percent" sub={monthEnd?.romi != null ? `на конец месяца ${fmtPercent(monthEnd.romi, true)}` : "на расход на трафик"} />

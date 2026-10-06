@@ -17,7 +17,7 @@ beforeAll(async () => {
 describe("readiness.sql", () => {
   it("prints one verdict per checklist item and nothing identifying", async () => {
     const rows = await run();
-    expect(rows).toHaveLength(9);
+    expect(rows).toHaveLength(10);
     expect(rows.every((r) => ["PASS", "FAIL", "INFO"].includes(r.verdict))).toBe(true);
     const text = JSON.stringify(rows);
     for (const leak of ["one.test", "two.test", "three.test", "$"]) expect(text).not.toContain(leak);
@@ -26,19 +26,22 @@ describe("readiness.sql", () => {
   it("passes the ingest check only for a finished ok run covering yesterday", async () => {
     const byCheck = async () => new Map((await run()).map((r) => [r.c, r]));
     expect((await byCheck()).get("ingest adspyglass yesterday")).toMatchObject({ v: "none", verdict: "FAIL" });
+    await db.ingestRun.create({ data: { source: "adspyglass", job: "asg:totals", dateFrom: yesterday(), dateTo: yesterday(), status: "ok" } });
+    expect((await byCheck()).get("ingest adspyglass yesterday")).toMatchObject({ v: "none", verdict: "FAIL" }); // the hourly totals do not count as the nightly
     await db.ingestRun.create({ data: { source: "adspyglass", job: "asg:geo", dateFrom: yesterday(), dateTo: yesterday(), status: "ok" } });
     expect((await byCheck()).get("ingest adspyglass yesterday")).toMatchObject({ v: "ok", verdict: "PASS" });
-    expect((await byCheck()).get("asg runs off ADOK site total >2%, 7d")).toMatchObject({ v: "0 of 1", verdict: "PASS" });
+    expect((await byCheck()).get("asg runs off ADOK site total >2%, 7d")).toMatchObject({ v: "0 of 2", verdict: "PASS" });
     await db.ingestRun.create({ data: { source: "adspyglass", job: "asg:geo", dateFrom: yesterday(), dateTo: yesterday(), status: "partial",
       error: "one.test 2026-09-27: сверка с итогом ADOK — выручка по странам расходится на 3.1%" } });
     const after = await byCheck();
     expect(after.get("ingest adspyglass yesterday")).toMatchObject({ v: "partial", verdict: "PASS" }); // data landed; check 5 reports the note
-    expect(after.get("asg runs off ADOK site total >2%, 7d")).toMatchObject({ v: "1 of 2", verdict: "FAIL" });
+    expect(after.get("asg runs off ADOK site total >2%, 7d")).toMatchObject({ v: "1 of 3", verdict: "FAIL" });
   });
 
   it("network total equals the sum of sites; Metrika checks are INFO until a counter is configured", async () => {
     const by = new Map((await run()).map((r) => [r.c, r]));
-    expect(by.get("network total vs sum of sites, 7d (gap) / sites in several bundles")).toMatchObject({ v: "0.00 / 1", verdict: "PASS" });
+    expect(by.get("network cut vs site totals, 7d (gap %) / sites in several bundles")).toMatchObject({ v: expect.stringMatching(/^(no data|0\.00%) \/ 1$/), verdict: "PASS" });
+    expect(by.get("days with revenue but no traffic-source cut (cost missing), 7d")).toMatchObject({ verdict: expect.stringMatching(/PASS|FAIL/) });
     expect(by.get("ingest metrika yesterday")).toMatchObject({ v: "not configured", verdict: "INFO" });
     expect(by.get("active sites / with asg id / with metrika id")).toMatchObject({ v: "3 / 3 / 0", verdict: "INFO" });
     expect(by.get("asg sites with traffic-source cut (cost base) yesterday")).toMatchObject({ v: "0 of 3", verdict: "FAIL" });

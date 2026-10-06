@@ -12,7 +12,7 @@ const n = (v: unknown) => (v == null ? 0 : Number(v));
 
 function siteFilter(col: Prisma.Sql, s: Scope) {
   if (!s.siteIds) return Prisma.sql`${col} IN (SELECT id FROM "Site" WHERE status <> 'ARCHIVED')`;
-  return s.siteIds.length ? Prisma.sql`${col} IN (${Prisma.join(s.siteIds)})` : Prisma.sql`false`;
+  return s.siteIds.length ? Prisma.sql`${col} IN (SELECT id FROM "Site" WHERE id IN (${Prisma.join(s.siteIds)}) AND status <> 'ARCHIVED')` : Prisma.sql`false`;
 }
 
 // ---------- tables by entity ----------

@@ -57,6 +57,17 @@ describe("job handlers", () => {
     expect(await db.alert.count({ where: { rule: "loss_geo" } })).toBeGreaterThan(0);
   });
 
+  it("a week-long skip of the per-site cuts shows as partial, never as ok", async () => {
+    const { FILTER_IGNORED_KEY } = await import("@/server/ingest/adspyglass/ingest");
+    await db.appSetting.create({ data: { key: FILTER_IGNORED_KEY, value: "AdSpyglass игнорирует website_id (test)" } });
+    const fetchImpl = (async (u: URL | string) => new Response(JSON.stringify(new URL(String(u)).searchParams.get("group_by") === "spot" ? [] : []))) as typeof fetch;
+    const cfg = config({ ASG_AUTH_EMAIL: "e", ASG_AUTH_TOKEN: "t", ASG_MIN_INTERVAL_MS: "0" });
+    const r = await runJob("asg:sites", { db, cfg, raw, today, fetchImpl }, {});
+    expect(r.status).toBe("partial");
+    const run = await db.ingestRun.findFirstOrThrow({ where: { job: "asg:sites" }, orderBy: { startedAt: "desc" } });
+    expect(run.error).toContain("пропущено");
+  });
+
   it("geo:reprocess rewrites XX rows from raw after mapping, without API calls", async () => {
     const date = "2026-09-20";
     const s1 = await db.site.findUniqueOrThrow({ where: { id: "s1" } });

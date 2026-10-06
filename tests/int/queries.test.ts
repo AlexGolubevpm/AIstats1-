@@ -1,7 +1,7 @@
 // Page queries against the reference network (tests/factories/network.ts): the numbers the
 // pages show, including the network-total-by-sites and no-double-counting invariants.
 import { beforeEach, describe, expect, it } from "vitest";
-import { buildNetwork, D1 } from "@tests/factories/network";
+import { buildNetwork, D1, D2 } from "@tests/factories/network";
 import { dailyTotals, freshness, kpis, siteList, totals } from "@/server/queries/common";
 import { dealDetail, dealsList, paymentsRegister, todoQueue } from "@/server/queries/deals";
 import { asgPayouts, financeKpis, pnlTable, receivables, revenueStructure } from "@/server/queries/finance";
@@ -49,6 +49,16 @@ describe("common", () => {
     expect((await siteList()).map((s) => s.domain)).toEqual(["one.test", "three.test", "two.test"]);
     await db.ingestRun.create({ data: { source: "adspyglass", job: "asg:totals", dateFrom: net.s1.createdAt, dateTo: net.s1.createdAt, status: "failed" } });
     expect((await freshness()).find((f) => f.source === "adspyglass")).toMatchObject({ failed: true, lastOk: null });
+  });
+
+  it("cost coverage: days with revenue but no traffic-source cut are flagged on the KPI row", async () => {
+    const { costCoverage } = await import("@/server/queries/common");
+    expect(await costCoverage(P)).toMatchObject({ days: 2, missing: 2, warn: expect.stringContaining("2 из 2 дн.") });
+    await db.factTrafficSource.createMany({ data: ["s1", "s2", "s3"].map((siteId) => ({ date: D1, siteId, sourceSlug: "tubecrown", pageLoads: 10, revenueReported: "1" })) });
+    const c = await costCoverage(P);
+    expect([c.days, c.missing]).toEqual([2, 1]);
+    await db.factTrafficSource.create({ data: { date: D2, siteId: "s1", sourceSlug: "tubecrown", pageLoads: 10, revenueReported: "1" } });
+    expect((await costCoverage(P)).warn).toBeUndefined();
   });
 });
 

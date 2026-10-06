@@ -60,10 +60,13 @@ describe("AsgClient", () => {
     expect(f.calls).toHaveLength(1);
   });
 
-  it("connection errors are reported, not retried", async () => {
+  it("connection errors are retried like a 5xx and reported only when they keep failing; one blip recovers", async () => {
     const fn = vi.fn(async () => { throw new Error("ECONNRESET"); }) as unknown as typeof fetch;
     const err = await new AsgClient(opts(fn)).report({ from: "a", to: "a", groupBy: "w" }).catch((e) => e);
     expect(err.kind).toBe("connection");
-    expect(fn).toHaveBeenCalledTimes(1);
+    expect(fn).toHaveBeenCalledTimes(3); // first try + two retries
+    let n = 0;
+    const flaky = vi.fn(async () => { if (n++ === 0) throw new Error("ETIMEDOUT"); return new Response("[1]", { status: 200 }); }) as unknown as typeof fetch;
+    expect(await new AsgClient(opts(flaky)).report({ from: "a", to: "a", groupBy: "w" })).toEqual([1]);
   });
 });

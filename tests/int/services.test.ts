@@ -50,6 +50,20 @@ describe("ADOK traffic sources as cost (revshare)", () => {
     expect((await db.factCost.findMany()).map((c) => [c.origin, Number(c.cost)])).toEqual([["IMPORT", 5]]);
   });
 
+  it("an import for a country replaces the revshare figure of that day, site and source (no stacking); a revert brings it back", async () => {
+    await traffic();
+    expect(await revshareCosts(db, "2026-09-20", "2026-09-21")).toBe(1); // tubecrown $6 as ZZ
+    const batch = await db.importBatch.create({ data: { kind: "costs", fileName: "de.csv", rows: 1, total: "500" } });
+    await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "DE", sourceSlug: "tubecrown", rateModel: "FLAT", rate: "1", cost: "500", origin: "IMPORT", importBatchId: batch.id } });
+    expect(await revshareCosts(db, "2026-09-20", "2026-09-21")).toBe(0);
+    const [site] = await db.$queryRaw<{ cost: number }[]>`SELECT SUM(cost)::float8 cost FROM v_site_geo_daily WHERE site_id = 's1' AND date = ${D1} AND "country_code" IN ('DE', 'ZZ')`;
+    expect(site.cost).toBe(500); // not 506
+    const { revertCostImport } = await import("@/server/services/costs");
+    await revertCostImport(db, batch.id);
+    const back = await db.factCost.findMany({ where: { siteId: "s1", date: D1, sourceSlug: "tubecrown" } });
+    expect(back.map((c) => [c.origin, c.countryCode, Number(c.cost)])).toEqual([["ASG", "ZZ", 6]]);
+  });
+
   it("validates the share", async () => {
     await expect(setSourceShare(db, "tubecrown", "120")).rejects.toBeInstanceOf(RuleError);
     await expect(setSourceShare(db, "tubecrown", "abc")).rejects.toBeInstanceOf(RuleError);

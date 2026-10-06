@@ -67,6 +67,21 @@ describe("AdSpyglass ingest", () => {
     expect(await db.unresolvedAlias.findMany()).toMatchObject([{ raw: "Atlantis", source: "adspyglass", rows: 1 }]);
   });
 
+  it("an empty country response keeps the site total as ZZ instead of wiping the day", async () => {
+    const { client } = fakeAsg((u) => u.searchParams.get("group_by") === "website"
+      ? [{ name: "101. alpha.test", hits: 1000, broker_income: 5 }]
+      : []);
+    const deps = { db, client, raw, runId: "e1" };
+    await ingestSiteTotals(deps, [DATE]);
+    const r = await ingestSiteGeo(deps, [DATE], "a");
+    expect(r.failed).toEqual([expect.stringContaining("разрез по странам пуст")]);
+    expect((await geoRows()).map((x) => [x.countryCode, Number(x.revenueReported)])).toEqual([["ZZ", 5]]);
+    // Without a prior total the ZZ row is written from the website cut.
+    await db.factRevenueGeo.deleteMany();
+    await ingestSiteGeo(deps, [DATE], "a");
+    expect((await geoRows()).map((x) => [x.countryCode, Number(x.revenueReported)])).toEqual([["ZZ", 5]]);
+  });
+
   it("restating a day overwrites instead of duplicating", async () => {
     let rev = 3;
     const { client } = fakeAsg((u) => u.searchParams.get("group_by") === "website"
@@ -210,7 +225,7 @@ describe("AdSpyglass ingest", () => {
       return [];
     });
     const r = await ingestSiteGeo({ db, client, raw, runId: "t1" }, [DATE], "a");
-    expect(r.failed).toEqual([]);
+    expect(r.failed.filter((f) => !f.includes("по странам пуст"))).toEqual([]); // the fake has no country rows
     expect(calls.find((c) => c.searchParams.get("group_by") === "traffic_source")?.searchParams.get("platforms_ids[]")).toBe("101");
     const facts = await db.factTrafficSource.findMany({ orderBy: { pageLoads: "desc" } });
     expect(facts.map((f) => [f.sourceSlug, f.pageLoads, Number(f.revenueReported)])).toEqual([["tubecrown", 700, 7], ["direct", 250, 2.5], ["alex_z", 50, 0.5]]);
@@ -227,7 +242,7 @@ describe("AdSpyglass ingest", () => {
       return [];
     });
     const r = await ingestSiteGeo({ db, client, raw, runId: "t2" }, [DATE], "a");
-    expect(r.failed).toEqual([expect.stringContaining("источники трафика не по сайту")]);
+    expect(r.failed.filter((f) => !f.includes("по странам пуст"))).toEqual([expect.stringContaining("источники трафика не по сайту")]);
     expect(await db.factTrafficSource.count()).toBe(0);
   });
 
