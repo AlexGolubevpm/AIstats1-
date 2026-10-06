@@ -13,7 +13,7 @@ const iso = (d: Date) => d.toISOString().slice(0, 10);
 
 export interface ZoneRow { id: string; name: string; format: string; placementSlug: string | null; revenue: number; imps: number }
 export interface InventoryGrid {
-  places: { slug: string; title: string; free: number; revenue: number }[];
+  places: { slug: string; title: string; free: number; revenue: number; zones: number }[];
   sites: { id: string; domain: string; bundles: string[]; cells: Record<string, PlaceCell>; free: number; revenue: number; unmapped: number; zones: ZoneRow[] }[];
   /** Revenue of the whole network in the period (by sites, so a site in two bundles counts once). */
   revenue: number;
@@ -75,7 +75,7 @@ export async function inventoryGrid(today = iso(new Date()), p?: Period): Promis
   });
   return {
     places: places.map((p) => ({ slug: p.slug, title: p.title, free: rows.filter((r) => r.cells[p.slug].use === "FREE").length,
-      revenue: rows.reduce((a, r) => a + r.cells[p.slug].revenue, 0) })),
+      revenue: rows.reduce((a, r) => a + r.cells[p.slug].revenue, 0), zones: zones.filter((z) => z.placementSlug === p.slug).length })),
     sites: rows,
     revenue: rows.reduce((a, r) => a + r.revenue, 0),
   };

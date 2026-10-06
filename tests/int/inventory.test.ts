@@ -151,7 +151,7 @@ describe("inventory revenue, bundles and zone mapping", () => {
 
   it("a cell carries the period revenue of the zones mapped to it; row, column and network totals add up", async () => {
     const z1 = await db.zone.create({ data: { adsgZoneId: 11, siteId: "a", name: "Under bar", format: "BANNER" } });
-    const z2 = await db.zone.create({ data: { adsgZoneId: 12, siteId: "a", name: "AA_AAA_aaaa", format: "POPUNDER" } }); // no place by name
+    const z2 = await db.zone.create({ data: { adsgZoneId: 12, siteId: "a", name: "AA_AAA_aaaa", format: "POPUNDER" } }); // no default place by name → a place of its own
     const z3 = await db.zone.create({ data: { adsgZoneId: 13, siteId: "b", name: "Under bar", format: "BANNER" } });
     await matchZonesToPlacements(db);
     await fact("a", z1.id, "2026-10-01", "10.5");
@@ -161,10 +161,12 @@ describe("inventory revenue, bundles and zone mapping", () => {
     const g = await inventoryGrid(TODAY);
     const a = g.sites.find((s) => s.id === "a")!, b = g.sites.find((s) => s.id === "b")!;
     expect([a.cells.under_bar.revenue, a.cells.under_bar.imps, a.cells.under_bar.use]).toEqual([10.5, 100, "ROTATION"]);
-    expect([a.revenue, a.unmapped, b.revenue]).toEqual([10.5, 1, 4.25]); // the unmapped zone's money is in no cell
+    expect([a.revenue, a.unmapped, b.revenue]).toEqual([17.5, 0, 4.25]); // every zone is a place: AA_AAA_aaaa's money sits in its own column
     expect(g.places.find((p) => p.slug === "under_bar")!.revenue).toBe(14.75);
-    expect(g.revenue).toBe(14.75);
-    expect(a.zones.map((z) => [z.name, z.placementSlug, z.revenue])).toEqual([["AA_AAA_aaaa", null, 7], ["Under bar", "under_bar", 10.5]]);
+    expect(g.places.find((p) => p.slug === "aa_aaa_aaaa")).toMatchObject({ title: "AA_AAA_aaaa", revenue: 7, zones: 1 });
+    expect(g.places.at(-1)!.slug).toBe("aa_aaa_aaaa"); // places from zones come after the owner's defaults
+    expect(g.revenue).toBe(21.75);
+    expect(a.zones.map((z) => [z.name, z.placementSlug, z.revenue])).toEqual([["AA_AAA_aaaa", "aa_aaa_aaaa", 7], ["Under bar", "under_bar", 10.5]]);
     // An explicit period moves the window.
     const g2 = await inventoryGrid(TODAY, { from: "2026-09-25", to: "2026-09-25" });
     expect(g2.sites.find((s) => s.id === "a")!.cells.under_bar.revenue).toBe(99);
@@ -193,7 +195,24 @@ describe("inventory revenue, bundles and zone mapping", () => {
     await setZonePlacement(db, z.id, null);
     a = (await inventoryGrid(TODAY)).sites.find((s) => s.id === "a")!;
     expect([a.cells.video_link_2.use, a.cells.video_link_2.revenue, a.unmapped]).toEqual(["FREE", 0, 1]);
+    await matchZonesToPlacements(db); // unmapped again → back to the place of its own name, not video_link_2
+    a = (await inventoryGrid(TODAY)).sites.find((s) => s.id === "a")!;
+    expect([a.cells.aa_aaa_aaaa.use, a.cells.aa_aaa_aaaa.revenue, a.unmapped]).toEqual(["ROTATION", 7, 0]);
     await expect(setZonePlacement(db, z.id, "nope")).rejects.toBeInstanceOf(RuleError);
+  });
+
+  it("zone names become places: InVideo / POP player / footer_1 columns, same name on two sites → one place, defaults win by title", async () => {
+    await db.zone.createMany({ data: [
+      { adsgZoneId: 41, siteId: "a", name: "InVideo", format: "INVIDEO" }, { adsgZoneId: 42, siteId: "b", name: "InVideo", format: "INVIDEO" },
+      { adsgZoneId: 43, siteId: "a", name: "POP player", format: "POPUNDER" }, { adsgZoneId: 44, siteId: "b", name: "footer_1", format: "BANNER" },
+      { adsgZoneId: 45, siteId: "b", name: "491. Tablink 1", format: "OTHER" }, { adsgZoneId: 46, siteId: "a", name: "ntv_1", format: "NATIVE", isActive: false },
+    ] });
+    expect(await matchZonesToPlacements(db)).toBe(5);
+    const g = await inventoryGrid(TODAY);
+    expect(g.places.slice(10).map((p) => [p.slug, p.title, p.zones])).toEqual([["footer_1", "footer_1", 1], ["invideo", "InVideo", 2], ["pop_player", "POP player", 1]]);
+    expect((await db.zone.findUniqueOrThrow({ where: { adsgZoneId: 45 } })).placementSlug).toBe("tablink_1");
+    expect(g.sites.find((s) => s.id === "b")!.cells.invideo.use).toBe("ROTATION");
+    expect(await matchZonesToPlacements(db)).toBe(0); // idempotent
   });
 
   it("sites carry their bundle slugs so the page can filter and group; a site in two bundles is listed under both", async () => {
