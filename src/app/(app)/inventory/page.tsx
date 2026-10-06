@@ -6,8 +6,8 @@ import { Section } from "@/components/ui/card";
 import { fmtMoney } from "@/lib/format";
 import { periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
-import { USE_LABEL, daysLeft } from "@/server/domain/inventory";
-import { inventoryDeals, inventoryGrid, type InventoryGrid } from "@/server/queries/inventory";
+import { USE_LABEL, cellText, daysLeft } from "@/server/domain/inventory";
+import { attachableDeals, inventoryDeals, inventoryGrid, type InventoryGrid } from "@/server/queries/inventory";
 import { AddPlacement, BundleSelect, PlaceButton, ZonesButton } from "./client";
 
 type Props = { searchParams: Promise<Record<string, string | undefined>> };
@@ -26,7 +26,8 @@ export default async function Inventory({ searchParams }: Props) {
   const onlyFree = sp.free === "1";
   const groupByBundle = sp.group === "bundle";
   const today = new Date().toISOString().slice(0, 10);
-  const [grid, deals, bundles] = await Promise.all([inventoryGrid(today, p), inventoryDeals(today), db.bundle.findMany({ orderBy: { title: "asc" } })]);
+  const [grid, deals, bundles, networks, attachable] = await Promise.all([inventoryGrid(today, p), inventoryDeals(today), db.bundle.findMany({ orderBy: { title: "asc" } }),
+    db.network.findMany({ where: { showInLegend: true }, orderBy: [{ sortOrder: "asc" }, { title: "asc" }], select: { id: true, title: true, kind: true } }), attachableDeals()]);
   const bundle = sp.bundle && bundles.find((b) => b.slug === sp.bundle) ? sp.bundle : "";
   let sites = grid.sites;
   if (bundle) sites = sites.filter((s) => s.bundles.includes(bundle));
@@ -87,7 +88,7 @@ export default async function Inventory({ searchParams }: Props) {
             </thead>
             <tbody>
               {blocks.map((b) => (
-                <BlockRows key={b.key} block={b} grid={grid} today={today} placeTitle={placeTitle} sum={sum} />
+                <BlockRows key={b.key} block={b} grid={grid} today={today} placeTitle={placeTitle} sum={sum} networks={networks} attachable={attachable} />
               ))}
               {sites.length === 0 && <tr><td colSpan={grid.places.length + 2} className="py-8 text-center text-sm text-muted">{onlyFree ? "Свободных мест нет" : "Нет активных сайтов"}</td></tr>}
             </tbody>
@@ -107,12 +108,12 @@ export default async function Inventory({ searchParams }: Props) {
         <DataTable id="fd" exportName="fix-deals" defaultSort={{ id: "left", dir: "asc" }} columns={DEAL_COLS}
           empty="Дилов нет — добавьте в разделе «Фикс-дилы»"
           rows={deals.map((d) => ({
-            ...d, sitesCount: d.sites.length, placement: d.placement ?? "—", statusLabel: STATUS[d.status] ?? d.status,
-            left: d.status === "ENDED" ? null : d.daysLeft, endsAt: d.endsAt ?? "бессрочно", noPlace: d.placement ? 0 : 1,
+            ...d, sitesCount: d.sites.length, placement: d.placements.join(", ") || "—", statusLabel: STATUS[d.status] ?? d.status,
+            left: d.status === "ENDED" ? null : d.daysLeft, endsAt: d.endsAt ?? "бессрочно", noPlace: d.placements.length ? 0 : 1,
             soon: d.status !== "ENDED" && d.daysLeft != null && d.daysLeft <= 7 ? 1 : 0,
             _key: d.id, _href: `/deals/${d.id}`, _warn: d.status !== "ENDED" && d.daysLeft != null && d.daysLeft <= 3,
             _badges: {
-              placement: d.placement ? [] : [{ label: "не указано", tone: "warning" as const }],
+              placement: d.placements.length ? [] : [{ label: "не указано", tone: "warning" as const }],
               title: d.sites.length ? [{ label: d.sites.length === 1 ? d.sites[0] : `${d.sites.length} сайтов`, tone: "neutral" as const }] : [],
               endsAt: d.status === "ENDED" ? [{ label: "закончился", tone: "neutral" as const }]
                 : d.daysLeft != null && d.daysLeft < 0 ? [{ label: "просрочен", tone: "negative" as const }]
@@ -125,9 +126,11 @@ export default async function Inventory({ searchParams }: Props) {
   );
 }
 
-function BlockRows({ block, grid, today, placeTitle, sum }: {
+type Networks = { id: string; title: string; kind: string }[];
+type Attachable = Awaited<ReturnType<typeof attachableDeals>>;
+function BlockRows({ block, grid, today, placeTitle, sum, networks, attachable }: {
   block: { key: string; title: string | null; sites: InventoryGrid["sites"] }; grid: InventoryGrid; today: string;
-  placeTitle: Record<string, string>; sum: (rows: InventoryGrid["sites"], slug: string) => number;
+  placeTitle: Record<string, string>; sum: (rows: InventoryGrid["sites"], slug: string) => number; networks: Networks; attachable: Attachable;
 }) {
   return (
     <>
@@ -151,9 +154,9 @@ function BlockRows({ block, grid, today, placeTitle, sum }: {
             const soonest = c.deals.map((d) => daysLeft(d.endsAt, today)).filter((x): x is number => x != null).sort((a, b) => a - b)[0];
             return (
               <td key={pl.slug} className="border-b border-border/60 px-1 py-1">
-                <PlaceButton siteId={s.id} domain={s.domain} slug={pl.slug} place={placeTitle[pl.slug]} use={c.use} by={c.by} label={c.label} deals={c.deals}
-                  today={today} ending={soonest != null && soonest <= 7} className={TONE[c.use]}
-                  text={c.revenue > 0 ? fmtMoney(c.revenue) : c.deals.length ? c.deals.map((d) => d.advertiser).join(", ") : SHORT[c.use]} />
+                <PlaceButton siteId={s.id} domain={s.domain} slug={pl.slug} place={placeTitle[pl.slug]} cell={c} today={today}
+                  ending={soonest != null && soonest <= 7} className={TONE[c.use]} networks={networks} attachable={attachable}
+                  text={cellText(c, c.revenue > 0 ? fmtMoney(c.revenue) : null, SHORT)} />
               </td>
             );
           })}

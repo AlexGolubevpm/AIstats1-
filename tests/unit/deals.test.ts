@@ -96,13 +96,19 @@ describe("statuses", () => {
 describe("deal form validation", async () => {
   const { validateDeal, parseGeoList } = await import("@/server/domain/deals");
   const { parseDecimal } = await import("@/server/domain/errors");
-  const base = { title: " T ", advertiser: " A ", format: "BANNER", paymentBasis: "PER_1000_LOADS" as const, price: "0.80", siteIds: ["s"], geoScope: [],
+  const base = { title: " T ", advertiser: " A ", paymentBasis: "PER_1000_LOADS" as const, price: "0.80", siteIds: ["s"], geoScope: [],
     geoExclude: false, startsAt: "2026-09-01", endsAt: null, billingPeriod: "MONTH" as const, paymentTermsDays: 30, counterSource: "ASG_ZONE" as const, billedVia: "DIRECT" as const };
   it("trims and normalises", () => expect(validateDeal(base)).toMatchObject({ title: "T", advertiser: "A", price: "0.8" }));
   it("price precision depends on the model", () => {
     expect(() => validateDeal({ ...base, price: "0.123456" })).toThrow(/5/);
     expect(() => validateDeal({ ...base, paymentBasis: "FLAT_DAILY", price: "10.555" })).toThrow(/2/);
     expect(() => validateDeal({ ...base, price: "abc" })).toThrow(/больше нуля/);
+  });
+  it("places must sit on the deal's sites and are de-duplicated", () => {
+    expect(() => validateDeal({ ...base, places: [{ siteId: "x", placementSlug: "tablink_1" }] })).toThrow(/нет в диле/);
+    const p = { siteId: "s", placementSlug: "tablink_1" };
+    expect(validateDeal({ ...base, places: [p, { ...p }] }).places).toEqual([p]);
+    expect(validateDeal(base).places).toEqual([]);
   });
   it("flat for the whole term needs an end date", () =>
     expect(() => validateDeal({ ...base, paymentBasis: "FLAT_PERIOD", billingPeriod: "TERM" })).toThrow(/конца/));

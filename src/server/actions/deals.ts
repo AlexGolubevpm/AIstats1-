@@ -1,7 +1,7 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { parseGeoList, type BillingPeriod, type DealInput, type PaymentBasis } from "@/server/domain/deals";
+import { parseGeoList, parsePlaceKey, type BillingPeriod, type DealInput, type PaymentBasis } from "@/server/domain/deals";
 import { db } from "@/server/db";
 import { requireSession } from "@/server/session";
 import {
@@ -16,14 +16,15 @@ async function dealInput(f: FormData): Promise<DealInput> {
   const codes = parseGeoList(str(f, "geoScope"));
   const tiers = codes.filter((c) => c in TIERS).map((c) => TIERS[c]);
   const tierCodes = tiers.length ? (await db.country.findMany({ where: { tier: { in: tiers } } })).map((c) => c.code) : [];
-  const siteIds = f.getAll("siteIds").map(String).filter(Boolean);
+  const places = f.getAll("place").map(String).map(parsePlaceKey).filter((p): p is NonNullable<typeof p> => p != null);
+  const siteIds = [...new Set([...f.getAll("siteIds").map(String).filter(Boolean), ...places.map((p) => p.siteId)])];
   return {
-    title: str(f, "title"), advertiser: str(f, "advertiser"), format: str(f, "format") || "BANNER", paymentBasis: (str(f, "paymentBasis") || "PER_1000_LOADS") as PaymentBasis,
+    title: str(f, "title"), advertiser: str(f, "advertiser"), paymentBasis: (str(f, "paymentBasis") || "PER_1000_LOADS") as PaymentBasis,
     price: money(f, "price"), siteIds, geoScope: [...new Set([...codes.filter((c) => !(c in TIERS)), ...tierCodes])], geoExclude: str(f, "geoExclude") === "1",
     startsAt: str(f, "startsAt"), endsAt: opt(f, "endsAt"), billingPeriod: (str(f, "billingPeriod") || "MONTH") as BillingPeriod,
     paymentTermsDays: int(f, "paymentTermsDays") ?? 30, counterSource: (str(f, "counterSource") || "ASG_ZONE") as DealInput["counterSource"],
     billedVia: (str(f, "billedVia") || "DIRECT") as DealInput["billedVia"], notes: opt(f, "notes"),
-    zoneBySite: Object.fromEntries(siteIds.map((id) => [id, opt(f, `zone_${id}`)])), placementSlug: opt(f, "placementSlug"),
+    zoneBySite: Object.fromEntries(siteIds.map((id) => [id, opt(f, `zone_${id}`)])), places,
   };
 }
 

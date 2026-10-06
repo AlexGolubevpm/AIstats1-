@@ -8,10 +8,10 @@ import { Input, Select } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
 import { cn } from "@/lib/cn";
 import { fmtMoney } from "@/lib/format";
-import { addPlacementAction, setPlacementUseAction, setZonePlacementAction } from "@/server/actions/inventory";
+import { addPlacementAction, attachDealPlacesAction, detachDealPlaceAction, setPlacementUseAction, setZonePlacementAction } from "@/server/actions/inventory";
 import { useToast } from "@/components/ui/toast";
 import type { ZoneRow } from "@/server/queries/inventory";
-import { USE_LABEL, daysLeft, type PlaceDeal, type PlaceUse } from "@/server/domain/inventory";
+import { USE_LABEL, daysLeft, type PlaceCell, type PlaceDeal, type PlaceUse } from "@/server/domain/inventory";
 
 const BY: Record<string, string> = { deal: "занято дилом", manual: "отмечено вручную", zone: "зона AdSpyglass", default: "нет дила, зоны и отметки" };
 
@@ -20,45 +20,92 @@ const left = (d: PlaceDeal, today: string) => {
   return n == null ? "бессрочно" : n < 0 ? `закончился ${-n} дн. назад` : `осталось ${n} дн.`;
 };
 
-export function PlaceButton({ siteId, domain, slug, place, use, by, label, deals, today, ending, className, text }: {
-  siteId: string; domain: string; slug: string; place: string; use: PlaceUse; by: string; label: string | null; deals: PlaceDeal[]; today: string;
-  ending: boolean; className: string; text: string;
+export function PlaceButton({ siteId, domain, slug, place, cell, today, ending, className, text, networks, attachable }: {
+  siteId: string; domain: string; slug: string; place: string; cell: PlaceCell; today: string; ending: boolean; className: string; text: string;
+  networks: { id: string; title: string; kind: string }[];
+  attachable: { id: string; title: string; advertiser: string; billedVia: string; siteIds: string[] }[];
 }) {
   const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [pending, start] = useTransition();
+  const toast = useToast();
+  const { use, by, label, deals, network } = cell;
   const tip = deals.length
     ? deals.map((d) => `${d.advertiser} — ${d.title}: $${d.price} ${d.basis}, с ${d.startsAt} по ${d.endsAt ?? "бессрочно"}, ${left(d, today)}`).join("\n")
     : `${USE_LABEL[use]} · ${BY[by]}${label ? `: ${label}` : ""}`;
+  const onCell = new Set(deals.map((d) => d.id));
+  const candidates = attachable.filter((d) => !onCell.has(d.id) && (!q || `${d.advertiser} ${d.title}`.toLowerCase().includes(q.toLowerCase())));
+  const detach = (dealId: string) => start(async () => {
+    const r = await detachDealPlaceAction(siteId, slug, dealId);
+    r.error ? toast(r.error, "error") : toast(r.message ?? "Готово");
+  });
   return (
     <>
       <button type="button" onClick={() => setOpen(true)} title={tip}
         className={cn("relative block h-7 w-full truncate rounded px-2 text-left text-[11px] font-medium", className)}>
         {text}{ending && <span aria-label="заканчивается в течение недели" className="absolute right-1 top-1 size-1.5 rounded-full bg-warning" />}
       </button>
-      <Sheet open={open} onOpenChange={setOpen} title={`${place} · ${domain}`} description={`Сейчас: ${USE_LABEL[use]} (${BY[by]}${label ? `: ${label}` : ""})`}>
-        {by === "deal" ? (
-          <div className="flex flex-col gap-3 text-sm">
-            <ul className="divide-y divide-border">{deals.map((d) => (
-              <li key={d.id} className="flex flex-col gap-0.5 py-2">
-                <Link className="font-medium text-accent hover:underline" href={`/deals/${d.id}`}>{d.advertiser} — {d.title}</Link>
-                <span className="num text-muted">${d.price} {d.basis} · {d.billedVia === "DIRECT" ? "напрямую нам" : "через AdSpyglass"}</span>
-                <span className="num text-muted">с {d.startsAt} по {d.endsAt ?? "бессрочно"} · {left(d, today)}</span>
-              </li>
-            ))}</ul>
-            <p className="text-muted">Чтобы освободить место, уберите его в условиях дила или завершите дил.</p>
-          </div>
-        ) : (
-          <ActionForm action={setPlacementUseAction} submit="Сохранить" onDone={() => setOpen(false)} cancel={() => setOpen(false)}>
-            <input type="hidden" name="siteId" value={siteId} />
-            <input type="hidden" name="slug" value={slug} />
-            <FormField name="use" label="Состояние" hint="«Авто» — решают дилы и зоны AdSpyglass">
-              <Select name="use" defaultValue={by === "manual" ? use : "AUTO"}>
-                <option value="AUTO">Авто</option>
-                {(Object.keys(USE_LABEL) as PlaceUse[]).map((u) => <option key={u} value={u}>{USE_LABEL[u]}</option>)}
-              </Select>
-            </FormField>
-            <FormField name="note" label="Заметка" hint="Например, CPA-оффер или кто занимает место"><Input name="note" defaultValue={by === "manual" ? label ?? "" : ""} /></FormField>
-          </ActionForm>
-        )}
+      <Sheet open={open} onOpenChange={setOpen} title={`${place} · ${domain}`} width="max-w-xl"
+        description={`Сейчас: ${USE_LABEL[use]} (${BY[by]}${label ? `: ${label}` : ""})`}>
+        <div className="flex flex-col gap-6 text-sm">
+          <section className="flex flex-col gap-2">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Фикс-дилы на этом месте · {deals.length}</h3>
+            {deals.length ? (
+              <ul className="divide-y divide-border">{deals.map((d) => (
+                <li key={d.id} className="flex items-start justify-between gap-3 py-2">
+                  <div className="flex flex-col gap-0.5">
+                    <Link className="font-medium text-accent hover:underline" href={`/deals/${d.id}`}>{d.advertiser} — {d.title}</Link>
+                    <span className="num text-muted">${d.price} {d.basis} · {d.billedVia === "DIRECT" ? "напрямую нам" : "через AdSpyglass"}</span>
+                    <span className="num text-muted">с {d.startsAt} по {d.endsAt ?? "бессрочно"} · {left(d, today)}</span>
+                  </div>
+                  <Button size="sm" variant="secondary" disabled={pending} onClick={() => detach(d.id)}>Убрать с места</Button>
+                </li>
+              ))}</ul>
+            ) : <p className="text-muted">Дилов нет. Несколько дилов на одном месте — нормально, например по тирам гео.</p>}
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Добавить фикс-дил</h3>
+            <ActionForm action={attachDealPlacesAction} submit="Привязать" onDone={() => setQ("")} className="flex flex-col gap-2">
+              <input type="hidden" name="siteId" value={siteId} />
+              <input type="hidden" name="slug" value={slug} />
+              <div className="rounded-lg border border-border">
+                <Input placeholder="Поиск по рекламодателю или названию" value={q} onChange={(e) => setQ(e.target.value)} className="rounded-b-none border-0 border-b" aria-label="Поиск дила" />
+                <div className="max-h-44 overflow-y-auto p-1">
+                  {candidates.length ? candidates.map((d) => (
+                    <label key={d.id} className="flex items-center gap-2 rounded px-2 py-1 text-xs hover:bg-surface-hover">
+                      <input type="checkbox" name="dealIds" value={d.id} />
+                      <span className="flex-1">{d.advertiser} — {d.title}</span>
+                      <span className="text-muted">{d.billedVia === "DIRECT" ? "напрямую" : "через ASG"}{d.siteIds.includes(siteId) ? "" : " · сайт добавится"}</span>
+                    </label>
+                  )) : <p className="px-2 py-1 text-xs text-muted">Нет подходящих дилов</p>}
+                </div>
+              </div>
+            </ActionForm>
+            <Link href={`/deals?new=1&place=${encodeURIComponent(`${siteId}|${slug}`)}`} className="text-xs text-accent hover:underline">Новый дил на этом месте →</Link>
+          </section>
+
+          <section className="flex flex-col gap-2">
+            <h3 className="text-xs font-medium uppercase tracking-wide text-muted">Состояние и сетка</h3>
+            <ActionForm action={setPlacementUseAction} submit="Сохранить" onDone={() => setOpen(false)} className="flex flex-col gap-3">
+              <input type="hidden" name="siteId" value={siteId} />
+              <input type="hidden" name="slug" value={slug} />
+              <FormField name="networkId" label="Место выкупает сетка" hint="Прямая сетка — own deal в AdSpyglass, медиация — ротация; пусто — не отмечать">
+                <Select name="networkId" defaultValue={network?.id ?? ""}>
+                  <option value="">— не указана —</option>
+                  {networks.map((n) => <option key={n.id} value={n.id}>{n.title}</option>)}
+                </Select>
+              </FormField>
+              <FormField name="use" label="Состояние" hint="«Авто» — решают дилы, сетка и зоны AdSpyglass">
+                <Select name="use" defaultValue={by === "manual" && !network ? use : "AUTO"}>
+                  <option value="AUTO">Авто</option>
+                  {(Object.keys(USE_LABEL) as PlaceUse[]).map((u) => <option key={u} value={u}>{USE_LABEL[u]}</option>)}
+                </Select>
+              </FormField>
+              <FormField name="note" label="Заметка" hint="Например, CPA-оффер или кто занимает место"><Input name="note" defaultValue={by === "manual" ? (cell.label !== network?.title ? label ?? "" : "") : ""} /></FormField>
+            </ActionForm>
+          </section>
+        </div>
       </Sheet>
     </>
   );

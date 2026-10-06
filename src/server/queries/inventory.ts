@@ -28,21 +28,23 @@ export async function inventoryGrid(today = iso(new Date()), p?: Period): Promis
   const [places, sites, deals, zones, manual, links, zoneRev, dealRev] = await Promise.all([
     db.placement.findMany({ orderBy: [{ sortOrder: "asc" }, { title: "asc" }] }),
     db.site.findMany({ where: { status: "ACTIVE" }, orderBy: { domain: "asc" } }),
-    db.deal.findMany({ where: { placementSlug: { not: null }, status: { in: ["ACTIVE", "PAUSED"] }, startsAt: { lte: D(today) },
-      OR: [{ endsAt: null }, { endsAt: { gte: D(today) } }] }, include: { sites: true, advertiser: true } }),
+    db.deal.findMany({ where: { places: { some: {} }, status: { in: ["ACTIVE", "PAUSED"] }, startsAt: { lte: D(today) },
+      OR: [{ endsAt: null }, { endsAt: { gte: D(today) } }] }, include: { places: true, advertiser: true } }),
     db.zone.findMany({ where: { isActive: true }, orderBy: { name: "asc" } }),
-    db.sitePlacement.findMany(),
+    db.sitePlacement.findMany({ include: { network: true } }),
     db.bundleSite.findMany({ include: { bundle: true } }),
     db.$queryRaw<Raw[]>`SELECT f."zoneId" zone_id, SUM(f."revenueReported")::float8 revenue, SUM(f."impsOwn")::float8 imps
       FROM "FactRevenueZone" f WHERE f.date BETWEEN ${D(period.from)} AND ${D(period.to)} GROUP BY 1`,
-    db.$queryRaw<Raw[]>`SELECT f."siteId" site_id, d."placementSlug" slug, SUM(f.revenue)::float8 revenue, SUM(f."impsOwn")::float8 imps
-      FROM "FactFixDeal" f JOIN "Deal" d ON d.id = f."dealId"
-      WHERE d."placementSlug" IS NOT NULL AND f.date BETWEEN ${D(period.from)} AND ${D(period.to)} GROUP BY 1, 2`,
+    // A deal on several places of one site: its facts are per site, so they are split evenly between those places.
+    db.$queryRaw<Raw[]>`WITH k AS (SELECT "dealId", "siteId", COUNT(*)::float8 n FROM "DealPlace" GROUP BY 1, 2)
+      SELECT dp."siteId" site_id, dp."placementSlug" slug, SUM(f.revenue / k.n)::float8 revenue, SUM(f."impsOwn" / k.n)::float8 imps
+      FROM "FactFixDeal" f JOIN "DealPlace" dp ON dp."dealId" = f."dealId" AND dp."siteId" = f."siteId" JOIN k ON k."dealId" = f."dealId" AND k."siteId" = f."siteId"
+      WHERE f.date BETWEEN ${D(period.from)} AND ${D(period.to)} GROUP BY 1, 2`,
   ]);
   const key = (siteId: string, slug: string) => `${siteId}|${slug}`;
   const dealsAt = new Map<string, PlaceDeal[]>();
-  for (const d of deals) for (const s of d.sites) {
-    const k = key(s.siteId, d.placementSlug!);
+  for (const d of deals) for (const pl of d.places) {
+    const k = key(pl.siteId, pl.placementSlug);
     dealsAt.set(k, [...(dealsAt.get(k) ?? []), { id: d.id, title: d.title, advertiser: d.advertiser.name, price: d.price.toString(),
       basis: BASIS_LABEL[d.paymentBasis] ?? d.paymentBasis, startsAt: iso(d.startsAt), endsAt: d.endsAt ? iso(d.endsAt) : null, billedVia: d.billedVia }]);
   }
@@ -60,7 +62,7 @@ export async function inventoryGrid(today = iso(new Date()), p?: Period): Promis
     add(k, rv);
   }
   for (const r of dealRev) add(key(String(r.site_id), String(r.slug)), { revenue: n(r.revenue), imps: n(r.imps) });
-  const manualAt = new Map(manual.map((m) => [key(m.siteId, m.placementSlug), { use: m.use, note: m.note }]));
+  const manualAt = new Map(manual.map((m) => [key(m.siteId, m.placementSlug), { use: m.use, note: m.note, network: m.network ? { id: m.network.id, slug: m.network.slug, title: m.network.title } : null }]));
   const bundlesOf = new Map<string, string[]>();
   for (const l of links) bundlesOf.set(l.siteId, [...(bundlesOf.get(l.siteId) ?? []), l.bundle.slug]);
   const rows = sites.map((s) => {
@@ -79,8 +81,14 @@ export async function inventoryGrid(today = iso(new Date()), p?: Period): Promis
   };
 }
 
+/** Deals the cell panel can attach: running and paused, with the sites they already cover. */
+export async function attachableDeals(): Promise<{ id: string; title: string; advertiser: string; billedVia: string; siteIds: string[] }[]> {
+  const deals = await db.deal.findMany({ where: { status: { in: ["ACTIVE", "PAUSED"] } }, include: { advertiser: true, sites: true }, orderBy: [{ advertiser: { name: "asc" } }, { title: "asc" }] });
+  return deals.map((d) => ({ id: d.id, title: d.title, advertiser: d.advertiser.name, billedVia: d.billedVia, siteIds: d.sites.map((s) => s.siteId) }));
+}
+
 export interface InventoryDeal {
-  id: string; title: string; advertiser: string; placement: string | null; sites: string[]; price: number; basis: string;
+  id: string; title: string; advertiser: string; placements: string[]; sites: string[]; price: number; basis: string;
   startsAt: string; endsAt: string | null; daysLeft: number | null; status: string; billedVia: string;
 }
 
@@ -91,11 +99,11 @@ export interface InventoryDeal {
 export async function inventoryDeals(today = iso(new Date())): Promise<InventoryDeal[]> {
   const deals = await db.deal.findMany({
     where: { OR: [{ status: { in: ["ACTIVE", "PAUSED"] } }, { status: "ENDED", endsAt: { gte: D(iso(new Date(D(today).getTime() - 30 * 86_400_000))) } }] },
-    include: { advertiser: true, placement: true, sites: { include: { site: true } } },
+    include: { advertiser: true, places: { include: { placement: true } }, sites: { include: { site: true } } },
   });
   const rows = deals.map((d) => {
     const endsAt = d.endsAt ? iso(d.endsAt) : null;
-    return { id: d.id, title: d.title, advertiser: d.advertiser.name, placement: d.placement?.title ?? null, sites: d.sites.map((s) => s.site.domain).sort(),
+    return { id: d.id, title: d.title, advertiser: d.advertiser.name, placements: [...new Set(d.places.map((p) => p.placement.title))].sort(), sites: d.sites.map((s) => s.site.domain).sort(),
       price: Number(d.price), basis: BASIS_LABEL[d.paymentBasis] ?? d.paymentBasis, startsAt: iso(d.startsAt), endsAt, daysLeft: daysLeft(endsAt, today),
       status: d.status, billedVia: d.billedVia };
   });

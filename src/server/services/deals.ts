@@ -5,7 +5,7 @@ import Decimal from "decimal.js";
 import type { PrismaClient } from "@/generated/prisma/client";
 import {
   DealRuleError, calcAmount, checkInvoiceAmount, distribute, effectiveAmount, flatPerDay, flatPeriodDays, inGeoScope, isFlat, periodsOverlap,
-  revenueStateOf, statusAfterPayment, validateDeal, weightOf, type BillingPeriod, type DealInput, type PaymentBasis, type PeriodStatus,
+  placeKey, revenueStateOf, statusAfterPayment, validateDeal, weightOf, type BillingPeriod, type DealInput, type PaymentBasis, type PeriodStatus,
 } from "@/server/domain/deals";
 
 const d = (s: string) => new Date(`${s}T00:00:00Z`);
@@ -227,28 +227,43 @@ export async function correctPeriod(db: PrismaClient, periodId: string, input: E
 // ---------- deal terms ----------
 
 const TERM_FIELDS = ["title", "format", "paymentBasis", "price", "geoScope", "geoExclude", "startsAt", "endsAt", "billingPeriod",
-  "paymentTermsDays", "counterSource", "billedVia", "notes", "placementSlug"] as const;
+  "paymentTermsDays", "counterSource", "billedVia", "notes"] as const;
+
+/**
+ * The format of a deal follows the AdSpyglass zones mapped to its places on its sites: one
+ * format → that one; none or several → the explicit/previous value, else OTHER.
+ */
+async function formatOf(db: PrismaClient, places: { siteId: string; placementSlug: string }[], fallback: string | undefined): Promise<string> {
+  if (places.length) {
+    const zones = await db.zone.findMany({ where: { OR: places.map((p) => ({ siteId: p.siteId, placementSlug: p.placementSlug })) }, select: { format: true } });
+    const formats = [...new Set(zones.map((z) => z.format))];
+    if (formats.length === 1) return formats[0];
+  }
+  return fallback || "OTHER";
+}
 
 export async function saveDeal(db: PrismaClient, raw: DealInput, id?: string, reason?: string | null): Promise<string> {
   const i = validateDeal(raw);
   const known = await db.site.count({ where: { id: { in: i.siteIds } } });
   if (known !== i.siteIds.length) throw new DealRuleError("sites", "Сайт не найден", "siteIds");
-  if (i.placementSlug && !(await db.placement.findUnique({ where: { slug: i.placementSlug } }))) throw new DealRuleError("placement", "Формат не найден", "placementSlug");
+  const places = i.places ?? [];
+  const slugs = [...new Set(places.map((p) => p.placementSlug))];
+  if (slugs.length && (await db.placement.count({ where: { slug: { in: slugs } } })) !== slugs.length) throw new DealRuleError("place", "Место не найдено", "place");
   const advertiser = await db.advertiser.upsert({ where: { name: i.advertiser }, create: { name: i.advertiser }, update: {} });
+  const before = id ? await db.deal.findUniqueOrThrow({ where: { id } }) : null;
+  const format = await formatOf(db, places, i.format ?? before?.format);
   const data = {
-    title: i.title, advertiserId: advertiser.id, format: i.format as never, paymentBasis: i.paymentBasis, price: i.price, geoScope: i.geoScope,
+    title: i.title, advertiserId: advertiser.id, format: format as never, paymentBasis: i.paymentBasis, price: i.price, geoScope: i.geoScope,
     geoExclude: i.geoExclude, startsAt: d(i.startsAt), endsAt: i.endsAt ? d(i.endsAt) : null, billingPeriod: i.billingPeriod,
     paymentTermsDays: i.paymentTermsDays, counterSource: i.counterSource, billedVia: i.billedVia, notes: i.notes || null,
-    placementSlug: i.placementSlug || null,
   };
   const sites = i.siteIds.map((siteId) => ({ siteId, zoneId: i.zoneBySite?.[siteId] || null }));
-  if (!id) {
-    const deal = await db.deal.create({ data: { ...data, status: "ACTIVE", sites: { create: sites } } });
+  if (!id || !before) {
+    const deal = await db.deal.create({ data: { ...data, status: "ACTIVE", sites: { create: sites }, places: { create: places } } });
     await db.auditLog.create({ data: { entity: "Deal", entityId: deal.id, field: "created", after: `${i.paymentBasis} ${i.price}` } });
     await reforecast(db, deal.id);
     return deal.id;
   }
-  const before = await db.deal.findUniqueOrThrow({ where: { id } });
   const hasPeriods = (await db.dealPeriod.count({ where: { dealId: id, status: { not: "OPEN" } } })) > 0;
   const priceChanged = before.price.toString() !== new Decimal(i.price).toString() || before.paymentBasis !== i.paymentBasis;
   if (hasPeriods && priceChanged && !reason?.trim()) throw new DealRuleError("reason_required", "По дилу уже внесены периоды — укажите причину изменения условий", "reason");
@@ -256,6 +271,11 @@ export async function saveDeal(db: PrismaClient, raw: DealInput, id?: string, re
     await tx.deal.update({ where: { id }, data });
     await tx.dealSite.deleteMany({ where: { dealId: id } });
     await tx.dealSite.createMany({ data: sites.map((s) => ({ ...s, dealId: id })) });
+    const was = (await tx.dealPlace.findMany({ where: { dealId: id } })).map(placeKey).sort().join(",");
+    await tx.dealPlace.deleteMany({ where: { dealId: id } });
+    await tx.dealPlace.createMany({ data: places.map((p) => ({ ...p, dealId: id })) });
+    const now = places.map(placeKey).sort().join(",");
+    if (was !== now) await tx.auditLog.create({ data: { entity: "Deal", entityId: id, field: "places", before: was, after: now, reason: reason || null } });
     const norm = (v: unknown) => (v instanceof Date ? isoOf(v) : Array.isArray(v) ? v.join(",") : v == null ? "" : String(v));
     for (const f of TERM_FIELDS) {
       const a = norm((before as Record<string, unknown>)[f]), b = norm(f === "price" ? new Decimal(i.price) : (data as Record<string, unknown>)[f]);

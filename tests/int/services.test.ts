@@ -203,7 +203,7 @@ describe("deal forecast runs on save", () => {
 
   it("a flat deal saved today has forecast rows from its start up to today without waiting for the night", async () => {
     const { saveDeal, setDealStatus } = await import("@/server/services/deals");
-    const id = await saveDeal(db, { title: "Now", advertiser: "Acme", format: "BANNER", paymentBasis: "FLAT_PERIOD", price: "310", siteIds: ["s1"], geoScope: [], geoExclude: false,
+    const id = await saveDeal(db, { title: "Now", advertiser: "Acme", paymentBasis: "FLAT_PERIOD", price: "310", siteIds: ["s1"], geoScope: [], geoExclude: false,
       startsAt: monthAgo, endsAt: null, billingPeriod: "MONTH", paymentTermsDays: 30, counterSource: "MANUAL", billedVia: "DIRECT" } as never);
     const rows = await db.factFixDeal.findMany({ where: { dealId: id }, orderBy: { date: "asc" } });
     expect(rows).toHaveLength(21); // 20 days ago … today inclusive

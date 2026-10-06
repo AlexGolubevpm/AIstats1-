@@ -161,11 +161,22 @@ export function checkInvoiceAmount(calculated: Decimal.Value, invoiced: Decimal.
   }
 }
 
+/** An ad place on a site the deal occupies; `siteId|placementSlug` in forms. */
+export interface DealPlaceRef { siteId: string; placementSlug: string }
+export const placeKey = (p: DealPlaceRef) => `${p.siteId}|${p.placementSlug}`;
+export function parsePlaceKey(k: string): DealPlaceRef | null {
+  const i = k.indexOf("|");
+  return i > 0 && i < k.length - 1 ? { siteId: k.slice(0, i), placementSlug: k.slice(i + 1) } : null;
+}
+
 export interface DealInput {
-  title: string; advertiser: string; format: string; paymentBasis: PaymentBasis; price: string; siteIds: string[];
+  title: string; advertiser: string; paymentBasis: PaymentBasis; price: string; siteIds: string[];
   geoScope: string[]; geoExclude: boolean; startsAt: string; endsAt: string | null; billingPeriod: BillingPeriod; paymentTermsDays: number;
   counterSource: "ASG_ZONE" | "METRIKA" | "MANUAL"; billedVia: "DIRECT" | "VIA_ASG"; notes?: string | null; zoneBySite?: Record<string, string | null>;
-  placementSlug?: string | null; // the ad place the deal takes on its sites (inventory)
+  /** Places on the deal's sites; the format of the deal follows the zones mapped to them (ADR 0009). */
+  places?: DealPlaceRef[];
+  /** Legacy: set only by older callers; new deals derive it from their places. */
+  format?: string;
 }
 
 const ISO = /^\d{4}-\d{2}-\d{2}$/;
@@ -184,7 +195,10 @@ export function validateDeal(i: DealInput): DealInput {
   if (!Number.isInteger(i.paymentTermsDays) || i.paymentTermsDays < 0 || i.paymentTermsDays > 180) throw new DealRuleError("terms", "Срок оплаты — от 0 до 180 дней", "paymentTermsDays");
   const bad = i.geoScope.find((c) => !/^[A-Z]{2}$/.test(c));
   if (bad) throw new DealRuleError("geo", `Неизвестный код страны: ${bad}`, "geoScope");
-  return { ...i, title: i.title.trim(), advertiser: i.advertiser.trim(), price: price.toString() };
+  const stray = (i.places ?? []).find((p) => !i.siteIds.includes(p.siteId));
+  if (stray) throw new DealRuleError("place", "Место выбрано на сайте, которого нет в диле", "place");
+  const places = [...new Map((i.places ?? []).map((p) => [placeKey(p), p])).values()];
+  return { ...i, title: i.title.trim(), advertiser: i.advertiser.trim(), price: price.toString(), places };
 }
 
 /** Parses "JP, us kr" into ISO codes; tier shortcuts are expanded by the caller. */

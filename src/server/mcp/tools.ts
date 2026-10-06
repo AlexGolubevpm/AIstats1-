@@ -121,7 +121,7 @@ export async function getDeals(a: { status?: string; advertiser?: string; date_f
     where: { supersededById: null, status: { in: ["INVOICED", "PARTIAL", "DISPUTED"] } } });
   const rest = new Map(outstanding.map((o) => [o.dealId, Number(o._sum.amountInvoiced ?? 0) - Number(o._sum.amountPaid ?? 0)]));
   return list.filter((d) => !a.advertiser || d.advertiser.toLowerCase().includes(a.advertiser.toLowerCase())).map((d) => ({
-    advertiser: d.advertiser, deal: d.title, status: d.status, format: d.format, payment_basis: d.basis, price: d.price, billed_via: d.billedVia, sites: d.sites,
+    advertiser: d.advertiser, deal: d.title, status: d.status, format: d.format, places: d.places, payment_basis: d.basis, price: d.price, billed_via: d.billedVia, sites: d.sites,
     forecast: d.forecast, invoiced: d.invoiced, confirmed: d.confirmed, outstanding: rest.get(d.id) ?? 0, imps_multiplier: d.multiplier, period: p,
   }));
 }
