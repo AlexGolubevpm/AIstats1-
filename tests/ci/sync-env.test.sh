@@ -5,7 +5,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 b64() { printf '%s' "$1" | base64 -w0; }
-run() { TUBESTAT_DIR="$tmp" RESTART=0 bash scripts/sync-env.sh; }
+printf '#!/usr/bin/env bash\ncat >> "%s/psql.log"\n' "$tmp" > "$tmp/psql"; chmod +x "$tmp/psql"
+run() { TUBESTAT_DIR="$tmp" RESTART=0 PSQL="$tmp/psql" bash scripts/sync-env.sh; }
 fail=0
 check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
 
@@ -27,6 +28,15 @@ pw=$(grep "^APP_PASSWORD=" "$tmp/.env")
 out=$(printf 'ASG_AUTH_TOKEN %s\n' "$(b64 tok-SECRET-123)" | run)
 check "password kept on re-run" '[ "$(grep "^APP_PASSWORD=" "$tmp/.env")" = "$pw" ]'
 check "re-run is a no-op"       '[[ "$out" == *"ASG_AUTH_TOKEN: unchanged"* && "$out" == *"nothing changed"* ]]'
+check "no password reset so far" '[ ! -e "$tmp/psql.log" ]'
+
+out=$(printf 'APP_PASSWORD %s\n' "$(b64 NewPass-SECRET-9)" | run)
+check "password set from secret"  '[ "$(grep "^APP_PASSWORD=" "$tmp/.env")" = "APP_PASSWORD=NewPass-SECRET-9" ] && [[ "$out" != *SECRET* ]]'
+check "stored hash and sessions dropped" 'grep -q "password_hash" "$tmp/psql.log" && grep -q "\"Session\"" "$tmp/psql.log" && [[ "$out" == *"applies at the next login"* ]]'
+out=$(printf 'APP_PASSWORD %s\n' "$(b64 NewPass-SECRET-9)" | run)
+check "same password: no reset"   '[ "$(grep -c password_hash "$tmp/psql.log")" = 1 ] && [[ "$out" == *"APP_PASSWORD: unchanged"* ]]'
+out=$(PSQL=false TUBESTAT_DIR="$tmp" RESTART=0 bash scripts/sync-env.sh <<< "APP_PASSWORD $(b64 Other-SECRET-10)")
+check "db unreachable: still written" '[ "$(grep "^APP_PASSWORD=" "$tmp/.env")" = "APP_PASSWORD=Other-SECRET-10" ] && [[ "$out" == *"could not reset"* && "$out" != *SECRET* ]]'
 
 printf 'APP_DOMAIN=stats.example.test\nCOOKIE_SECURE=1\nAPP_PASSWORD=x\nCOMPOSE_PROFILES=foo\n' > "$tmp/.env"
 printf '' | run >/dev/null

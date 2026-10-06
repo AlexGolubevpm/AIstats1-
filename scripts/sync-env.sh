@@ -3,13 +3,18 @@
 # `KEY base64(value)` lines on stdin and writes them into /opt/tubestat/.env, then makes
 # sure the stack can start: APP_PASSWORD (generated once if missing), COMPOSE_PROFILES=worker,
 # and no COOKIE_SECURE=1 while the site is served over plain HTTP. Never prints a value.
-# Env: TUBESTAT_DIR (default /opt/tubestat), RESTART=0 to skip restarting the stack.
+# A provided APP_PASSWORD replaces the login password: the hash stored in the database and all
+# sessions are dropped, so the next login re-initialises from the new value.
+# Env: TUBESTAT_DIR (default /opt/tubestat), RESTART=0 to skip restarting the stack,
+# PSQL (command that reads SQL on stdin; default: psql inside the postgres container).
 set -euo pipefail
 cd "${TUBESTAT_DIR:-/opt/tubestat}"
 umask 077
 touch .env && chmod 600 .env
-ALLOWED='^(ASG_AUTH_EMAIL|ASG_AUTH_TOKEN|METRIKA_TOKEN)$'
+ALLOWED='^(ASG_AUTH_EMAIL|ASG_AUTH_TOKEN|METRIKA_TOKEN|APP_PASSWORD)$'
+PSQL="${PSQL:-docker compose exec -T postgres psql -U tubestat -d tubestat -v ON_ERROR_STOP=1 -q}"
 changed=0
+password_reset=0
 
 get_key() { grep "^$1=" .env | head -n1 | cut -d= -f2- || true; }
 del_key() { local t; t=$(mktemp .env.XXXXXX); grep -v "^$1=" .env > "$t" || true; mv "$t" .env; }
@@ -21,8 +26,18 @@ while read -r key b64 || [ -n "${key:-}" ]; do
   [ -n "${b64:-}" ] || { echo "$key: empty, left as is"; continue; }
   val=$(printf '%s' "$b64" | base64 -d 2>/dev/null | tr -d '\r\n') || { echo "$key: not valid base64, left as is"; continue; }
   if [[ -z "$val" || "$val" =~ [[:space:]\'\"#] ]]; then echo "$key: unsupported characters, left as is"; continue; fi
-  if [ "$(get_key "$key")" = "$val" ]; then echo "$key: unchanged"; else set_key "$key" "$val"; echo "$key: updated"; fi
+  if [ "$(get_key "$key")" = "$val" ]; then echo "$key: unchanged"; else set_key "$key" "$val"; echo "$key: updated"; [ "$key" = APP_PASSWORD ] && password_reset=1; fi
 done
+
+if [ "$password_reset" = 1 ]; then
+  # The app keeps a bcrypt hash of the first APP_PASSWORD it saw; drop it (and every session)
+  # so the new value applies at the next login. Tables may not exist before the first deploy.
+  if printf '%s\n' "DELETE FROM \"AppSetting\" WHERE key = 'password_hash';" "DELETE FROM \"Session\";" | $PSQL >/dev/null 2>&1; then
+    echo "APP_PASSWORD: stored hash and sessions dropped, the new password applies at the next login"
+  else
+    echo "APP_PASSWORD: could not reset the stored hash (database not reachable); the new value applies after the first deploy"
+  fi
+fi
 
 if [ -z "$(get_key APP_PASSWORD)" ]; then
   set_key APP_PASSWORD "$(head -c 24 /dev/urandom | base64 | tr -d '/+=\n' | head -c 24)"

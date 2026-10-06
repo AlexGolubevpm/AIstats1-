@@ -9,8 +9,11 @@ export function LoginForm({ next }: { next: string }) {
   return (
     <form action={action} className="flex flex-col gap-4">
       <input type="hidden" name="next" value={next} />
+      <Field label="Логин">
+        <Input type="text" name="login" autoFocus required autoComplete="username" autoCapitalize="none" spellCheck={false} />
+      </Field>
       <Field label="Пароль" error={state?.error}>
-        <Input type="password" name="password" autoFocus required autoComplete="current-password" />
+        <Input type="password" name="password" required autoComplete="current-password" />
       </Field>
       <Button variant="primary" disabled={pending}>{pending ? "Входим…" : "Войти"}</Button>
     </form>

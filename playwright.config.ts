@@ -4,6 +4,7 @@ import { defineConfig } from "@playwright/test";
 const PORT = Number(process.env.E2E_PORT ?? 3300);
 const base = process.env.TEST_DATABASE_URL ?? "postgresql://postgres@127.0.0.1:55432/postgres";
 export const E2E_DATABASE_URL = base.replace(/\/[^/?]+(\?|$)/, "/tubestat_e2e$1");
+export const E2E_LOGIN = "Admin";
 export const E2E_PASSWORD = "e2e-password-123";
 
 export default defineConfig({
@@ -26,6 +27,6 @@ export default defineConfig({
     url: `http://127.0.0.1:${PORT}/api/health`,
     reuseExistingServer: false,
     timeout: 120_000,
-    env: { DATABASE_URL: E2E_DATABASE_URL, APP_PASSWORD: E2E_PASSWORD, REDIS_URL: "redis://127.0.0.1:1", NODE_ENV: "production" },
+    env: { DATABASE_URL: E2E_DATABASE_URL, APP_LOGIN: E2E_LOGIN, APP_PASSWORD: E2E_PASSWORD, REDIS_URL: "redis://127.0.0.1:1", NODE_ENV: "production" },
   },
 });

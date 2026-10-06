@@ -6,12 +6,21 @@ const db = testDb();
 beforeEach(async () => { await resetDb(); resetLoginGuard(); });
 
 describe("auth", () => {
+  it("login name is checked case-insensitively and a wrong name costs an attempt", async () => {
+    const env = { login: "Admin", password: "pw-1234567" };
+    expect((await login(db, { login: "admin", password: "pw-1234567" }, "9.9.9.9", env)).ok).toBe(true);
+    expect((await login(db, { login: " ADMIN ", password: "pw-1234567" }, "9.9.9.9", env)).ok).toBe(true);
+    expect(await login(db, { login: "root", password: "pw-1234567" }, "9.9.9.9", env)).toMatchObject({ ok: false, error: "Неверный логин или пароль" });
+    for (let i = 0; i < 4; i++) await login(db, { login: "root", password: "pw-1234567" }, "9.9.9.9", env);
+    expect(await login(db, { login: "Admin", password: "pw-1234567" }, "9.9.9.9", env)).toMatchObject({ ok: false, error: expect.stringContaining("15 минут") });
+  });
+
   it("login requires a configured password", async () => {
-    expect(await login(db, "x", "1.1.1.1", "")).toMatchObject({ ok: false, error: expect.stringContaining("APP_PASSWORD") });
+    expect(await login(db, { login: "Admin", password: "x" }, "1.1.1.1", { login: "Admin", password: "" })).toMatchObject({ ok: false, error: expect.stringContaining("APP_PASSWORD") });
   });
 
   it("sessions: login, validate, logout", async () => {
-    const r = await login(db, "correct horse", "1.1.1.1", "correct horse");
+    const r = await login(db, { login: "Admin", password: "correct horse" }, "1.1.1.1", { login: "Admin", password: "correct horse" });
     expect(r.ok).toBe(true);
     const token = (r as { token: string }).token;
     expect(await validateSession(db, token)).toBe(true);
@@ -22,21 +31,21 @@ describe("auth", () => {
   });
 
   it("locks an IP after 5 failures", async () => {
-    for (let i = 0; i < 5; i++) expect((await login(db, "bad", "2.2.2.2", "pw-1234567")).ok).toBe(false);
-    expect(await login(db, "pw-1234567", "2.2.2.2", "pw-1234567")).toMatchObject({ ok: false, error: expect.stringContaining("15 минут") });
-    expect((await login(db, "pw-1234567", "3.3.3.3", "pw-1234567")).ok).toBe(true);
+    for (let i = 0; i < 5; i++) expect((await login(db, { login: "Admin", password: "bad" }, "2.2.2.2", { login: "Admin", password: "pw-1234567" })).ok).toBe(false);
+    expect(await login(db, { login: "Admin", password: "pw-1234567" }, "2.2.2.2", { login: "Admin", password: "pw-1234567" })).toMatchObject({ ok: false, error: expect.stringContaining("15 минут") });
+    expect((await login(db, { login: "Admin", password: "pw-1234567" }, "3.3.3.3", { login: "Admin", password: "pw-1234567" })).ok).toBe(true);
   });
 
   it("password change drops other sessions; env value is only the initial one", async () => {
-    const a = (await login(db, "first-pass-1", "1", "first-pass-1")) as { token: string };
-    const b = (await login(db, "first-pass-1", "1", "first-pass-1")) as { token: string };
+    const a = (await login(db, { login: "Admin", password: "first-pass-1" }, "1", { login: "Admin", password: "first-pass-1" })) as { token: string };
+    const b = (await login(db, { login: "Admin", password: "first-pass-1" }, "1", { login: "Admin", password: "first-pass-1" })) as { token: string };
     expect((await changePassword(db, "wrong", "second-pass-2", a.token, "first-pass-1")).ok).toBe(false);
     expect((await changePassword(db, "first-pass-1", "short", a.token, "first-pass-1")).ok).toBe(false);
     expect((await changePassword(db, "first-pass-1", "second-pass-2", a.token, "first-pass-1")).ok).toBe(true);
     expect(await validateSession(db, a.token)).toBe(true);
     expect(await validateSession(db, b.token)).toBe(false);
-    expect((await login(db, "first-pass-1", "1", "first-pass-1")).ok).toBe(false);
-    expect((await login(db, "second-pass-2", "1", "first-pass-1")).ok).toBe(true);
+    expect((await login(db, { login: "Admin", password: "first-pass-1" }, "1", { login: "Admin", password: "first-pass-1" })).ok).toBe(false);
+    expect((await login(db, { login: "Admin", password: "second-pass-2" }, "1", { login: "Admin", password: "first-pass-1" })).ok).toBe(true);
   });
 
   it("MCP tokens: only the hash is stored; env token also accepted", async () => {

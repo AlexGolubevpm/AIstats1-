@@ -2,6 +2,7 @@ import { headers } from "next/headers";
 import { Section } from "@/components/ui/card";
 import { fmtAgo, fmtDate } from "@/lib/format";
 import { mcpTokenInfo } from "@/server/auth";
+import { config } from "@/server/config";
 import { db } from "@/server/db";
 import { McpToken, PasswordForm } from "./client";
 
@@ -11,7 +12,7 @@ export default async function Access() {
   const proto = h.get("x-forwarded-proto") ?? "https";
   return (
     <>
-      <Section title="Пароль приложения" sub="После смены все сессии, кроме текущей, сбрасываются"><PasswordForm /></Section>
+      <Section title="Пароль приложения" sub={`Логин: ${config().appLogin} (задаётся APP_LOGIN на сервере). После смены пароля все сессии, кроме текущей, сбрасываются`}><PasswordForm /></Section>
       <Section title="MCP-токен" sub={info ? `Выпущен ${fmtDate(info.createdAt)} · последнее использование: ${info.lastUsedAt ? fmtAgo(info.lastUsedAt) : "не использовался"}` : "Токен не выпущен"}>
         <McpToken exists={Boolean(info)} url={`${proto}://${host}/api/mcp`} />
       </Section>
