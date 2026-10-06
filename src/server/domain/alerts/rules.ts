@@ -219,7 +219,7 @@ async function ingestDown({ db, configuredSources }: RuleContext): Promise<Candi
 async function dealEnding({ db, asOf }: RuleContext): Promise<Candidate[]> {
   const deals = await db.deal.findMany({
     where: { status: { in: ["ACTIVE", "PAUSED"] }, endsAt: { not: null, lte: day(addDays(asOf, 7)) } },
-    include: { advertiser: true, placement: true, sites: true },
+    include: { advertiser: true, places: { include: { placement: true } }, sites: true },
   });
   const out: Candidate[] = [];
   for (const d of deals) {
@@ -228,7 +228,8 @@ async function dealEnding({ db, asOf }: RuleContext): Promise<Candidate[]> {
     const stage = daysLeft < 0 ? 0 : daysLeft <= 1 ? 1 : daysLeft <= 3 ? 3 : 7;
     const recent = await db.factFixDeal.aggregate({ _sum: { revenue: true }, where: { dealId: d.id, date: { gte: day(addDays(asOf, -30)), lt: day(asOf) } } });
     const risk = n(recent._sum.revenue);
-    const where = `${d.placement ? `${d.placement.title}, ` : ""}${d.sites.length} ${d.sites.length === 1 ? "сайт" : "сайтов"}`;
+    const placeTitles = [...new Set(d.places.map((p) => p.placement.title))].sort();
+    const where = `${placeTitles.length ? `${placeTitles.join(", ")}, ` : ""}${d.sites.length} ${d.sites.length === 1 ? "сайт" : "сайтов"}`;
     const terms = `${d.advertiser.name}, $${d.price.toString()} ${BASIS_WORD[d.paymentBasis] ?? d.paymentBasis}`;
     const ended = stage === 0;
     out.push({
@@ -238,7 +239,7 @@ async function dealEnding({ db, asOf }: RuleContext): Promise<Candidate[]> {
         : `Фикс-дил «${d.title}» заканчивается через ${daysLeft} дн.`,
       message: `${terms} · ${where} · до ${endsAt}. ${ended ? "Продлить (новая дата конца) или завершить дил." : "Договориться о продлении или освободить место."}${risk > 0 ? ` За 30 дней принёс ${money(risk)}.` : ""}`,
       link: `/deals/${d.id}`, siteId: null, moneyAtRisk: risk,
-      payload: { dealId: d.id, stage, daysLeft, endsAt, advertiser: d.advertiser.name, placement: d.placement?.title ?? null },
+      payload: { dealId: d.id, stage, daysLeft, endsAt, advertiser: d.advertiser.name, placement: placeTitles.join(", ") || null },
     });
   }
   return out;

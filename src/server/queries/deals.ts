@@ -32,11 +32,11 @@ async function factSums(p: Period | null) {
 export async function dealsList(p: Period, status?: string) {
   const deals = await db.deal.findMany({
     where: status === "archive" ? { status: "ENDED" } : status ? { status: status as never } : { status: { not: "ENDED" } },
-    include: { advertiser: true, sites: { include: { site: true } } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }],
+    include: { advertiser: true, sites: { include: { site: true } }, places: { include: { placement: true } } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }],
   });
   const sums = await factSums(p);
   return deals.map((d) => ({
-    id: d.id, title: d.title, advertiser: d.advertiser.name, format: d.format, basis: d.paymentBasis, price: Number(d.price), billedVia: d.billedVia,
+    id: d.id, title: d.title, advertiser: d.advertiser.name, format: d.format, places: [...new Set(d.places.map((x) => x.placement.title))].sort(), basis: d.paymentBasis, price: Number(d.price), billedVia: d.billedVia,
     startsAt: iso(d.startsAt), endsAt: d.endsAt ? iso(d.endsAt) : null,
     sites: d.sites.map((s) => s.site.domain), status: d.status, ...(sums.get(d.id) ?? { forecast: 0, invoiced: 0, confirmed: 0, multiplier: null }),
   }));
@@ -85,7 +85,7 @@ export async function paymentsRegister(today = iso(new Date())) {
 }
 
 export async function dealDetail(id: string) {
-  const deal = await db.deal.findUnique({ where: { id }, include: { advertiser: true, sites: { include: { site: true, zone: true } } } });
+  const deal = await db.deal.findUnique({ where: { id }, include: { advertiser: true, sites: { include: { site: true, zone: true } }, places: { include: { placement: true } } } });
   if (!deal) return null;
   const [periods, history, daily, sums] = await Promise.all([
     db.dealPeriod.findMany({ where: { dealId: id }, orderBy: [{ from: "desc" }, { version: "desc" }] }),

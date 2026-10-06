@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PLACEMENTS, daysLeft, matchPlacement, placementSlug, resolvePlace, type PlaceDeal } from "@/server/domain/inventory";
+import { DEFAULT_PLACEMENTS, daysLeft, matchPlacement, placementSlug, resolvePlace, type PlaceDeal, cellText } from "@/server/domain/inventory";
 
 describe("inventory", () => {
   it("the owner's ten places, with stable slugs", () => {
@@ -29,6 +29,20 @@ describe("inventory", () => {
     expect(resolvePlace({ deals: [], manual: { use: "CPA", note: "offer X" }, zones })).toMatchObject({ use: "CPA", by: "manual", label: "offer X" });
     expect(resolvePlace({ deals: [], zones })).toMatchObject({ use: "ROTATION", by: "zone" });
     expect(resolvePlace({ deals: [], zones: [] })).toMatchObject({ use: "FREE", by: "default" });
+    const net = { id: "n", slug: "exo", title: "ExoClick" };
+    expect(resolvePlace({ deals: [], manual: { use: "OWN_DEAL", note: null, network: net }, zones })).toMatchObject({ use: "OWN_DEAL", by: "manual", label: "ExoClick", network: net });
+    expect(resolvePlace({ deals: [], manual: { use: "ROTATION", note: "by hand", network: net }, zones }).label).toBe("by hand");
+  });
+
+  it("cell text: money, then one advertiser or a count of deals, then the network, then the state", () => {
+    const short = { ROTATION: "ASG", OWN_DEAL: "Own", FIX: "Фикс", CPA: "CPA", FREE: "свободно", NONE: "—" } as const;
+    const d = (id: string): PlaceDeal => ({ id, title: "T", advertiser: `Adv ${id}`, price: "1", basis: "", startsAt: "2026-09-01", endsAt: null, billedVia: "DIRECT" });
+    const cell = resolvePlace({ deals: [d("1")], zones: [] });
+    expect(cellText(cell, "$5", short)).toBe("$5");
+    expect(cellText(cell, null, short)).toBe("Adv 1");
+    expect(cellText(resolvePlace({ deals: [d("1"), d("2")], zones: [] }), null, short)).toBe("2 фикс-дила");
+    expect(cellText(resolvePlace({ deals: [], manual: { use: "ROTATION", note: null, network: { id: "n", slug: "x", title: "Net" } }, zones: [] }), null, short)).toBe("Net");
+    expect(cellText(resolvePlace({ deals: [], zones: [] }), null, short)).toBe("свободно");
   });
 
   it("days left: whole days, null when open-ended, negative after the end", () => {

@@ -4,8 +4,10 @@
 export type PlaceUse = "ROTATION" | "OWN_DEAL" | "FIX" | "CPA" | "FREE" | "NONE";
 /** A deal as the grid shows it: who, for how much, from when to when. */
 export interface PlaceDeal { id: string; title: string; advertiser: string; price: string; basis: string; startsAt: string; endsAt: string | null; billedVia: "DIRECT" | "VIA_ASG" }
+/** The ad network the owner says buys the place (a note, not an ADOK fact). */
+export interface PlaceNetwork { id: string; slug: string; title: string }
 export interface PlaceCell {
-  use: PlaceUse; by: "deal" | "manual" | "zone" | "default"; label: string | null; deals: PlaceDeal[];
+  use: PlaceUse; by: "deal" | "manual" | "zone" | "default"; label: string | null; deals: PlaceDeal[]; network: PlaceNetwork | null;
   /** Period revenue of the place on the site: zones mapped to it + direct fix deals with it. */
   revenue: number; imps: number;
 }
@@ -54,16 +56,26 @@ export function matchPlacement(zoneName: string, places: { slug: string; title: 
  */
 export function resolvePlace(i: {
   deals: PlaceDeal[];
-  manual?: { use: PlaceUse; note: string | null } | null;
+  manual?: { use: PlaceUse; note: string | null; network?: PlaceNetwork | null } | null;
   zones: { name: string }[];
   revenue?: number; imps?: number;
 }): PlaceCell {
   const money = { revenue: i.revenue ?? 0, imps: i.imps ?? 0 };
+  const network = i.manual?.network ?? null;
   if (i.deals.length) {
     const fix = i.deals.filter((d) => d.billedVia === "DIRECT");
-    return { use: fix.length ? "FIX" : "OWN_DEAL", by: "deal", label: i.deals.map((d) => `${d.advertiser} — ${d.title}`).join(", "), deals: i.deals, ...money };
+    return { use: fix.length ? "FIX" : "OWN_DEAL", by: "deal", label: i.deals.map((d) => `${d.advertiser} — ${d.title}`).join(", "), deals: i.deals, network, ...money };
   }
-  if (i.manual) return { use: i.manual.use, by: "manual", label: i.manual.note, deals: [], ...money };
-  if (i.zones.length) return { use: "ROTATION", by: "zone", label: i.zones.map((z) => z.name).join(", "), deals: [], ...money };
-  return { use: "FREE", by: "default", label: null, deals: [], ...money };
+  if (i.manual) return { use: i.manual.use, by: "manual", label: i.manual.note || network?.title || null, deals: [], network, ...money };
+  if (i.zones.length) return { use: "ROTATION", by: "zone", label: i.zones.map((z) => z.name).join(", "), deals: [], network: null, ...money };
+  return { use: "FREE", by: "default", label: null, deals: [], network: null, ...money };
+}
+
+/** Cell text in the grid: money if any, else who is there (one deal — advertiser, more — a count), else the network, else the state. */
+export function cellText(c: PlaceCell, moneyText: string | null, short: Record<PlaceUse, string>): string {
+  if (moneyText) return moneyText;
+  if (c.deals.length === 1) return c.deals[0].advertiser;
+  if (c.deals.length > 1) return `${c.deals.length} фикс-дила`;
+  if (c.network) return c.network.title;
+  return short[c.use];
 }

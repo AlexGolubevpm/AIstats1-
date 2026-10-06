@@ -34,10 +34,38 @@ export async function setZonePlacement(db: PrismaClient, zoneId: string, slug: s
 
 const USES: PlaceUse[] = ["ROTATION", "OWN_DEAL", "FIX", "CPA", "FREE", "NONE"];
 
-/** Sets the place's state on a site by hand; "AUTO" removes it (deals and zones decide again). */
-export async function setPlacementUse(db: PrismaClient, siteId: string, slug: string, use: string, note?: string | null): Promise<void> {
-  if (use === "AUTO") { await db.sitePlacement.deleteMany({ where: { siteId, placementSlug: slug } }); return; }
-  if (!USES.includes(use as PlaceUse)) throw new RuleError("use", "Неизвестное состояние", "use");
-  await db.sitePlacement.upsert({ where: { siteId_placementSlug: { siteId, placementSlug: slug } },
-    create: { siteId, placementSlug: slug, use: use as PlaceUse, note: note?.trim() || null }, update: { use: use as PlaceUse, note: note?.trim() || null } });
+/**
+ * Sets the place's state on a site by hand; "AUTO" removes it (deals and zones decide again).
+ * `networkId` names the ad network that buys the place; with a network and no explicit state the
+ * place counts as an own deal inside AdSpyglass (DIRECT networks) or rotation (mediated ones).
+ */
+export async function setPlacementUse(db: PrismaClient, siteId: string, slug: string, use: string, note?: string | null, networkId?: string | null): Promise<void> {
+  if (use === "AUTO" && !networkId) { await db.sitePlacement.deleteMany({ where: { siteId, placementSlug: slug } }); return; }
+  const network = networkId ? await db.network.findUnique({ where: { id: networkId } }) : null;
+  if (networkId && !network) throw new RuleError("network", "Сетка не найдена", "networkId");
+  const resolved = use === "AUTO" ? (network!.kind === "DIRECT" ? "OWN_DEAL" : "ROTATION") : use;
+  if (!USES.includes(resolved as PlaceUse)) throw new RuleError("use", "Неизвестное состояние", "use");
+  const data = { use: resolved as PlaceUse, note: note?.trim() || null, networkId: network?.id ?? null };
+  await db.sitePlacement.upsert({ where: { siteId_placementSlug: { siteId, placementSlug: slug } }, create: { siteId, placementSlug: slug, ...data }, update: data });
+}
+
+/** Puts deals on a place of a site (several deals may share a cell, e.g. split by geo tier). A deal not yet on the site joins it. */
+export async function attachDealPlaces(db: PrismaClient, siteId: string, slug: string, dealIds: string[]): Promise<number> {
+  const ids = [...new Set(dealIds.filter(Boolean))];
+  if (!ids.length) throw new RuleError("deals", "Выберите хотя бы один дил", "dealIds");
+  if (!(await db.placement.findUnique({ where: { slug } }))) throw new RuleError("placement", "Место не найдено", "slug");
+  if (!(await db.site.findUnique({ where: { id: siteId } }))) throw new RuleError("site", "Сайт не найден", "siteId");
+  if ((await db.deal.count({ where: { id: { in: ids } } })) !== ids.length) throw new RuleError("deals", "Дил не найден", "dealIds");
+  await db.$transaction(async (tx) => {
+    for (const dealId of ids) {
+      await tx.dealSite.upsert({ where: { dealId_siteId: { dealId, siteId } }, create: { dealId, siteId }, update: {} });
+      await tx.dealPlace.upsert({ where: { dealId_siteId_placementSlug: { dealId, siteId, placementSlug: slug } }, create: { dealId, siteId, placementSlug: slug }, update: {} });
+    }
+  });
+  return ids.length;
+}
+
+/** Takes a deal off a place of a site; the deal keeps the site. */
+export async function detachDealPlace(db: PrismaClient, siteId: string, slug: string, dealId: string): Promise<void> {
+  await db.dealPlace.deleteMany({ where: { dealId, siteId, placementSlug: slug } });
 }

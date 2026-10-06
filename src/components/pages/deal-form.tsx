@@ -1,6 +1,6 @@
 "use client";
 // New deal / edit terms. "За 1000 загрузок" is the default: the only model where we own the denominator.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ActionForm, FormField } from "@/components/forms/action-form";
 import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/input";
@@ -9,19 +9,31 @@ import { saveDealAction } from "@/server/actions/deals";
 
 export interface DealFormSite { id: string; domain: string; zones: { id: string; name: string }[] }
 export interface DealFormValues {
-  id?: string; title?: string; advertiser?: string; format?: string; paymentBasis?: string; price?: string; siteIds?: string[]; zoneBySite?: Record<string, string | null>;
+  id?: string; title?: string; advertiser?: string; paymentBasis?: string; price?: string; siteIds?: string[]; zoneBySite?: Record<string, string | null>;
   geoScope?: string; geoExclude?: boolean; startsAt?: string; endsAt?: string | null; billingPeriod?: string; paymentTermsDays?: number;
-  counterSource?: string; billedVia?: string; notes?: string | null; hasPeriods?: boolean; placementSlug?: string | null;
+  counterSource?: string; billedVia?: string; notes?: string | null; hasPeriods?: boolean;
+  /** Places on sites as `siteId|placementSlug`. */
+  places?: string[];
 }
-
-const FORMATS = [["POPUNDER", "Popunder"], ["BANNER", "Баннер"], ["NATIVE", "Нативка"], ["SLIDER", "Слайдер"], ["OUTSTREAM", "Outstream"], ["INVIDEO", "In-video"], ["INPAGEPUSH", "In-page push"], ["OTHER", "Другое"]];
 const BASIS = [["PER_1000_LOADS", "За 1000 загрузок"], ["CPM_ADVERTISER", "CPM по счётчику рекламодателя"], ["CPM_OWN", "CPM по нашему счётчику"], ["FLAT_DAILY", "Флэт в сутки"], ["FLAT_PERIOD", "Флэт за период"]];
 
-export function DealFormButton({ sites, advertisers, placements = [], values = {}, label, variant = "primary" }: {
+export function DealFormButton({ sites, advertisers, placements = [], values = {}, label, variant = "primary", autoOpen = false }: {
   sites: DealFormSite[]; advertisers: string[]; placements?: { slug: string; title: string }[]; values?: DealFormValues; label: string; variant?: "primary" | "secondary";
+  /** Opens the form at once (a link from the Formats grid with a place pre-selected). */
+  autoOpen?: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const [picked, setPicked] = useState<Set<string>>(new Set(values.siteIds ?? []));
+  useEffect(() => { if (autoOpen) setOpen(true); }, [autoOpen]);
+  const [picked, setPicked] = useState<Set<string>>(new Set([...(values.siteIds ?? []), ...(values.places ?? []).map((k) => k.split("|")[0])]));
+  const [places, setPlaces] = useState<Set<string>>(new Set(values.places ?? []));
+  const togglePlace = (key: string, on: boolean) => {
+    const n = new Set(places); on ? n.add(key) : n.delete(key); setPlaces(n);
+    if (on) { const s = new Set(picked); s.add(key.split("|")[0]); setPicked(s); }
+  };
+  const toggleSite = (id: string, on: boolean) => {
+    const s = new Set(picked); on ? s.add(id) : s.delete(id); setPicked(s);
+    if (!on) setPlaces(new Set([...places].filter((k) => !k.startsWith(`${id}|`))));
+  };
   const [q, setQ] = useState("");
   const [basis, setBasis] = useState(values.paymentBasis ?? "PER_1000_LOADS");
   const edit = Boolean(values.id);
@@ -38,12 +50,6 @@ export function DealFormButton({ sites, advertisers, placements = [], values = {
             </FormField>
             <datalist id="advertisers">{advertisers.map((a) => <option key={a} value={a} />)}</datalist>
             <FormField name="title" label="Название"><Input name="title" defaultValue={values.title} required placeholder="Спонсорский баннер в шапке" /></FormField>
-            <FormField name="format" label="Формат">
-              <Select name="format" defaultValue={values.format ?? "BANNER"}>{FORMATS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</Select>
-            </FormField>
-            <FormField name="placementSlug" label="Место на сайте" hint="Займёт это место во вкладке «Форматы»">
-              <Select name="placementSlug" defaultValue={values.placementSlug ?? ""}><option value="">Не указано</option>{placements.map((p) => <option key={p.slug} value={p.slug}>{p.title}</option>)}</Select>
-            </FormField>
             <FormField name="billedVia" label="Как платит" hint="Через AdSpyglass — выручка уже в own_deals, не задваиваем">
               <Select name="billedVia" defaultValue={values.billedVia ?? "DIRECT"}><option value="DIRECT">Напрямую нам</option><option value="VIA_ASG">Через AdSpyglass</option></Select>
             </FormField>
@@ -55,19 +61,34 @@ export function DealFormButton({ sites, advertisers, placements = [], values = {
             </FormField>
           </div>
 
-          <FormField name="siteIds" label={`Сайты · выбрано ${picked.size}`}>
+          <FormField name="place" label={`Места на сайтах · сайтов ${picked.size}, мест ${places.size}`}
+            hint="Отметьте места, которые занимает дил; они закрасятся во вкладке «Форматы». Сайт без мест — дил считается, но места не занимает">
             <div className="rounded-lg border border-border">
               <Input placeholder="Поиск по домену" value={q} onChange={(e) => setQ(e.target.value)} className="rounded-b-none border-0 border-b" />
-              <div className="max-h-56 overflow-y-auto p-1">
+              <div className="max-h-80 overflow-y-auto p-1">
                 {sites.filter((s) => s.domain.includes(q.toLowerCase()) || picked.has(s.id)).map((s) => (
-                  <div key={s.id} className="flex items-center gap-2 rounded px-2 py-1 hover:bg-surface-hover">
-                    <input type="checkbox" name="siteIds" value={s.id} id={`site-${s.id}`} checked={picked.has(s.id)}
-                      onChange={(e) => { const n = new Set(picked); e.target.checked ? n.add(s.id) : n.delete(s.id); setPicked(n); }} />
-                    <label htmlFor={`site-${s.id}`} className="flex-1 font-mono text-xs">{s.domain}</label>
-                    {picked.has(s.id) && s.zones.length > 0 && (
-                      <select name={`zone_${s.id}`} defaultValue={values.zoneBySite?.[s.id] ?? ""} className="h-7 rounded border border-border bg-surface px-1 text-xs">
-                        <option value="">все зоны</option>{s.zones.map((z) => <option key={z.id} value={z.id}>{z.name}</option>)}
-                      </select>
+                  <div key={s.id} className="rounded px-2 py-1 hover:bg-surface-hover">
+                    <div className="flex items-center gap-2">
+                      <input type="checkbox" name="siteIds" value={s.id} id={`site-${s.id}`} checked={picked.has(s.id)} onChange={(e) => toggleSite(s.id, e.target.checked)} />
+                      <label htmlFor={`site-${s.id}`} className="flex-1 font-mono text-xs">{s.domain}</label>
+                      {picked.has(s.id) && s.zones.length > 0 && (
+                        <select name={`zone_${s.id}`} defaultValue={values.zoneBySite?.[s.id] ?? ""} className="h-7 rounded border border-border bg-surface px-1 text-xs" aria-label={`Зона-счётчик ${s.domain}`}>
+                          <option value="">все зоны</option>{s.zones.map((z) => <option key={z.id} value={z.id}>{z.name}</option>)}
+                        </select>
+                      )}
+                    </div>
+                    {placements.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1 pl-5">
+                        {placements.map((p) => {
+                          const key = `${s.id}|${p.slug}`, on = places.has(key);
+                          return (
+                            <label key={p.slug} className={`cursor-pointer select-none rounded-full border px-2 py-0.5 text-[11px] ${on ? "border-accent bg-accent-soft text-accent" : "border-border text-muted hover:border-border-strong"}`}>
+                              <input type="checkbox" name="place" value={key} checked={on} onChange={(e) => togglePlace(key, e.target.checked)} className="sr-only" aria-label={`${p.title} на ${s.domain}`} />
+                              {p.title}
+                            </label>
+                          );
+                        })}
+                      </div>
                     )}
                   </div>
                 ))}

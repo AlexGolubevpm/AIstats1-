@@ -46,12 +46,14 @@ test("4. new deal → enter period → payment → paid in the payments register
   await page.locator("input[name=advertiser]").fill("E2E Media");
   await page.locator("input[name=title]").fill("E2E баннер");
   await page.locator("input[name=price]").fill("0.8");
-  await page.getByRole("checkbox", { name: "japan-tube.demo" }).check();
+  await page.locator("label", { has: page.getByRole("checkbox", { name: "Tablink 1 на japan-tube.demo" }) }).last().click(); // the chip (the outer label is the field)
+  await expect(page.getByRole("checkbox", { name: "japan-tube.demo", exact: true })).toBeChecked();
   await page.locator("input[name=startsAt]").fill("2026-08-01");
   await page.locator("input[name=endsAt]").fill("2026-08-31");
   await page.getByRole("button", { name: "Создать дил" }).click();
   await expect(page).toHaveURL(/\/deals\/[a-z0-9]+$/);
   await expect(page.getByRole("heading", { name: /E2E Media · E2E баннер/ })).toBeVisible();
+  await expect(page.getByText(/Tablink 1 · флэт|Tablink 1 · /).first()).toBeVisible();
   // The forecast is there at once (no night run): the deal card lists its August periods with money.
   await page.goto("/deals?preset=prev_month&from=2026-08-01&to=2026-08-31");
   await page.goto("/deals?from=2026-08-01&to=2026-08-31");
@@ -130,6 +132,26 @@ test("formats: the inventory grid lists places; a free place can be marked CPA",
   await expect(deals.getByRole("columnheader", { name: "По" })).toBeVisible();
   await deals.getByRole("button", { name: "Без места" }).click();
   await expect(deals.getByRole("cell", { name: /Sakura Media/ }).first()).toBeVisible(); // demo deals have no place yet
+});
+
+test("formats: a cell panel attaches an existing deal, lists it, and names the network that buys the place", async ({ page }) => {
+  await login(page, "/inventory");
+  const grid = page.locator("table").first();
+  await grid.getByRole("button", { name: "свободно" }).first().click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("Фикс-дилы на этом месте · 0")).toBeVisible();
+  await dialog.getByLabel("Поиск дила").fill("Sakura");
+  await dialog.getByRole("checkbox").first().check();
+  await dialog.getByRole("button", { name: "Привязать" }).click();
+  await expect(page.getByText(/Дил привязан к месту|Привязано дилов/)).toBeVisible();
+  // The panel lists the deal and lets us take it off or name the buying network; the cell itself now shows the advertiser.
+  if (!(await dialog.isVisible())) await grid.getByRole("button", { name: "Sakura Media" }).first().click();
+  await expect(dialog.getByText("Фикс-дилы на этом месте · 1")).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Убрать с места" })).toBeVisible();
+  await expect(dialog.getByRole("link", { name: /Новый дил на этом месте/ })).toHaveAttribute("href", /\/deals\?new=1&place=/);
+  await dialog.locator("select[name=networkId]").selectOption({ index: 1 });
+  await dialog.getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText("Сохранено")).toBeVisible();
 });
 
 test("formats: period in the URL, bundle filter and grouping, a zone mapped by hand brings its revenue into the cell", async ({ page }) => {

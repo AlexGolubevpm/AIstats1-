@@ -37,6 +37,7 @@ model Site {
   revenueDev FactRevenueDevice[]
   trafficSrc FactTrafficSource[]
   placements SitePlacement[]
+  dealPlaces DealPlace[]
   traffic    FactTraffic[]
   costs      FactCost[]
   deals      FactFixDeal[]
@@ -139,6 +140,7 @@ model Network {
   isSystem     Boolean              @default(false)
   revenue      FactRevenueGeo[]
   revenueNet   FactRevenueNetwork[]
+  buys         SitePlacement[]
 }
 
 enum Device {
@@ -405,11 +407,10 @@ model Deal {
   billedVia        BilledVia     @default(DIRECT)
   status           DealStatus    @default(ACTIVE)
   notes            String?
-  placementSlug    String? // the ad place the deal occupies on its sites (inventory)
   createdAt        DateTime      @default(now())
   advertiser       Advertiser    @relation(fields: [advertiserId], references: [id])
-  placement        Placement?    @relation(fields: [placementSlug], references: [slug], onDelete: SetNull, onUpdate: Cascade)
   sites            DealSite[]
+  places           DealPlace[]
   periods          DealPeriod[]
   facts            FactFixDeal[]
 }
@@ -420,7 +421,7 @@ model Placement {
   title     String
   sortOrder Int             @default(0)
   zones     Zone[]
-  deals     Deal[]
+  deals     DealPlace[]
   sites     SitePlacement[]
 }
 
@@ -439,11 +440,26 @@ model SitePlacement {
   placementSlug String
   use           PlacementUse
   note          String?
+  networkId     String? // the ad network that buys the place (owner's note, not an ADOK fact)
   updatedAt     DateTime     @updatedAt
   site          Site         @relation(fields: [siteId], references: [id], onDelete: Cascade)
   placement     Placement    @relation(fields: [placementSlug], references: [slug], onDelete: Cascade, onUpdate: Cascade)
+  network       Network?     @relation(fields: [networkId], references: [id], onDelete: SetNull)
 
   @@id([siteId, placementSlug])
+}
+
+/// The ad places a deal occupies: any set of (site, place) pairs, several deals may share a cell (tiers).
+model DealPlace {
+  dealId        String
+  siteId        String
+  placementSlug String
+  deal          Deal      @relation(fields: [dealId], references: [id], onDelete: Cascade)
+  site          Site      @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  placement     Placement @relation(fields: [placementSlug], references: [slug], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([dealId, siteId, placementSlug])
+  @@index([siteId, placementSlug])
 }
 
 model DealSite {

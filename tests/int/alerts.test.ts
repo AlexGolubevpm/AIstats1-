@@ -100,7 +100,7 @@ describe("alert rules", () => {
 describe("10: deal ending", () => {
   const D = (s: string) => new Date(`${s}T00:00:00Z`);
   const ending = (endsAt: string | null, status: "ACTIVE" | "PAUSED" | "ENDED" = "ACTIVE") =>
-    db.deal.update({ where: { id: net.direct.id }, data: { endsAt: endsAt ? D(endsAt) : null, status, placementSlug: "welcome_bar" } });
+    db.deal.update({ where: { id: net.direct.id }, data: { endsAt: endsAt ? D(endsAt) : null, status, places: { deleteMany: {}, create: [{ siteId: net.s3.id, placementSlug: "welcome_bar" }] } } });
   const only = async () => (await RULES.dealEnding(ctx())).filter((c) => c.payload.dealId === net.direct.id);
 
   it("warns at 7 days, critical at 3 and 1, critical when ended but still active", async () => {
