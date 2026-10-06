@@ -28,12 +28,12 @@ export async function monthForecast(today = iso(new Date()), lookback: Lookback 
   const [days, opex, perSite, prevSites, prevOpex, deals, srcDays] = await Promise.all([
     db.$queryRaw<Raw[]>`SELECT date, SUM(revenue)::float8 revenue, SUM(cost)::float8 cost, SUM(revenue_mediated)::float8 asg FROM v_site_geo_daily
       WHERE date BETWEEN ${D(from)} AND ${D(to)} AND site_id IN ${LIVE} GROUP BY 1`,
-    db.$queryRaw<Raw[]>`SELECT date, SUM(amount)::float8 v FROM v_opex_daily WHERE date BETWEEN ${D(first)} AND ${D(last)} GROUP BY 1`,
+    db.$queryRaw<Raw[]>`SELECT date, SUM(amount)::float8 v FROM v_opex_daily WHERE date BETWEEN ${D(first)} AND ${D(last)} AND (site_id IS NULL OR site_id IN ${LIVE}) GROUP BY 1`,
     db.$queryRaw<Raw[]>`SELECT g.site_id, s.domain, g.date, SUM(g.revenue)::float8 revenue, SUM(g.cost)::float8 cost, SUM(g.revenue_mediated)::float8 asg FROM v_site_geo_daily g JOIN "Site" s ON s.id = g.site_id
       WHERE g.date BETWEEN ${D(from)} AND ${D(to)} AND s.status <> 'ARCHIVED' GROUP BY 1, 2, 3`,
     db.$queryRaw<Raw[]>`SELECT site_id, SUM(revenue)::float8 revenue, SUM(cost)::float8 cost FROM v_site_geo_daily
       WHERE date BETWEEN ${D(pmFirst)} AND ${D(pmLast)} AND site_id IN ${LIVE} GROUP BY 1`,
-    db.$queryRaw<Raw[]>`SELECT SUM(amount)::float8 v FROM v_opex_daily WHERE date BETWEEN ${D(pmFirst)} AND ${D(pmLast)}`,
+    db.$queryRaw<Raw[]>`SELECT SUM(amount)::float8 v FROM v_opex_daily WHERE date BETWEEN ${D(pmFirst)} AND ${D(pmLast)} AND (site_id IS NULL OR site_id IN ${LIVE})`,
     db.deal.findMany({ where: { status: "ACTIVE", billedVia: "DIRECT", paymentBasis: { in: ["FLAT_DAILY", "FLAT_PERIOD"] }, startsAt: { lte: D(last) },
       OR: [{ endsAt: null }, { endsAt: { gte: D(today) } }] }, include: { sites: true } }),
     db.$queryRaw<Raw[]>`SELECT date, "siteId" site_id FROM "FactTrafficSource" WHERE date BETWEEN ${D(from)} AND ${D(to)} GROUP BY 1, 2`,

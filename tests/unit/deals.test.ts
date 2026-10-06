@@ -73,8 +73,10 @@ describe("statuses", () => {
   it("revenue state and effective amount", () => {
     expect(revenueStateOf("OPEN")).toBe("FORECAST");
     expect(revenueStateOf("INVOICED")).toBe("INVOICED");
-    expect(revenueStateOf("PARTIAL")).toBe("CONFIRMED");
-    expect(effectiveAmount({ status: "PARTIAL", amountInvoiced: "100", amountPaid: "80", amountCalculated: "90" }).toString()).toBe("80");
+    expect(revenueStateOf("PARTIAL")).toBe("INVOICED"); // partly paid is still an open invoice for the full sum (ADR 0011)
+    expect(revenueStateOf("PAID")).toBe("CONFIRMED");
+    expect(effectiveAmount({ status: "PARTIAL", amountInvoiced: "100", amountPaid: "80", amountCalculated: "90" }).toString()).toBe("100");
+    expect(effectiveAmount({ status: "PAID", amountInvoiced: "100", amountPaid: "80", amountCalculated: "90" }).toString()).toBe("80");
     expect(effectiveAmount({ status: "INVOICED", amountInvoiced: "100", amountPaid: null, amountCalculated: "90" }).toString()).toBe("100");
     expect(effectiveAmount({ status: "OPEN", amountInvoiced: null, amountPaid: null, amountCalculated: "90" }).toString()).toBe("90");
   });

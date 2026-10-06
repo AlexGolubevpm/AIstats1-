@@ -29,12 +29,14 @@ const toTotals = (r: Record<string, number | null> | undefined): Totals => {
   return {
     revenue, cost, uniques, revenueConfirmed: n("revenue_confirmed"), revenueDirect: n("revenue_direct"), margin: revenue - cost,
     pageviews: n("pageviews"), pageLoads: n("page_loads"), impsOwn: n("imps_own"),
-    romi: m.romi(revenue, cost), rpm: m.rpm(revenue, uniques), depth: m.depth(n("pageviews"), uniques), revPer1k: m.revPer1kLoads(revenue, n("page_loads")),
+    romi: m.romi(revenue, cost), rpm: m.rpm(n("revenue_tracked"), uniques), depth: m.depth(n("pageviews"), uniques), revPer1k: m.revPer1kLoads(revenue, n("page_loads")),
   };
 };
 
+// revenue_tracked: revenue of site-days Metrika counted uniques for — the RPM numerator (a site without Metrika must not inflate RPM).
 const SUMS = Prisma.sql`SUM(revenue)::float8 revenue, SUM(revenue_confirmed)::float8 revenue_confirmed, SUM(revenue_direct)::float8 revenue_direct,
-  SUM(cost)::float8 cost, SUM(uniques)::float8 uniques, SUM(pageviews)::float8 pageviews, SUM(page_loads)::float8 page_loads, SUM(imps_own)::float8 imps_own`;
+  SUM(cost)::float8 cost, SUM(uniques)::float8 uniques, SUM(pageviews)::float8 pageviews, SUM(page_loads)::float8 page_loads, SUM(imps_own)::float8 imps_own,
+  SUM(revenue) FILTER (WHERE EXISTS (SELECT 1 FROM "FactTraffic" t WHERE t."siteId" = g.site_id AND t.date = g.date AND t.uniques > 0))::float8 revenue_tracked`;
 
 export async function totals(p: Period, s: Scope = {}): Promise<Totals> {
   const [r] = await db.$queryRaw<Record<string, number | null>[]>`SELECT ${SUMS} FROM v_site_geo_daily g WHERE ${where(p, s)}`;

@@ -167,6 +167,35 @@ describe("geo: no-country money is spread over the countries by page loads", () 
     expect(rows.reduce((a, r) => a + r.revenue, 0)).toBeCloseTo(t.revenue, 6);
   });
 
+  it("no-country cost of one site never lands on another site's countries; its loads move with it", async () => {
+    await db.factRevenueGeo.create({ data: { date: D1, siteId: "s2", networkId: net.net.id, countryCode: "DE", device: "DESKTOP", pageLoads: 5_000, revenueReported: "9" } });
+    await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 0, rateModel: "REVSHARE", rate: "1", cost: "8", origin: "ASG" } });
+    await db.factRevenueGeo.create({ data: { date: D1, siteId: "s1", networkId: net.net.id, countryCode: "ZZ", device: "UNKNOWN", pageLoads: 2_000, revenueReported: "0" } });
+    const rows = await geoTable(P, {}, 0);
+    const de = rows.find((r) => r.country === "DE")!;
+    expect([de.cost, de.estimated, de.revPer1k]).toEqual([0, false, 1.8]); // s2's Germany: untouched by s1's ZZ cost
+    const jp = rows.find((r) => r.country === "JP")!;
+    expect(jp.estimated).toBe(true);
+    expect(rows.filter((r) => r.country !== "ZZ").reduce((a, r) => a + r.pageLoads, 0)).toBe(120_000 + 5_000 + 2_000); // ZZ loads spread, not dropped
+    expect(rows.reduce((a, r) => a + r.cost, 0)).toBeCloseTo((await totals(P)).cost, 6);
+  });
+
+  it("RPM counts only the revenue of site-days Metrika measured; a site without Metrika does not inflate it", async () => {
+    const before = (await totals(P)).rpm!;
+    await db.factTraffic.deleteMany({ where: { siteId: "s2" } });
+    const t = await totals(P);
+    expect(t.uniques).toBe(8_000);
+    expect(t.rpm).toBeCloseTo(((42 + 46) / 8_000) * 1000, 6); // s2's $40 is out of the numerator
+    expect(t.rpm).toBeGreaterThan(before - 1); // not the doubled figure 128/8000
+    const b = (await bundlesTable(P)).find((x) => x.slug === "jav")!;
+    expect(b.rpm).toBeCloseTo((42 / 4_000) * 1000, 6); // jav = s1 + s2; only s1 is tracked
+  });
+
+  it("the formats split carries direct deals as their own series", async () => {
+    const rows = await revenueSplitDaily(P, {}, "formats");
+    expect(rows.filter((r) => r.key === "Фикс-дилы").map((r) => r.value)).toEqual([3, 3]);
+  });
+
   it("a site with only ZZ rows keeps one «Без страны» row without ROMI", async () => {
     await db.factRevenueGeo.deleteMany({ where: { siteId: "s2" } });
     await db.factTraffic.deleteMany({ where: { siteId: "s2" } });

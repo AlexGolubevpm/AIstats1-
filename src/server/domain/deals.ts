@@ -123,18 +123,23 @@ export function periodsOverlap(a: { from: string; to: string }, b: { from: strin
 
 export function addDays(s: string, n: number): string { return iso(ms(s) + n * DAY); }
 
-/** Revenue state a period gives to its days. */
+/**
+ * Revenue state a period gives to its days. A partly paid invoice is still an invoice: its days
+ * stay INVOICED for the full amount (the paid part is in receivables) until it is settled, so
+ * revenue does not dip by the unpaid remainder and jump back when it arrives (ADR 0011).
+ */
 export function revenueStateOf(status: PeriodStatus): "FORECAST" | "INVOICED" | "CONFIRMED" {
-  if (status === "PAID" || status === "PARTIAL" || status === "WRITTEN_OFF") return "CONFIRMED";
-  if (status === "INVOICED") return "INVOICED";
+  if (status === "PAID" || status === "WRITTEN_OFF") return "CONFIRMED";
+  if (status === "INVOICED" || status === "PARTIAL") return "INVOICED";
   return "FORECAST";
 }
 
-/** Amount that counts as revenue for a period in its current status. DISPUTED counts as forecast of the invoice. */
+/** Amount that counts as revenue for a period in its current status. DISPUTED counts as forecast of the invoice; PARTIAL keeps the invoiced sum. */
 export function effectiveAmount(p: { status: PeriodStatus; amountInvoiced: Decimal.Value | null; amountPaid: Decimal.Value | null; amountCalculated: Decimal.Value | null }): Decimal {
   const v = (x: Decimal.Value | null) => (x == null ? null : new Decimal(x));
   switch (p.status) {
-    case "PAID": case "PARTIAL": case "WRITTEN_OFF": return v(p.amountPaid) ?? v(p.amountInvoiced) ?? new Decimal(0);
+    case "PAID": case "WRITTEN_OFF": return v(p.amountPaid) ?? v(p.amountInvoiced) ?? new Decimal(0);
+    case "PARTIAL": return v(p.amountInvoiced) ?? v(p.amountPaid) ?? new Decimal(0);
     case "INVOICED": case "DISPUTED": return v(p.amountInvoiced) ?? v(p.amountCalculated) ?? new Decimal(0);
     default: return v(p.amountCalculated) ?? new Decimal(0);
   }

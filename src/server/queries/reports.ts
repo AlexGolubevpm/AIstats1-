@@ -19,15 +19,18 @@ function siteFilter(col: Prisma.Sql, s: Scope) {
 
 export async function bundlesTable(p: Period) {
   const rows = await db.$queryRaw<Raw[]>`
-    SELECT b.id, b.slug, b.title, b.color, (SELECT count(*) FROM "BundleSite" x WHERE x."bundleId" = b.id)::int sites,
+    SELECT b.id, b.slug, b.title, b.color, (SELECT count(*) FROM "BundleSite" x JOIN "Site" s ON s.id = x."siteId" AND s.status <> 'ARCHIVED' WHERE x."bundleId" = b.id)::int sites,
       COALESCE(SUM(v.revenue), 0)::float8 revenue, COALESCE(SUM(v.cost), 0)::float8 cost, COALESCE(SUM(v.uniques), 0)::float8 uniques,
-      COALESCE(SUM(v.pageviews), 0)::float8 pageviews
+      COALESCE(SUM(v.pageviews), 0)::float8 pageviews,
+      (SELECT COALESCE(SUM(g.revenue), 0) FROM v_site_geo_daily g JOIN "BundleSite" x ON x."siteId" = g.site_id AND x."bundleId" = b.id
+        WHERE g.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`g.site_id`, {})}
+          AND EXISTS (SELECT 1 FROM "FactTraffic" t WHERE t."siteId" = g.site_id AND t.date = g.date AND t.uniques > 0))::float8 revenue_tracked
     FROM "Bundle" b LEFT JOIN v_bundle_daily v ON v.bundle_id = b.id AND v.date BETWEEN ${D(p.from)} AND ${D(p.to)}
     GROUP BY b.id ORDER BY revenue DESC`;
   return rows.map((r) => ({
     id: String(r.id), slug: String(r.slug), title: String(r.title), color: String(r.color), sites: n(r.sites),
     revenue: n(r.revenue), cost: n(r.cost), margin: n(r.revenue) - n(r.cost), romi: m.romi(n(r.revenue), n(r.cost)),
-    uniques: n(r.uniques), rpm: m.rpm(n(r.revenue), n(r.uniques)),
+    uniques: n(r.uniques), rpm: m.rpm(n(r.revenue_tracked), n(r.uniques)), // RPM only over site-days Metrika counted, else a site without Metrika inflates it
   }));
 }
 
@@ -94,33 +97,52 @@ export interface GeoRow {
  * to page loads (bought traffic is loads), to the cent; the ZZ row stays only when there is no
  * country to spread it over. Rows that received a share carry `estimated`.
  */
-export function spreadNoCountry<T extends { country: string; pageLoads: number; revenue: number; cost: number }>(rows: T[]): (T & { estimated: boolean; margin: number; romi: number | null; revPer1k: number | null })[] {
+export function spreadNoCountry<T extends { country: string; pageLoads: number; revenue: number; cost: number; uniques?: number }>(rows: T[]): (T & { estimated: boolean; margin: number; romi: number | null; revPer1k: number | null })[] {
   const zz = rows.find((r) => r.country === "ZZ");
   const real = rows.filter((r) => r.country !== "ZZ");
   const targets = real.filter((r) => r.pageLoads > 0);
   const fin = (r: T, estimated: boolean) => ({ ...r, estimated, margin: r.revenue - r.cost, romi: m.romi(r.revenue, r.cost), revPer1k: m.revPer1kLoads(r.revenue, r.pageLoads) });
   if (!zz || !targets.length) return rows.map((r) => fin(r, false));
   const weights = targets.map((r) => r.pageLoads);
+  // Money, loads and uniques of the no-country rows move together, so rev / 1000 loads and RPM keep their denominators.
   const costCents = apportion(Math.round(zz.cost * 100), weights), revCents = apportion(Math.round(zz.revenue * 100), weights);
-  const share = new Map(targets.map((r, i) => [r.country, { cost: costCents[i] / 100, revenue: revCents[i] / 100 }]));
+  const loads = apportion(zz.pageLoads, weights), uniques = apportion(zz.uniques ?? 0, weights);
+  const share = new Map(targets.map((r, i) => [r.country, { cost: costCents[i] / 100, revenue: revCents[i] / 100, loads: loads[i], uniques: uniques[i] }]));
   return real.map((r) => {
     const x = share.get(r.country);
-    return x ? fin({ ...r, cost: r.cost + x.cost, revenue: r.revenue + x.revenue }, zz.cost > 0 || zz.revenue > 0) : fin(r, false);
+    return x ? fin({ ...r, cost: r.cost + x.cost, revenue: r.revenue + x.revenue, pageLoads: r.pageLoads + x.loads, ...(r.uniques != null ? { uniques: r.uniques + x.uniques } : {}) }, zz.cost > 0 || zz.revenue > 0) : fin(r, false);
   });
 }
 
+/**
+ * Countries over the scope. No-country money is spread **per site** (a site's source cost lands on
+ * that site's countries, not on another site's), then the countries are rolled up.
+ */
 export async function geoTable(p: Period, s: Scope = {}, top = 20): Promise<GeoRow[]> {
   const rows = await db.$queryRaw<Raw[]>`
-    SELECT g.country_code cc, c."nameRu" name, c.tier, count(DISTINCT g.site_id)::int sites,
+    SELECT g.site_id, g.country_code cc, c."nameRu" name, c.tier,
       SUM(g.uniques)::float8 uniques, SUM(g.page_loads)::float8 loads, SUM(g.revenue)::float8 revenue, SUM(g.cost)::float8 cost,
       SUM(g.uniques_bought)::float8 bought
     FROM v_site_geo_daily g LEFT JOIN "Country" c ON c.code = g.country_code
     WHERE g.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`g.site_id`, s)}
-    GROUP BY 1, 2, 3 ORDER BY loads DESC`;
-  const mapped = spreadNoCountry(rows.map((r) => ({
-    country: String(r.cc), name: String(r.name ?? r.cc), tier: n(r.tier) || null, sites: n(r.sites), uniques: n(r.uniques), pageLoads: n(r.loads),
-    revenue: n(r.revenue), cost: n(r.cost), bought: n(r.bought) })))
-    .map((r) => ({ ...r, costPerUnique: m.costPerUnique(r.cost, r.bought) }))
+    GROUP BY 1, 2, 3, 4`;
+  const perSite = new Map<string, Raw[]>();
+  for (const r of rows) perSite.set(String(r.site_id), [...(perSite.get(String(r.site_id)) ?? []), r]);
+  type Acc = { country: string; name: string; tier: number | null; sites: number; uniques: number; pageLoads: number; revenue: number; cost: number; bought: number; rawCost: number; estimated: boolean };
+  const acc = new Map<string, Acc>();
+  for (const list of perSite.values()) {
+    const spread = spreadNoCountry(list.map((r) => ({ country: String(r.cc), name: String(r.name ?? r.cc), tier: n(r.tier) || null, uniques: n(r.uniques), pageLoads: n(r.loads),
+      revenue: n(r.revenue), cost: n(r.cost), bought: n(r.bought), rawCost: n(r.cost) })));
+    for (const r of spread) {
+      const a = acc.get(r.country) ?? { country: r.country, name: r.name, tier: r.tier, sites: 0, uniques: 0, pageLoads: 0, revenue: 0, cost: 0, bought: 0, rawCost: 0, estimated: false };
+      a.sites++; a.uniques += r.uniques; a.pageLoads += r.pageLoads; a.revenue += r.revenue; a.cost += r.cost; a.bought += r.bought; a.rawCost += r.rawCost; a.estimated ||= r.estimated;
+      acc.set(r.country, a);
+    }
+  }
+  const mapped = [...acc.values()]
+    .map((r) => ({ ...r, margin: r.revenue - r.cost, romi: m.romi(r.revenue, r.cost), revPer1k: m.revPer1kLoads(r.revenue, r.pageLoads),
+      // per bought unique only from cost that was really booked to the country; a spread share has no uniques behind it
+      costPerUnique: r.estimated && r.cost !== r.rawCost ? null : m.costPerUnique(r.rawCost, r.bought) }))
     .map((r) => (r.country === "ZZ" ? { ...r, romi: null, revPer1k: null } : r))
     .sort((a, b) => (a.country === "ZZ" ? 1 : b.country === "ZZ" ? -1 : b.pageLoads - a.pageLoads));
   if (!top || mapped.length <= top) return mapped;
@@ -244,8 +266,12 @@ export type SplitBy = "formats" | "sites" | "networks";
 export async function revenueSplitDaily(p: Period, s: Scope, by: SplitBy) {
   let rows: Raw[];
   if (by === "formats") {
+    // The zone cut has no direct deals: add them as their own series so the chart shows all the revenue cost is compared with.
     rows = await db.$queryRaw<Raw[]>`SELECT date, format k, SUM(revenue)::float8 v FROM v_format_daily
-      WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`site_id`, s)} GROUP BY 1, 2`;
+      WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`site_id`, s)} GROUP BY 1, 2
+      UNION ALL
+      SELECT date, 'Фикс-дилы' k, SUM(revenue)::float8 v FROM v_deal_daily
+      WHERE billed_via = 'DIRECT' AND date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`site_id`, s)} GROUP BY 1, 2`;
   } else if (by === "sites") {
     rows = await db.$queryRaw<Raw[]>`SELECT g.date, s.domain k, SUM(g.revenue)::float8 v FROM v_site_geo_daily g JOIN "Site" s ON s.id = g.site_id
       WHERE g.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`g.site_id`, s)} GROUP BY 1, 2`;
@@ -273,7 +299,7 @@ export async function costSplitDaily(p: Period, s: Scope = {}) {
 
 /** Operating expenses per day in the period (all entries). */
 export async function opexDaily(p: Period): Promise<Map<string, number>> {
-  const rows = await db.$queryRaw<Raw[]>`SELECT date, SUM(amount)::float8 v FROM v_opex_daily WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY 1`;
+  const rows = await db.$queryRaw<Raw[]>`SELECT date, SUM(amount)::float8 v FROM v_opex_daily WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} AND (site_id IS NULL OR site_id IN (SELECT id FROM "Site" WHERE status <> 'ARCHIVED')) GROUP BY 1`;
   return new Map(rows.map((r) => [iso(r.date as Date), n(r.v)]));
 }
 

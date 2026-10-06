@@ -17,13 +17,21 @@ type Counter = { date: string; siteId: string; countryCode: string; pageLoads: n
 
 /** Our own counter for a deal in a window, per day × site × country. */
 export async function dealCounters(db: PrismaClient, dealId: string, from: string, to: string): Promise<Counter[]> {
-  const deal = await db.deal.findUniqueOrThrow({ where: { id: dealId }, include: { sites: true } });
+  const deal = await db.deal.findUniqueOrThrow({ where: { id: dealId }, include: { sites: true, places: true } });
   const out: Counter[] = [];
   const range = { gte: d(from), lte: d(to) };
   for (const ds of deal.sites) {
+    // Zones that stand on the deal's places on this site: the deal's own counter when no zone was chosen explicitly.
+    const placeSlugs = deal.places.filter((p) => p.siteId === ds.siteId).map((p) => p.placementSlug);
+    const placeZones = deal.counterSource === "ASG_ZONE" && !ds.zoneId && placeSlugs.length
+      ? await db.zone.findMany({ where: { siteId: ds.siteId, placementSlug: { in: placeSlugs } }, select: { id: true } }) : [];
     if (deal.counterSource === "ASG_ZONE" && ds.zoneId) {
       const rows = await db.factRevenueZone.findMany({ where: { zoneId: ds.zoneId, date: range } });
       out.push(...rows.map((r) => ({ date: isoOf(r.date), siteId: ds.siteId, countryCode: "ZZ", pageLoads: r.pageLoads, impsOwn: r.impsOwn })));
+    } else if (deal.counterSource === "ASG_ZONE" && placeZones.length) {
+      // Counted on the zones of its places, not on every impression the site serves.
+      const rows = await db.factRevenueZone.groupBy({ by: ["date"], _sum: { pageLoads: true, impsOwn: true }, where: { zoneId: { in: placeZones.map((z) => z.id) }, date: range } });
+      out.push(...rows.map((r) => ({ date: isoOf(r.date), siteId: ds.siteId, countryCode: "ZZ", pageLoads: r._sum.pageLoads ?? 0, impsOwn: r._sum.impsOwn ?? 0 })));
     } else if (deal.counterSource === "ASG_ZONE") {
       const rows = await db.factRevenueGeo.groupBy({ by: ["date", "countryCode"], _sum: { pageLoads: true, impsOwn: true }, where: { siteId: ds.siteId, date: range } });
       // A day with only the ZZ site total (no country cut yet) keeps it whatever the geo scope: otherwise a scoped deal gets no counters at all.
@@ -55,6 +63,14 @@ function flatCells(siteIds: string[], from: string, to: string, counters: Counte
   return eachDay(from, to).flatMap((date) => siteIds.map((siteId) => ({ date, siteId, countryCode: "ZZ", ...(sum.get(`${date}|${siteId}`) ?? { pageLoads: 0, impsOwn: 0 }) })));
 }
 
+const addDaysIso = (s: string, n: number) => isoOf(new Date(d(s).getTime() + n * DAY));
+
+/** Day the deal was last paused, from the audit log (null when the pause was never logged). */
+async function pauseDate(db: PrismaClient, dealId: string): Promise<string | null> {
+  const a = await db.auditLog.findFirst({ where: { entity: "Deal", entityId: dealId, field: "status", after: "PAUSED" }, orderBy: { at: "desc" } });
+  return a ? isoOf(a.at) : null;
+}
+
 const termDaysOf = (deal: { startsAt: Date; endsAt: Date | null }) => (deal.endsAt ? daysIn(isoOf(deal.startsAt), isoOf(deal.endsAt)) : null);
 
 /** Active (non-superseded, entered) periods of a deal. */
@@ -71,19 +87,24 @@ export async function forecastDeals(db: PrismaClient, from: string, to: string, 
   let rows = 0;
   for (const deal of deals) {
     const start = isoOf(deal.startsAt) > from ? isoOf(deal.startsAt) : from;
-    const end = deal.endsAt && isoOf(deal.endsAt) < to ? isoOf(deal.endsAt) : to;
-    if (start > end) continue;
+    let end = deal.endsAt && isoOf(deal.endsAt) < to ? isoOf(deal.endsAt) : to;
+    // A paused deal earns nothing from the day it was paused (the status change is in the audit log).
+    const pausedAt = deal.status === "PAUSED" ? await pauseDate(db, deal.id) : null;
+    if (pausedAt && addDaysIso(pausedAt, -1) < end) end = addDaysIso(pausedAt, -1);
     const basis = deal.paymentBasis as PaymentBasis;
+    const periods = await enteredPeriods(db, deal.id);
+    // An entered period covers its own site only (or every site when it has none): one site's invoice must not blank the others.
+    const covered = (date: string, siteId: string) => periods.some((p) => (p.siteId == null || p.siteId === siteId) && isoOf(p.from) <= date && isoOf(p.to) >= date);
+    await db.$transaction(async (tx) => {
+      await tx.factFixDeal.deleteMany({ where: { dealId: deal.id, date: { gte: d(start), lte: d(to) }, dealPeriodId: null } });
+    });
+    if (start > end) continue;
     const raw = await dealCounters(db, deal.id, start, end);
     const counters = isFlat(basis) ? flatCells(deal.sites.map((s) => s.siteId), start, end, raw) : raw;
-    const periods = await enteredPeriods(db, deal.id);
-    const covered = (date: string) => periods.some((p) => isoOf(p.from) <= date && isoOf(p.to) >= date);
     const byDay = new Map<string, Counter[]>();
     for (const c of counters) byDay.set(c.date, [...(byDay.get(c.date) ?? []), c]);
     await db.$transaction(async (tx) => {
-      await tx.factFixDeal.deleteMany({ where: { dealId: deal.id, date: { gte: d(start), lte: d(end) }, dealPeriodId: null } });
       for (const [date, cells] of byDay) {
-        const inPeriod = covered(date);
         let amounts: Decimal[];
         if (isFlat(basis)) {
           const perDay = flatPerDay(basis, deal.price.toString(), deal.billingPeriod as BillingPeriod, termDaysOf(deal), date);
@@ -93,7 +114,7 @@ export async function forecastDeals(db: PrismaClient, from: string, to: string, 
         }
         for (const [i, c] of cells.entries()) {
           const key = { date_dealId_siteId_countryCode: { date: d(date), dealId: deal.id, siteId: c.siteId, countryCode: c.countryCode } };
-          if (inPeriod) {
+          if (covered(date, c.siteId)) {
             await tx.factFixDeal.updateMany({ where: { date: d(date), dealId: deal.id, siteId: c.siteId, countryCode: c.countryCode },
               data: { pageLoads: c.pageLoads, impsOwn: c.impsOwn } });
             continue;

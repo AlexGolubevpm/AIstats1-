@@ -55,6 +55,9 @@ export default async function SitePage({ params, searchParams }: Props) {
   ]);
   const dealFacts = await db.factFixDeal.groupBy({ by: ["dealId", "revenueState"], where: { siteId: site.id, date: { gte: D(p.from), lte: D(p.to) } },
     _sum: { revenue: true, impsOwn: true, impsReported: true } });
+  // The multiplier compares only days the advertiser reported (forecast days would drag it down), like factSums on /deals.
+  const reportedFacts = await db.factFixDeal.groupBy({ by: ["dealId"], where: { siteId: site.id, date: { gte: D(p.from), lte: D(p.to) }, impsReported: { gt: 0 } },
+    _sum: { impsOwn: true, impsReported: true } });
 
   let table: React.ReactNode;
   if (by === "zones") {
@@ -120,7 +123,8 @@ export default async function SitePage({ params, searchParams }: Props) {
             <ul className="divide-y divide-border">
               {deals.map((d) => {
                 const f = dealFacts.filter((x) => x.dealId === d.id);
-                const own = f.reduce((a, x) => a + (x._sum.impsOwn ?? 0), 0), rep = f.reduce((a, x) => a + (x._sum.impsReported ?? 0), 0);
+                const rf = reportedFacts.find((x) => x.dealId === d.id);
+                const own = rf?._sum.impsOwn ?? 0, rep = rf?._sum.impsReported ?? 0;
                 const mult = rep ? dealMultiplier(rep, own) : null;
                 return (
                   <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-[13px]">
