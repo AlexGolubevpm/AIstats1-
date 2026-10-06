@@ -204,7 +204,7 @@ export async function sourceSlugs(db: PrismaClient, cells: TrafficSourceCell[]):
     const byName = await db.costSource.findUnique({ where: { asgName: c.name } });
     if (byName) { out.set(c.slug, byName.slug); continue; }
     const s = await db.costSource.upsert({ where: { slug: c.slug }, update: { asgName: c.name },
-      create: { slug: c.slug, title: c.name, asgName: c.name, revShare: FREE_SOURCES.has(c.slug) ? 0 : 1 } });
+      create: { slug: c.slug, title: c.name, asgName: c.name, revShare: FREE_SOURCES.has(c.slug) ? 0 : 1, confirmed: FREE_SOURCES.has(c.slug) } });
     out.set(c.slug, s.slug);
   }
   return out;

@@ -139,22 +139,26 @@ export async function geoTable(p: Period, s: Scope = {}, top = 20): Promise<GeoR
 export async function networksTable(p: Period, s: Scope = {}, countryCode?: string | null) {
   const cf = countryCode ? Prisma.sql`AND country_code = ${countryCode}` : Prisma.empty;
   const rows = await db.$queryRaw<Raw[]>`
-    SELECT n.network_slug slug, n.network_title title, nw.color,
+    SELECT n.network_slug slug, n.network_title title, nw.color, nw."isSystem" OR nw.kind = 'DIRECT' AS excluded,
       SUM(n.page_loads)::float8 loads, SUM(n.imps_own)::float8 imps, SUM(n.imps_network)::float8 imps_net, SUM(n.revenue)::float8 revenue
     FROM v_network_geo n JOIN "Network" nw ON nw.id = n.network_id
     WHERE n.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`n.site_id`, s)} ${cf}
-    GROUP BY 1, 2, 3`;
+    GROUP BY 1, 2, 3, 4`;
   const totalLoads = rows.reduce((a, r) => a + n(r.loads), 0);
   const withPrice = rows.map((r) => {
     const loads = n(r.loads), imps = n(r.imps), revenue = n(r.revenue);
     return { slug: String(r.slug), network: String(r.title), color: String(r.color), pageLoads: loads, volShare: m.share(loads, totalLoads),
       fillRate: m.fillRate(imps, loads), revPer1k: m.revPer1kLoads(revenue, loads), discrepancy: m.discrepancy(imps, n(r.imps_net)), revenue,
-      impsOwn: imps, impsNetwork: n(r.imps_net) };
+      impsOwn: imps, impsNetwork: n(r.imps_net), excluded: Boolean(r.excluded) };
   }).sort((a, b) => (b.revPer1k ?? -1) - (a.revPer1k ?? -1));
-  const best = withPrice.slice(0, 2).map((x) => x.revPer1k ?? 0).sort((a, b) => a - b);
+  // The floor comes from real mediated networks with a real share (≥ 5% of loads): own deals, the
+  // "all networks" fallback row and a network with a handful of loads must not set the bar.
+  const eligible = withPrice.filter((x) => !x.excluded && (x.volShare ?? 0) >= 0.05 && x.revPer1k != null);
+  const best = eligible.slice(0, 2).map((x) => x.revPer1k ?? 0).sort((a, b) => a - b);
   const floor = best.length === 2 ? best[0] + (best[1] - best[0]) * 0.6 : best[0] ?? null;
-  return withPrice.map((x, i) => ({ ...x, rank: i + 1, belowFloor: floor != null && x.revPer1k != null && x.revPer1k < floor * 0.999 && i > 1,
-    inverted: i + 1 > 3 && (x.volShare ?? 0) > 0.3 })).map((x) => ({ ...x, floor }));
+  const topTwo = new Set(eligible.slice(0, 2).map((x) => x.slug));
+  return withPrice.map((x, i) => ({ ...x, rank: i + 1, belowFloor: floor != null && x.revPer1k != null && !x.excluded && !topTwo.has(x.slug) && x.revPer1k < floor * 0.999,
+    inverted: i + 1 > 3 && (x.volShare ?? 0) > 0.3 })).map(({ excluded: _e, ...x }) => ({ ...x, floor }));
 }
 
 export async function zonesTable(p: Period, siteId: string) {

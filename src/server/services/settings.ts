@@ -127,7 +127,7 @@ export async function addCostSource(db: PrismaClient, slug: string, title: strin
 export async function setSourceShare(db: PrismaClient, slug: string, percent: string, days = 62, today = new Date().toISOString().slice(0, 10)): Promise<number> {
   const v = Number(percent.replace(",", "."));
   if (!Number.isFinite(v) || v < 0 || v > 100) throw new RuleError("revShare", "Доля — от 0 до 100%", "revShare");
-  await db.costSource.update({ where: { slug }, data: { revShare: (v / 100).toFixed(4) } });
+  await db.costSource.update({ where: { slug }, data: { revShare: (v / 100).toFixed(4), confirmed: true } });
   const from = new Date(new Date(`${today}T00:00:00Z`).getTime() - (days - 1) * 86_400_000).toISOString().slice(0, 10);
   return revshareCosts(db, from, today);
 }
