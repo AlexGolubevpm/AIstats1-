@@ -169,6 +169,27 @@ describe("deals service", () => {
     expect(Number(f.reduce((a, x) => a + Number(x.revenue), 0).toFixed(4))).toBe(60); // $1 CPM × 60 000
   });
 
+  it("a deal per 1000 loads on several places counts the site's loads once, not every zone; a geo-scoped deal keeps its country counters", async () => {
+    await db.factFixDeal.deleteMany();
+    await db.placement.createMany({ data: [{ slug: "pop_player", title: "POP player", sortOrder: 500 }, { slug: "ntv_1", title: "ntv_1", sortOrder: 510 }] });
+    await db.zone.update({ where: { id: net.zone.id }, data: { placementSlug: "under_bar" } });
+    for (const [i, slug] of ["pop_player", "ntv_1"].entries()) {
+      const z = await db.zone.create({ data: { adsgZoneId: 800 + i, siteId: "s1", name: slug, format: "POPUNDER", placementSlug: slug } });
+      await db.factRevenueZone.create({ data: { date: D1, siteId: "s1", zoneId: z.id, format: "POPUNDER", pageLoads: 10_000, impsOwn: 500_000, revenueReported: "10" } });
+    }
+    const places = { create: ["under_bar", "pop_player", "ntv_1"].map((placementSlug) => ({ siteId: "s1", placementSlug })) };
+    const perLoads = await db.deal.create({ data: { title: "Loads", advertiserId: net.direct.advertiserId, format: "BANNER", price: "1", paymentBasis: "PER_1000_LOADS", startsAt: D1,
+      billedVia: "DIRECT", counterSource: "ASG_ZONE", sites: { create: [{ siteId: "s1" }] }, places } });
+    await forecastDeals(db, "2026-09-20", "2026-09-20", perLoads.id);
+    const loads = (await db.factFixDeal.findMany({ where: { dealId: perLoads.id } })).reduce((a, x) => a + x.pageLoads, 0);
+    expect(loads).toBe(20_000); // the site's geo loads for the day (JP + US), not 10 000 × 3 zones
+    const scoped = await db.deal.create({ data: { title: "JP CPM", advertiserId: net.direct.advertiserId, format: "BANNER", price: "1", paymentBasis: "CPM_OWN", startsAt: D1,
+      billedVia: "DIRECT", counterSource: "ASG_ZONE", geoScope: ["JP"], sites: { create: [{ siteId: "s1" }] }, places } });
+    await forecastDeals(db, "2026-09-20", "2026-09-20", scoped.id);
+    const rows = await db.factFixDeal.findMany({ where: { dealId: scoped.id } });
+    expect(rows.map((r) => r.countryCode)).toEqual(["JP"]); // zones have no country: a scoped deal stays on the site's country counters
+  });
+
   it("disputed period counts as invoiced amount, needs a reason", async () => {
     const id = await enterPeriod(db, net.direct.id, { from: "2026-09-20", to: "2026-09-21", amountInvoiced: "40" });
     await expect(markDisputed(db, id, " ")).rejects.toThrow(/причину/);

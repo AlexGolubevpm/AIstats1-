@@ -22,8 +22,11 @@ export async function dealCounters(db: PrismaClient, dealId: string, from: strin
   const range = { gte: d(from), lte: d(to) };
   for (const ds of deal.sites) {
     // Zones that stand on the deal's places on this site: the deal's own counter when no zone was chosen explicitly.
+    // Only for CPM deals (impressions are per zone and add up) without a geo scope (zones carry no country). A deal
+    // per 1000 loads keeps the site's loads: one page load is one unit however many zones fire on it.
     const placeSlugs = deal.places.filter((p) => p.siteId === ds.siteId).map((p) => p.placementSlug);
-    const placeZones = deal.counterSource === "ASG_ZONE" && !ds.zoneId && placeSlugs.length
+    const cpm = deal.paymentBasis === "CPM_OWN" || deal.paymentBasis === "CPM_ADVERTISER";
+    const placeZones = deal.counterSource === "ASG_ZONE" && !ds.zoneId && placeSlugs.length && cpm && !deal.geoScope.length
       ? await db.zone.findMany({ where: { siteId: ds.siteId, placementSlug: { in: placeSlugs } }, select: { id: true } }) : [];
     if (deal.counterSource === "ASG_ZONE" && ds.zoneId) {
       const rows = await db.factRevenueZone.findMany({ where: { zoneId: ds.zoneId, date: range } });
