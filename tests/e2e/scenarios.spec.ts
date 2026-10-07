@@ -76,6 +76,16 @@ test("4. new deal → enter period → payment → paid in the payments register
 
   await page.goto("/deals?tab=payments");
   await expect(page.getByText("E2E Media").first()).toBeVisible();
+
+  // Ending the deal keeps its August money on the site page, labelled: what the KPIs count is always listed.
+  await page.goBack();
+  await page.getByRole("button", { name: "Завершить" }).click();
+  await page.getByRole("dialog").getByRole("button", { name: "Завершить" }).click();
+  await expect(page.getByText(/завершён/i).first()).toBeVisible();
+  await page.goto("/sites/japan-tube.demo?from=2026-08-01&to=2026-08-31");
+  const onSite = page.locator("section", { hasText: "Фикс-дилы на сайте" });
+  await expect(onSite.getByRole("link", { name: /E2E Media · E2E баннер/ })).toBeVisible();
+  await expect(onSite.getByText(/^завершён/)).toBeVisible();
 });
 
 test("5. cost CSV import → preview → apply → listed in history, then revert", async ({ page }) => {

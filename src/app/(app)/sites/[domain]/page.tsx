@@ -47,14 +47,17 @@ export default async function SitePage({ params, searchParams }: Props) {
   if (!site) notFound();
   const by = TABS.some((t) => t.id === sp.by) ? sp.by! : "zones";
   const scope = { siteIds: [site.id] };
-  const [k, daily, alerts, deals, coverage] = await Promise.all([
+  const [k, daily, alerts, coverage, dealFacts] = await Promise.all([
     kpis(p, scope), dailyTotals(p, scope),
     db.alert.findMany({ where: { siteId: site.id, resolvedAt: null }, orderBy: [{ level: "desc" }, { moneyAtRisk: "desc" }] }),
-    db.deal.findMany({ where: { sites: { some: { siteId: site.id } }, status: { in: ["ACTIVE", "PAUSED"] } }, include: { advertiser: true } }),
     costCoverage(p, scope),
+    db.factFixDeal.groupBy({ by: ["dealId", "revenueState"], where: { siteId: site.id, date: { gte: D(p.from), lte: D(p.to) } },
+      _sum: { revenue: true, impsOwn: true, impsReported: true } }),
   ]);
-  const dealFacts = await db.factFixDeal.groupBy({ by: ["dealId", "revenueState"], where: { siteId: site.id, date: { gte: D(p.from), lte: D(p.to) } },
-    _sum: { revenue: true, impsOwn: true, impsReported: true } });
+  // Every deal that is on the site or earned on it in the period — so the fix-deal money in the KPIs is always explained
+  // by this list (an ended deal keeps its accruals for the days it ran; a detached one is labelled).
+  const deals = await db.deal.findMany({ where: { OR: [{ sites: { some: { siteId: site.id } }, status: { in: ["ACTIVE", "PAUSED"] } }, { id: { in: dealFacts.map((f) => f.dealId) } }] },
+    include: { advertiser: true, sites: { where: { siteId: site.id } } } });
   // The multiplier compares only days the advertiser reported (forecast days would drag it down), like factSums on /deals.
   const reportedFacts = await db.factFixDeal.groupBy({ by: ["dealId"], where: { siteId: site.id, date: { gte: D(p.from), lte: D(p.to) }, impsReported: { gt: 0 } },
     _sum: { impsOwn: true, impsReported: true } });
@@ -128,7 +131,12 @@ export default async function SitePage({ params, searchParams }: Props) {
                 const mult = rep ? dealMultiplier(rep, own) : null;
                 return (
                   <li key={d.id} className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-[13px]">
-                    <Link href={`/deals/${d.id}`} className="font-medium hover:text-accent">{d.advertiser.name} · {d.title}</Link>
+                    <span className="flex items-center gap-2">
+                      <Link href={`/deals/${d.id}`} className="font-medium hover:text-accent">{d.advertiser.name} · {d.title}</Link>
+                      {d.status === "ENDED" && <Badge tone="neutral">завершён{d.endsAt ? ` ${fmtDate(d.endsAt)}` : ""}</Badge>}
+                      {d.status === "PAUSED" && <Badge tone="warning">пауза</Badge>}
+                      {!d.sites.length && <Badge tone="negative" title="Сайт убран из дила, но начисления за период остались">не привязан</Badge>}
+                    </span>
                     <span className="num flex items-center gap-3 text-muted">
                       <span>{FORMAT_LABEL[d.format]}</span><span>{d.geoScope.length ? d.geoScope.join(", ") : "все гео"}</span>
                       <span>{fmtInt(own)} / {rep ? fmtInt(rep) : "—"}</span>

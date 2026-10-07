@@ -74,6 +74,34 @@ async function pauseDate(db: PrismaClient, dealId: string): Promise<string | nul
   return a ? isoOf(a.at) : null;
 }
 
+/** Day the deal was ended, from the audit log (null when never logged). */
+async function endDate(db: PrismaClient, dealId: string): Promise<string | null> {
+  const a = await db.auditLog.findFirst({ where: { entity: "Deal", entityId: dealId, field: "status", after: "ENDED" }, orderBy: { at: "desc" } });
+  return a ? isoOf(a.at) : null;
+}
+
+type DealWithSites = { id: string; status: string; startsAt: Date; endsAt: Date | null; sites: { siteId: string }[] };
+
+/**
+ * Removes accrual rows a deal must not have (any of them makes a site earn from a deal nobody can see on its page):
+ * sites no longer in the deal, days before the start or after the effective end (end date, pause, termination),
+ * rows of superseded period versions. Rows bound to a live period stay. Returns the number of rows removed.
+ */
+export async function reconcileDealFacts(db: PrismaClient, deal: DealWithSites, today: string): Promise<number> {
+  const siteIds = deal.sites.map((s) => s.siteId);
+  let end = deal.endsAt ? isoOf(deal.endsAt) : null;
+  if (deal.status === "PAUSED") { const at = await pauseDate(db, deal.id); if (at && (!end || addDaysIso(at, -1) < end)) end = addDaysIso(at, -1); }
+  if (deal.status === "ENDED") { const at = (await endDate(db, deal.id)) ?? end ?? today; if (!end || at < end) end = at; }
+  const superseded = (await db.dealPeriod.findMany({ where: { dealId: deal.id, supersededById: { not: null } }, select: { id: true } })).map((x) => x.id);
+  const gone = await db.factFixDeal.deleteMany({ where: { dealId: deal.id, OR: [
+    { siteId: { notIn: siteIds } },
+    { date: { lt: deal.startsAt } },
+    ...(end ? [{ date: { gt: d(end) }, dealPeriodId: null }] : []),
+    ...(superseded.length ? [{ dealPeriodId: { in: superseded } }] : []),
+  ] } });
+  return gone.count;
+}
+
 const termDaysOf = (deal: { startsAt: Date; endsAt: Date | null }) => (deal.endsAt ? daysIn(isoOf(deal.startsAt), isoOf(deal.endsAt)) : null);
 
 /** Active (non-superseded, entered) periods of a deal. */
@@ -87,8 +115,11 @@ async function enteredPeriods(db: PrismaClient, dealId: string) {
  */
 export async function forecastDeals(db: PrismaClient, from: string, to: string, dealId?: string): Promise<number> {
   const deals = await db.deal.findMany({ where: { status: { in: ["ACTIVE", "PAUSED", "ENDED"] }, startsAt: { lte: d(to) }, ...(dealId ? { id: dealId } : {}) }, include: { sites: true } });
+  // A draft earns nothing: rows left from before it was reset to draft (or seeded) go away.
+  await db.factFixDeal.deleteMany({ where: { deal: { status: "DRAFT", ...(dealId ? { id: dealId } : {}) } } });
   let rows = 0;
   for (const deal of deals) {
+    await reconcileDealFacts(db, deal, to);
     const start = isoOf(deal.startsAt) > from ? isoOf(deal.startsAt) : from;
     let end = deal.endsAt && isoOf(deal.endsAt) < to ? isoOf(deal.endsAt) : to;
     // A paused deal earns nothing from the day it was paused (the status change is in the audit log).
@@ -140,6 +171,8 @@ export async function forecastDeals(db: PrismaClient, from: string, to: string, 
 export async function distributePeriod(db: PrismaClient, periodId: string): Promise<void> {
   const p = await db.dealPeriod.findUniqueOrThrow({ where: { id: periodId }, include: { deal: { include: { sites: true } } } });
   const from = isoOf(p.from), to = isoOf(p.to);
+  // A period for a site that has since left the deal must not bring that site's rows back (reconcile removed them).
+  if (p.siteId && !p.deal.sites.some((s) => s.siteId === p.siteId)) return;
   const basis = p.deal.paymentBasis as PaymentBasis;
   let counters = await dealCounters(db, p.dealId, from, to);
   if (isFlat(basis)) counters = flatCells(p.siteId ? [p.siteId] : p.deal.sites.map((s) => s.siteId), from, to, counters);
@@ -321,7 +354,8 @@ export async function reforecastAll(db: PrismaClient, today = isoOf(new Date()))
   return forecastDeals(db, from, today);
 }
 async function reforecast(db: PrismaClient, id: string, today = isoOf(new Date())): Promise<void> {
-  const deal = await db.deal.findUniqueOrThrow({ where: { id } });
+  const deal = await db.deal.findUniqueOrThrow({ where: { id }, include: { sites: true } });
+  await reconcileDealFacts(db, deal, today); // also when the deal has not started yet and the forecast below is skipped
   const floor = isoOf(new Date(d(today).getTime() - (REFORECAST_DAYS - 1) * DAY));
   const from = isoOf(deal.startsAt) > floor ? isoOf(deal.startsAt) : floor;
   // Rows after a new, earlier end date are stale: the forecast only rewrites days inside the window.
@@ -331,7 +365,9 @@ async function reforecast(db: PrismaClient, id: string, today = isoOf(new Date()
 
 export async function setDealStatus(db: PrismaClient, id: string, status: "ACTIVE" | "PAUSED" | "ENDED", endsAt?: string): Promise<void> {
   const before = await db.deal.findUniqueOrThrow({ where: { id } });
-  await db.deal.update({ where: { id }, data: { status, ...(status === "ENDED" && !before.endsAt ? { endsAt: d(endsAt ?? isoOf(new Date())) } : {}) } });
+  // Ending a deal closes it today (or on the given day) even when a later end date was planned: no accrual after the end.
+  const ended = status === "ENDED" ? d(endsAt ?? isoOf(new Date())) : null;
+  await db.deal.update({ where: { id }, data: { status, ...(ended && (!before.endsAt || before.endsAt > ended) ? { endsAt: ended } : {}) } });
   await db.auditLog.create({ data: { entity: "Deal", entityId: id, field: "status", before: before.status, after: status } });
   await reforecast(db, id);
 }

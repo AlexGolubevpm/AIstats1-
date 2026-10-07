@@ -41,6 +41,15 @@ cost_days AS (
   SELECT count(*) AS days, count(*) FILTER (WHERE NOT EXISTS (SELECT 1 FROM "FactTrafficSource" f WHERE f.date = g.date)) AS without_cost
   FROM (SELECT DISTINCT date FROM "FactRevenueGeo" WHERE date BETWEEN (SELECT d_from FROM w) AND (SELECT d_to FROM w)) g
 ),
+-- Accrual rows a deal must not have: site no longer in the deal, day outside the deal's dates, superseded period
+-- version, draft deal. Each one makes a site earn from a deal its page does not show.
+orphan_deals AS (
+  SELECT count(*) AS rows FROM "FactFixDeal" f JOIN "Deal" d ON d.id = f."dealId"
+  LEFT JOIN "DealSite" ds ON ds."dealId" = f."dealId" AND ds."siteId" = f."siteId"
+  LEFT JOIN "DealPeriod" p ON p.id = f."dealPeriodId"
+  WHERE ds."dealId" IS NULL OR f.date < d."startsAt" OR (d."endsAt" IS NOT NULL AND f.date > d."endsAt" AND f."dealPeriodId" IS NULL)
+     OR p."supersededById" IS NOT NULL OR d.status = 'DRAFT'
+),
 metrika_cfg AS (
   SELECT (count("metrikaId") > 0) AS configured FROM "Site" WHERE status = 'ACTIVE'
 ),
@@ -80,4 +89,6 @@ SELECT c, v, verdict FROM (
          CASE WHEN active = 0 OR with_asg < active THEN 'FAIL' WHEN with_metrika = 0 THEN 'INFO' WHEN with_metrika < active THEN 'FAIL' ELSE 'PASS' END FROM sites
   UNION ALL SELECT 10, 'days with revenue but no traffic-source cut (cost missing), 7d', without_cost || ' of ' || days,
          CASE WHEN days = 0 OR without_cost = 0 THEN 'PASS' ELSE 'FAIL' END FROM cost_days
+  UNION ALL SELECT 11, 'fix-deal accrual rows outside the deal (site, dates, superseded, draft)', rows::text,
+         CASE WHEN rows = 0 THEN 'PASS' ELSE 'FAIL' END FROM orphan_deals
 ) t ORDER BY o;

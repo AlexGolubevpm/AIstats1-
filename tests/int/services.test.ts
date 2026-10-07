@@ -328,6 +328,64 @@ describe("deal forecast runs on save", () => {
   });
 });
 
+describe("accrual rows outside the deal are removed by every forecast", () => {
+  const D = (s: string) => new Date(`${s}T00:00:00Z`);
+  const today = new Date().toISOString().slice(0, 10);
+  const daysAgo = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+  const dates = (rows: { date: Date }[]) => rows.map((r) => r.date.toISOString().slice(0, 10)).sort();
+
+  it("a site removed from the deal loses its rows, including those of a period entered for that site", async () => {
+    const { saveDeal, reconcileDealFacts } = await import("@/server/services/deals");
+    const id = await saveDeal(db, { title: "Two sites", advertiser: "Acme", paymentBasis: "FLAT_DAILY", price: "20", siteIds: ["s1", "s2"], geoScope: [], geoExclude: false,
+      startsAt: daysAgo(5), endsAt: null, billingPeriod: "MONTH", paymentTermsDays: 30, counterSource: "MANUAL", billedVia: "DIRECT" } as never);
+    await enterPeriod(db, id, { from: daysAgo(5), to: daysAgo(3), siteId: "s2", amountInvoiced: "30", overrideReason: "акт" });
+    expect(await db.factFixDeal.count({ where: { dealId: id, siteId: "s2" } })).toBeGreaterThan(0);
+    // The owner takes s2 off the deal.
+    await saveDeal(db, { title: "Two sites", advertiser: "Acme", paymentBasis: "FLAT_DAILY", price: "20", siteIds: ["s1"], geoScope: [], geoExclude: false,
+      startsAt: daysAgo(5), endsAt: null, billingPeriod: "MONTH", paymentTermsDays: 30, counterSource: "MANUAL", billedVia: "DIRECT" } as never, id);
+    expect(await db.factFixDeal.count({ where: { dealId: id, siteId: "s2" } })).toBe(0);
+    expect(await db.factFixDeal.count({ where: { dealId: id, siteId: "s1" } })).toBe(6);
+    // The nightly re-spread of the period must not bring s2 back.
+    await forecastDeals(db, daysAgo(10), today);
+    expect(await db.factFixDeal.count({ where: { dealId: id, siteId: "s2" } })).toBe(0);
+    expect(await reconcileDealFacts(db, { ...(await db.deal.findUniqueOrThrow({ where: { id } })), sites: [{ siteId: "s1" }] }, today)).toBe(0);
+  });
+
+  it("ending a deal that had a later end date closes it today; a later start drops the rows before it", async () => {
+    const { saveDeal, setDealStatus } = await import("@/server/services/deals");
+    const id = await saveDeal(db, { title: "Planned", advertiser: "Acme", paymentBasis: "FLAT_DAILY", price: "10", siteIds: ["s1"], geoScope: [], geoExclude: false,
+      startsAt: daysAgo(6), endsAt: daysAgo(-20), billingPeriod: "MONTH", paymentTermsDays: 30, counterSource: "MANUAL", billedVia: "DIRECT" } as never);
+    expect(dates(await db.factFixDeal.findMany({ where: { dealId: id } }))).toEqual([6, 5, 4, 3, 2, 1, 0].map(daysAgo).sort());
+    await setDealStatus(db, id, "ENDED");
+    expect((await db.deal.findUniqueOrThrow({ where: { id } })).endsAt).toEqual(D(today));
+    // Rows after today never existed here; simulate a stale one and a pre-start one, then move the start later.
+    await db.factFixDeal.create({ data: { date: D(daysAgo(-1)), dealId: id, siteId: "s1", countryCode: "ZZ", revenue: "10", revenueState: "FORECAST" } });
+    await db.factFixDeal.create({ data: { date: D(daysAgo(9)), dealId: id, siteId: "s1", countryCode: "ZZ", revenue: "10", revenueState: "FORECAST" } });
+    await saveDeal(db, { title: "Planned", advertiser: "Acme", paymentBasis: "FLAT_DAILY", price: "10", siteIds: ["s1"], geoScope: [], geoExclude: false,
+      startsAt: daysAgo(2), endsAt: today, billingPeriod: "MONTH", paymentTermsDays: 30, counterSource: "MANUAL", billedVia: "DIRECT" } as never, id);
+    expect(dates(await db.factFixDeal.findMany({ where: { dealId: id } }))).toEqual([2, 1, 0].map(daysAgo).sort());
+  });
+
+  it("a correction that narrows the dates leaves no rows of the old version; a draft keeps no rows", async () => {
+    await db.factFixDeal.deleteMany();
+    const deal = await db.deal.create({ data: { title: "Narrow", advertiserId: net.direct.advertiserId, format: "BANNER", price: "1", paymentBasis: "FLAT_DAILY",
+      startsAt: D("2026-09-18"), billedVia: "DIRECT", counterSource: "MANUAL", sites: { create: [{ siteId: "s1" }] } } });
+    const v1 = await enterPeriod(db, deal.id, { from: "2026-09-18", to: "2026-09-21", amountInvoiced: "40", overrideReason: "акт" });
+    expect(await db.factFixDeal.count({ where: { dealId: deal.id } })).toBe(4);
+    await correctPeriod(db, v1, { from: "2026-09-20", to: "2026-09-21", amountInvoiced: "20", overrideReason: "акт короче" }, "даты");
+    await forecastDeals(db, "2026-09-18", "2026-09-21", deal.id);
+    const rows = await db.factFixDeal.findMany({ where: { dealId: deal.id } });
+    expect(rows.filter((r) => r.dealPeriodId === v1)).toHaveLength(0);
+    expect(rows.filter((r) => r.dealPeriodId && r.date <= D("2026-09-19"))).toHaveLength(0); // 18–19 are forecast again, not invoiced
+    expect(rows.filter((r) => r.dealPeriodId).map((r) => Number(r.revenue)).reduce((a, b) => a + b, 0)).toBeCloseTo(20, 3);
+    const draft = await db.deal.create({ data: { title: "Draft", advertiserId: net.direct.advertiserId, format: "BANNER", price: "1", status: "DRAFT",
+      startsAt: D("2026-09-18"), billedVia: "DIRECT", sites: { create: [{ siteId: "s1" }] } } });
+    await db.factFixDeal.create({ data: { date: D("2026-09-20"), dealId: draft.id, siteId: "s1", countryCode: "ZZ", revenue: "99", revenueState: "FORECAST" } });
+    await forecastDeals(db, "2026-09-18", "2026-09-21");
+    expect(await db.factFixDeal.count({ where: { dealId: draft.id } })).toBe(0);
+  });
+});
+
 describe("reforecastAll", () => {
   it("recomputes every deal over the last 92 days up to today and leaves older rows alone", async () => {
     const { reforecastAll } = await import("@/server/services/deals");

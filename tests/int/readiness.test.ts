@@ -17,7 +17,7 @@ beforeAll(async () => {
 describe("readiness.sql", () => {
   it("prints one verdict per checklist item and nothing identifying", async () => {
     const rows = await run();
-    expect(rows).toHaveLength(10);
+    expect(rows).toHaveLength(11);
     expect(rows.every((r) => ["PASS", "FAIL", "INFO"].includes(r.verdict))).toBe(true);
     const text = JSON.stringify(rows);
     for (const leak of ["one.test", "two.test", "three.test", "$"]) expect(text).not.toContain(leak);
@@ -45,5 +45,15 @@ describe("readiness.sql", () => {
     expect(by.get("ingest metrika yesterday")).toMatchObject({ v: "not configured", verdict: "INFO" });
     expect(by.get("active sites / with asg id / with metrika id")).toMatchObject({ v: "3 / 3 / 0", verdict: "INFO" });
     expect(by.get("asg sites with traffic-source cut (cost base) yesterday")).toMatchObject({ v: "0 of 3", verdict: "FAIL" });
+  });
+
+  it("flags accrual rows of a site that is no longer in the deal", async () => {
+    const check = "fix-deal accrual rows outside the deal (site, dates, superseded, draft)";
+    const byCheck = async () => new Map((await run()).map((r) => [r.c, r]));
+    expect((await byCheck()).get(check)).toMatchObject({ v: "0", verdict: "PASS" });
+    const direct = await db.deal.findFirstOrThrow({ where: { billedVia: "DIRECT" } });
+    const other = await db.site.findFirstOrThrow({ where: { NOT: { dealSites: { some: { dealId: direct.id } } } } });
+    await db.factFixDeal.create({ data: { date: new Date("2026-09-20T00:00:00Z"), dealId: direct.id, siteId: other.id, countryCode: "ZZ", revenue: "5", revenueState: "FORECAST" } });
+    expect((await byCheck()).get(check)).toMatchObject({ v: "1", verdict: "FAIL" });
   });
 });
