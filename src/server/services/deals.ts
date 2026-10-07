@@ -98,6 +98,8 @@ export async function forecastDeals(db: PrismaClient, from: string, to: string, 
     const periods = await enteredPeriods(db, deal.id);
     // An entered period covers its own site only (or every site when it has none): one site's invoice must not blank the others.
     const covered = (date: string, siteId: string) => periods.some((p) => (p.siteId == null || p.siteId === siteId) && isoOf(p.from) <= date && isoOf(p.to) >= date);
+    // Counters may have arrived (or been corrected) since the period was entered: spread its amount again over the days it covers.
+    for (const p of periods) if (isoOf(p.from) <= to && isoOf(p.to) >= from) await distributePeriod(db, p.id);
     await db.$transaction(async (tx) => {
       await tx.factFixDeal.deleteMany({ where: { dealId: deal.id, date: { gte: d(start), lte: d(to) }, dealPeriodId: null } });
     });
@@ -145,9 +147,10 @@ export async function distributePeriod(db: PrismaClient, periodId: string): Prom
   const amount = effectiveAmount({ status: p.status as PeriodStatus, amountInvoiced: p.amountInvoiced?.toString() ?? null,
     amountPaid: p.amountPaid?.toString() ?? null, amountCalculated: p.amountCalculated?.toString() ?? null });
   const state = revenueStateOf(p.status as PeriodStatus);
+  // No counters for the period (data not loaded yet): spread evenly over its days and sites rather than dumping the sum on one day.
   const cells = counters.length ? counters.map((c) => ({ ...c, weight: weightOf(basis, c) }))
-    : [{ date: to, siteId: p.siteId ?? p.deal.sites[0]?.siteId, countryCode: "ZZ", pageLoads: 0, impsOwn: 0, weight: 1 }];
-  if (!cells[0].siteId) throw new DealRuleError("no_site", "У дила нет сайтов — некуда разложить сумму");
+    : flatCells(p.siteId ? [p.siteId] : p.deal.sites.map((s) => s.siteId), from, to, []).map((c) => ({ ...c, weight: 1 }));
+  if (!cells[0]?.siteId) throw new DealRuleError("no_site", "У дила нет сайтов — некуда разложить сумму");
   const parts = distribute(amount, cells as never);
   const reported = p.impsReported ?? 0;
   const totalW = cells.reduce((a, c) => a + c.impsOwn, 0);
