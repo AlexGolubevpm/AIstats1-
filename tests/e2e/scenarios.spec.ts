@@ -174,16 +174,17 @@ test("formats: period in the URL, bundle filter and grouping, a zone mapped by h
   await page.getByRole("link", { name: "Без группировки" }).click();
   // Every AdSpyglass zone is a place: the grid has columns for the real zone names, nothing is "без формата".
   await expect(page.getByRole("columnheader", { name: /InVideo/ })).toBeVisible();
-  await expect(page.getByRole("columnheader", { name: /POP player/ })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: /^Pop/ })).toBeVisible();
+  await expect(page.getByRole("columnheader", { name: /DM_/ })).toHaveCount(0); // site-prefixed zone names never become columns
   await expect(page.getByRole("button", { name: /зон без формата/ })).toHaveCount(0);
-  // A zone can still be moved into another place by hand: footer_1's money then shows in "Under bar".
+  // A zone can still be moved into another place by hand: DM_Footer_A's money then shows in "Under bar".
   const row = page.locator("tbody tr").first();
   const underBar = row.getByRole("cell").nth(1 + (await page.getByRole("columnheader").allInnerTexts()).findIndex((t) => /^Under bar/.test(t)) - 1);
   await expect(underBar.getByRole("button", { name: "свободно" })).toBeVisible();
   await row.getByRole("button", { name: /^\d+ зон$/ }).click();
   const sheet = page.getByRole("dialog");
-  await expect(sheet.getByRole("cell", { name: "footer_1", exact: true }).first()).toBeVisible(); // the name cell; the select cell reads its chosen option
-  await sheet.getByLabel("Формат зоны footer_1").selectOption("under_bar");
+  await expect(sheet.getByRole("cell", { name: "DM_Footer_A", exact: true }).first()).toBeVisible(); // the name cell; the select cell reads its chosen option
+  await sheet.getByLabel("Формат зоны DM_Footer_A").selectOption("under_bar");
   await expect(page.getByText("Формат зоны сохранён")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(underBar.getByRole("button", { name: /^\$[\d,.]+/ })).toBeVisible();
