@@ -22,10 +22,14 @@ export const USE_LABEL: Record<PlaceUse, string> = {
   ROTATION: "Ротация ASG", OWN_DEAL: "Own deal ASG", FIX: "Фикс", CPA: "CPA", FREE: "Свободно", NONE: "Нет места",
 };
 
-/** The owner's list of places present on every site; more can be added on the inventory page. */
+/**
+ * The owner's list of places, the same on every site (ADR 0012); more can be added on the
+ * inventory page. AdSpyglass zones are mapped onto these by the type in their name.
+ */
 export const DEFAULT_PLACEMENTS = [
   "Tablink 1", "Tablink 2", "Tablink 3", "Underplayer", "Video link 1", "Video link 2",
   "Under bar", "Above bar", "Welcome bar", "Video pause banner",
+  "Pop", "Slider", "NTV A", "NTV B", "Footer A", "Footer B", "Footer C", "Footer D", "OutStream", "InVideo", "Push",
 ].map((title, i) => ({ slug: placementSlug(title), title, sortOrder: (i + 1) * 10 }));
 
 export function placementSlug(title: string): string {
@@ -33,11 +37,44 @@ export function placementSlug(title: string): string {
 }
 
 /**
- * Zone name → place, e.g. "491410. Tablink 1 (site.com)" → tablink_1. Words of the place title
- * must appear in order as whole words (so "Tablink 1" does not match "Tablink 12"); the longest
- * matching title wins ("Video pause banner" over a hypothetical "Banner").
+ * Zone names in ADOK carry a site prefix ("GX_NTV_A", "HS_OutStream", "GXhub_Slider", "footer_1",
+ * "POP player"): the type after the prefix decides the place. Each rule is a regex over the
+ * lower-cased name with the prefix removed; first match wins, the generic word match below is the fallback.
+ */
+const ZONE_RULES: [RegExp, string][] = [
+  [/^tablink[\s_-]*1(?![0-9])/, "tablink_1"], [/^tablink[\s_-]*2(?![0-9])/, "tablink_2"], [/^tablink[\s_-]*3(?![0-9])/, "tablink_3"],
+  [/^underplayer|^under[\s_-]*player/, "underplayer"],
+  [/^video[\s_-]*link[\s_-]*1(?![0-9])/, "video_link_1"], [/^video[\s_-]*link[\s_-]*2(?![0-9])/, "video_link_2"],
+  [/^under[\s_-]*bar/, "under_bar"], [/^above[\s_-]*bar/, "above_bar"], [/^welcome[\s_-]*bar/, "welcome_bar"],
+  [/^video[\s_-]*pause/, "video_pause_banner"],
+  [/^pop|popunder|^tabunder/, "pop"],
+  [/^slider/, "slider"],
+  [/^ntv[\s_-]*(a|1)(?![a-z0-9])/, "ntv_a"], [/^ntv[\s_-]*(b|2)(?![a-z0-9])/, "ntv_b"], [/^native[\s_-]*(a|1)(?![a-z0-9])/, "ntv_a"], [/^native[\s_-]*(b|2)(?![a-z0-9])/, "ntv_b"],
+  [/^(banners?[\s_-]*)?footer[\s_-]*(a|1)(?![a-z0-9])/, "footer_a"], [/^(banners?[\s_-]*)?footer[\s_-]*(b|2)(?![a-z0-9])/, "footer_b"],
+  [/^(banners?[\s_-]*)?footer[\s_-]*(c|3)(?![a-z0-9])/, "footer_c"], [/^(banners?[\s_-]*)?footer[\s_-]*(d|4)(?![a-z0-9])/, "footer_d"],
+  [/^outstream|^out[\s_-]*stream/, "outstream"],
+  [/^invideo|^in[\s_-]*video|^instream|^preroll|vast/, "invideo"],
+  [/^inpp|^in[\s_-]*page[\s_-]*push|^push/, "push"],
+];
+
+/** "GX_NTV_A" → "ntv_a", "GXhub_Slider" → "slider", "491. HS_InPP (site.com)" → "inpp": lower-case, no id/domain, no site prefix. */
+export function zoneTypeName(zoneName: string): string {
+  let n = zoneName.toLowerCase().replace(/^\d+\.\s*/, "").replace(/\s*\([^()]*\)\s*$/, "").trim();
+  // A short alphanumeric site prefix ("gx_", "hs_", "gxhub_") before a type that still has letters.
+  const m = n.match(/^([a-z0-9]{1,8})_(.+)$/);
+  if (m && /[a-z]/.test(m[2]) && !/^(tablink|video|under|above|welcome|ntv|native|footer|pop|out|in|banners?)$/.test(m[1])) n = m[2];
+  return n;
+}
+
+/**
+ * Zone name → place. First the type rules (ZONE_RULES) on the name without its site prefix, then
+ * the words of a place title appearing in order as whole words ("Tablink 1" does not match
+ * "Tablink 12"; the longest matching title wins). Only places that exist are returned.
  */
 export function matchPlacement(zoneName: string, places: { slug: string; title: string }[]): string | null {
+  const have = new Set(places.map((p) => p.slug));
+  const type = zoneTypeName(zoneName);
+  for (const [re, slug] of ZONE_RULES) if (re.test(type) && have.has(slug)) return slug;
   const name = zoneName.toLowerCase();
   let best: { slug: string; len: number } | null = null;
   for (const p of places) {

@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { DEFAULT_PLACEMENTS, daysLeft, matchPlacement, placementSlug, resolvePlace, type PlaceDeal, cellText } from "@/server/domain/inventory";
+import { DEFAULT_PLACEMENTS, daysLeft, matchPlacement, placementSlug, resolvePlace, zoneTypeName, type PlaceDeal, cellText } from "@/server/domain/inventory";
 
 describe("inventory", () => {
-  it("the owner's ten places, with stable slugs", () => {
+  it("the owner's places, the same on every site, with stable slugs", () => {
     expect(DEFAULT_PLACEMENTS.map((p) => p.slug)).toEqual(["tablink_1", "tablink_2", "tablink_3", "underplayer", "video_link_1", "video_link_2",
-      "under_bar", "above_bar", "welcome_bar", "video_pause_banner"]);
+      "under_bar", "above_bar", "welcome_bar", "video_pause_banner", "pop", "slider", "ntv_a", "ntv_b", "footer_a", "footer_b", "footer_c", "footer_d", "outstream", "invideo", "push"]);
     expect(placementSlug("  Video pause banner ")).toBe("video_pause_banner");
   });
 
@@ -15,7 +15,21 @@ describe("inventory", () => {
     expect(matchPlacement("491412. Tablink 12 (site.com)", places)).toBeNull();
     expect(matchPlacement("1. Video Pause Banner (a.com)", places)).toBe("video_pause_banner"); // longest wins over "Banner"
     expect(matchPlacement("2. Header banner 300x250 (a.com)", places)).toBe("banner");
-    expect(matchPlacement("3. Popunder (a.com)", places)).toBeNull();
+    expect(matchPlacement("3. Popunder (a.com)", places)).toBe("pop");
+  });
+
+  it("ADOK zone names with a site prefix map onto the catalog by type", () => {
+    const places = DEFAULT_PLACEMENTS;
+    const cases: [string, string | null][] = [
+      ["GX_NTV_A", "ntv_a"], ["GX_NTV_B", "ntv_b"], ["HS_OutStream", "outstream"], ["GXhub_Slider", "slider"], ["HS_InPP", "push"], ["HS_Slider", "slider"],
+      ["491. GX_Footer_A (gayxhub.com)", "footer_a"], ["footer_1", "footer_a"], ["footer_4", "footer_d"], ["Banners_Footer_B", "footer_b"],
+      ["POP player", "pop"], ["POP thumbs", "pop"], ["Popunder", "pop"], ["ntv_1", "ntv_a"], ["ntv_2", "ntv_b"], ["InVideo", "invideo"], ["Preroll_VAST", "invideo"],
+      ["HS_Tablink_2", "tablink_2"], ["GX_Underplayer", "underplayer"], ["GX_Video_link_1", "video_link_1"], ["HS_Welcome_bar", "welcome_bar"],
+      ["AA_AAA_aaaa", null], ["Banners_Sidebar", null],
+    ];
+    for (const [name, slug] of cases) expect([name, matchPlacement(name, places)]).toEqual([name, slug]);
+    expect(zoneTypeName("491. GX_NTV_A (gayxhub.com)")).toBe("ntv_a");
+    expect(zoneTypeName("Tablink 1")).toBe("tablink 1"); // no prefix to strip
   });
 
   it("a running deal wins, then the manual state, then a rotation zone; else free", () => {
