@@ -206,7 +206,7 @@ describe("deals service", () => {
     // Counters exist only for 09-20 and 09-21 (factory); the period runs 09-18 … 09-21.
     await enterPeriod(db, deal.id, { from: "2026-09-18", to: "2026-09-21", amountInvoiced: "400", overrideReason: "акт" });
     let rows = await db.factFixDeal.findMany({ where: { dealId: deal.id }, orderBy: { date: "asc" } });
-    const byDay = (rs: typeof rows) => Object.fromEntries(Object.entries(Object.groupBy(rs, (r) => r.date.toISOString().slice(0, 10))).map(([d, xs]) => [d, xs!.reduce((a, r) => a + Number(r.revenue), 0)]));
+    const byDay = (rs: typeof rows) => rs.reduce<Record<string, number>>((acc, r) => { const d = r.date.toISOString().slice(0, 10); acc[d] = (acc[d] ?? 0) + Number(r.revenue); return acc; }, {});
     expect(Object.keys(byDay(rows)).sort()).toEqual(["2026-09-20", "2026-09-21"]); // by loads: the two days with data
     // Data for 09-18 and 09-19 arrives (a backfill): the nightly forecast spreads the invoice again over all four days.
     for (const day of ["2026-09-18", "2026-09-19"]) await db.factRevenueGeo.create({ data: { date: D(day), siteId: "s1", networkId: net.net.id, countryCode: "JP", device: "DESKTOP", pageLoads: 20_000, revenueReported: "1" } });
