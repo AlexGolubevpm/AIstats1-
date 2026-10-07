@@ -198,6 +198,33 @@ describe("deals service", () => {
     expect(await sumRevenue(net.direct.id)).toBe("40");
   });
 
+  it("an invoice never lands on one day: no counters → evenly over the period; counters only on one day → re-spread when the others arrive", async () => {
+    await db.factFixDeal.deleteMany();
+    const D = (s: string) => new Date(`${s}T00:00:00Z`);
+    const deal = await db.deal.create({ data: { title: "Loads", advertiserId: net.direct.advertiserId, format: "BANNER", price: "1", paymentBasis: "PER_1000_LOADS",
+      startsAt: D("2026-09-18"), billedVia: "DIRECT", counterSource: "ASG_ZONE", sites: { create: [{ siteId: "s1" }] } } });
+    // Counters exist only for 09-20 and 09-21 (factory); the period runs 09-18 … 09-21.
+    await enterPeriod(db, deal.id, { from: "2026-09-18", to: "2026-09-21", amountInvoiced: "400", overrideReason: "акт" });
+    let rows = await db.factFixDeal.findMany({ where: { dealId: deal.id }, orderBy: { date: "asc" } });
+    const byDay = (rs: typeof rows) => rs.reduce<Record<string, number>>((acc, r) => { const d = r.date.toISOString().slice(0, 10); acc[d] = (acc[d] ?? 0) + Number(r.revenue); return acc; }, {});
+    expect(Object.keys(byDay(rows)).sort()).toEqual(["2026-09-20", "2026-09-21"]); // by loads: the two days with data
+    // Data for 09-18 and 09-19 arrives (a backfill): the nightly forecast spreads the invoice again over all four days.
+    for (const day of ["2026-09-18", "2026-09-19"]) await db.factRevenueGeo.create({ data: { date: D(day), siteId: "s1", networkId: net.net.id, countryCode: "JP", device: "DESKTOP", pageLoads: 20_000, revenueReported: "1" } });
+    await forecastDeals(db, "2026-09-18", "2026-09-21");
+    rows = await db.factFixDeal.findMany({ where: { dealId: deal.id } });
+    const days = byDay(rows);
+    expect(Object.keys(days).sort()).toEqual(["2026-09-18", "2026-09-19", "2026-09-20", "2026-09-21"]);
+    expect(Object.values(days).reduce((a, b) => a + b, 0)).toBeCloseTo(400, 3);
+    expect(days["2026-09-18"]).toBeCloseTo(100, 3); // equal loads → equal shares
+    // No counters at all for a counter-based deal: even by day and site, not the whole sum on the last day.
+    const empty = await db.deal.create({ data: { title: "Empty", advertiserId: net.direct.advertiserId, format: "BANNER", price: "1", paymentBasis: "PER_1000_LOADS",
+      startsAt: D("2026-08-01"), billedVia: "DIRECT", counterSource: "ASG_ZONE", sites: { create: [{ siteId: "s1" }, { siteId: "s2" }] } } });
+    await enterPeriod(db, empty.id, { from: "2026-08-01", to: "2026-08-04", amountInvoiced: "80", overrideReason: "акт" });
+    const e = await db.factFixDeal.findMany({ where: { dealId: empty.id } });
+    expect(e).toHaveLength(8); // 4 days × 2 sites
+    expect(new Set(e.map((r) => Number(r.revenue)))).toEqual(new Set([10]));
+  });
+
   it("an entered flat period is spread evenly over its days, even without counters", async () => {
     const manual = await db.deal.create({ data: { title: "Flat", advertiserId: net.direct.advertiserId, format: "BANNER", price: "100",
       paymentBasis: "FLAT_PERIOD", billingPeriod: "TERM", counterSource: "MANUAL", startsAt: D1, endsAt: D2, sites: { create: [{ siteId: "s1" }] } } });
