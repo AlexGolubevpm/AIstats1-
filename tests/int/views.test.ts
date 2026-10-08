@@ -1,13 +1,14 @@
 import { beforeAll, describe, expect, it } from "vitest";
-import { buildNetwork } from "@tests/factories/network";
+import { buildNetwork, D1 } from "@tests/factories/network";
 import { resetDb, testDb } from "./helpers";
 
 const db = testDb();
+let net: Awaited<ReturnType<typeof buildNetwork>>;
 const num = (v: unknown) => Number(v);
 
 beforeAll(async () => {
   await resetDb();
-  await buildNetwork(db);
+  net = await buildNetwork(db);
 });
 
 describe("v_site_geo_daily", () => {
@@ -117,5 +118,39 @@ describe("mcp_reader role", () => {
       await tx.$executeRawUnsafe("SET LOCAL ROLE mcp_reader");
       return tx.$queryRawUnsafe(`SELECT * FROM "Site"`);
     })).rejects.toThrow(/permission denied/);
+  });
+});
+
+describe("v_site_geo_alloc_daily (ADR 0015)", () => {
+  const q = (sql: string) => db.$queryRawUnsafe<Record<string, unknown>[]>(sql);
+  it("splits cost by nature and allocates the no-country part: rate by loads, revshare by revenue; ZZ row only with its own money", async () => {
+    await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 0, rateModel: "REVSHARE", rate: "1", cost: "22", origin: "ASG" } });
+    await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "direct", uniquesBought: 100, rateModel: "CPU", rate: "0.1", cost: "10", origin: "RATE" } });
+    const split = await q(`SELECT SUM(cost_rate)::float8 rate, SUM(cost_revshare)::float8 rs FROM v_site_geo_daily WHERE site_id = 's1' AND country_code = 'ZZ' AND date = '2026-09-20'`);
+    expect(split[0]).toEqual({ rate: 10, rs: 22 });
+    const rows = await q(`SELECT country_code cc, cost::float8 cost, cost_rate::float8 rate, cost_revshare::float8 rs, cost_own::float8 own, estimated FROM v_site_geo_alloc_daily WHERE site_id = 's1' AND date = '2026-09-20' ORDER BY 1`);
+    expect(rows.map((r) => r.cc)).toEqual(["JP", "US"]); // the cost-only ZZ row is gone: its money sits on the countries
+    const jp = rows[0], us = rows[1];
+    expect(jp).toMatchObject({ own: 12, estimated: true });
+    expect(Number(jp.rate)).toBeCloseTo(12 + 5, 6); // equal loads → $5 each of the $10
+    expect(Number(jp.rs)).toBeCloseTo(22 * (12 / 22), 6); // JP earned $12 of $22 that day
+    expect(Number(us.rs)).toBeCloseTo(22 * (10 / 22), 6);
+    expect(Number(jp.cost) + Number(us.cost)).toBeCloseTo(12 + 5 + 22 + 10, 6);
+  });
+
+  it("a day without a country cut keeps everything on ZZ, unestimated; XX never takes a share", async () => {
+    const D3 = "2026-09-19";
+    await db.factRevenueGeo.create({ data: { date: new Date(`${D3}T00:00:00Z`), siteId: "s1", networkId: net.net.id, countryCode: "ZZ", device: "UNKNOWN", pageLoads: 10_000, revenueReported: "20" } });
+    await db.factCost.create({ data: { date: new Date(`${D3}T00:00:00Z`), siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 0, rateModel: "REVSHARE", rate: "1", cost: "6", origin: "ASG" } });
+    const zz = await q(`SELECT country_code cc, revenue::float8 revenue, cost::float8 cost, estimated FROM v_site_geo_alloc_daily WHERE site_id = 's1' AND date = '${D3}'`);
+    expect(zz).toEqual([{ cc: "ZZ", revenue: 20, cost: 6, estimated: false }]);
+    await db.factRevenueGeo.create({ data: { date: D1, siteId: "s1", networkId: net.net.id, countryCode: "XX", device: "UNKNOWN", pageLoads: 50_000, revenueReported: "1" } });
+    await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubetraffic", uniquesBought: 100, rateModel: "CPU", rate: "0.1", cost: "10", origin: "RATE" } });
+    const d1 = await q(`SELECT country_code cc, cost::float8 cost, cost_rate::float8 rate FROM v_site_geo_alloc_daily WHERE site_id = 's1' AND date = '2026-09-20' ORDER BY 1`);
+    expect(d1.find((r) => r.cc === "XX")!.cost).toBe(0); // unrecognised traffic carries none of the no-country cost
+    expect(d1.find((r) => r.cc === "JP")!.rate).toBeCloseTo(12 + 5 + 5, 6); // the $10 from the first case and this $10, by loads (XX not in the weights)
+    const totals = await q(`SELECT SUM(cost)::float8 a FROM v_site_geo_alloc_daily WHERE site_id = 's1'`);
+    const base = await q(`SELECT SUM(cost)::float8 b FROM v_site_geo_daily WHERE site_id = 's1'`);
+    expect(totals[0].a).toBeCloseTo(base[0].b as number, 6); // allocation moves money, never creates or loses it
   });
 });

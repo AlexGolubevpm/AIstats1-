@@ -153,30 +153,38 @@ describe("deals", () => {
   });
 });
 
-describe("geo: no-country money is spread over the countries by page loads", () => {
-  it("ZZ source cost lands on JP and US pro rata to loads, the ZZ row disappears, totals stay equal", async () => {
+describe("geo: no-country cost is allocated per site and day (rate by loads, revshare by revenue); no-country revenue stays «Без страны»", () => {
+  it("ZZ revshare cost lands on JP and US pro rata to their revenue, the cost-only ZZ row disappears, totals stay equal", async () => {
     await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 0, rateModel: "REVSHARE", rate: "1", cost: "8", origin: "ASG" } });
     const rows = await geoTable(P, { siteIds: ["s1"] }, 0);
     expect(rows.map((r) => r.country).sort()).toEqual(["JP", "US"]);
     const jp = rows.find((r) => r.country === "JP")!, us = rows.find((r) => r.country === "US")!;
-    expect(jp.cost + us.cost).toBeCloseTo(24 + 10 + 8, 6); // factory cost + the spread $8
-    expect(jp.cost).toBeCloseTo(24 + 4, 6); // equal loads → half each
+    expect(jp.cost + us.cost).toBeCloseTo(24 + 10 + 8, 6); // factory cost + the allocated $8
+    expect(jp.cost).toBeCloseTo(24 + 8 * (12 / 22), 4); // D1: JP earned $12 ($10 + $2 own deal), US $10 → revshare follows revenue
     expect([jp.estimated, us.estimated]).toEqual([true, true]);
     const t = await totals(P, { siteIds: ["s1"] });
     expect(rows.reduce((a, r) => a + r.cost, 0)).toBeCloseTo(t.cost, 6);
     expect(rows.reduce((a, r) => a + r.revenue, 0)).toBeCloseTo(t.revenue, 6);
   });
 
-  it("no-country cost of one site never lands on another site's countries; its loads move with it", async () => {
+  it("ZZ rate cost (bought per unique) is allocated by page loads instead", async () => {
+    await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 400, rateModel: "CPU", rate: "0.02", cost: "8", origin: "RATE" } });
+    const rows = await geoTable(P, { siteIds: ["s1"] }, 0);
+    expect(rows.find((r) => r.country === "JP")!.cost).toBeCloseTo(24 + 4, 6); // equal loads → half each
+    expect(rows.find((r) => r.country === "US")!.cost).toBeCloseTo(10 + 4, 6);
+  });
+
+  it("no-country cost of one site never lands on another site's countries; no-country loads stay on «Без страны»", async () => {
     await db.factRevenueGeo.create({ data: { date: D1, siteId: "s2", networkId: net.net.id, countryCode: "DE", device: "DESKTOP", pageLoads: 5_000, revenueReported: "9" } });
     await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 0, rateModel: "REVSHARE", rate: "1", cost: "8", origin: "ASG" } });
     await db.factRevenueGeo.create({ data: { date: D1, siteId: "s1", networkId: net.net.id, countryCode: "ZZ", device: "UNKNOWN", pageLoads: 2_000, revenueReported: "0" } });
     const rows = await geoTable(P, {}, 0);
     const de = rows.find((r) => r.country === "DE")!;
     expect([de.cost, de.estimated, de.revPer1k]).toEqual([0, false, 1.8]); // s2's Germany: untouched by s1's ZZ cost
-    const jp = rows.find((r) => r.country === "JP")!;
-    expect(jp.estimated).toBe(true);
-    expect(rows.filter((r) => r.country !== "ZZ").reduce((a, r) => a + r.pageLoads, 0)).toBe(120_000 + 5_000 + 2_000); // ZZ loads spread, not dropped
+    expect(rows.find((r) => r.country === "JP")!.estimated).toBe(true);
+    expect(rows.filter((r) => r.country !== "ZZ").reduce((a, r) => a + r.pageLoads, 0)).toBe(120_000 + 5_000);
+    const zz = rows.find((r) => r.country === "ZZ")!;
+    expect(zz).toMatchObject({ name: "Без страны", pageLoads: 2_000, cost: 0, romi: null }); // loads without a country are shown, not guessed onto countries
     expect(rows.reduce((a, r) => a + r.cost, 0)).toBeCloseTo((await totals(P)).cost, 6);
   });
 
@@ -206,10 +214,23 @@ describe("geo: no-country money is spread over the countries by page loads", () 
     expect(rows[0]).toMatchObject({ country: "ZZ", name: "Без страны", revenue: 5, romi: null, revPer1k: null });
   });
 
-  it("the geo matrix spreads no-country cost per site too", async () => {
+  it("the geo matrix uses the same allocation as the table and the loss-geo alert", async () => {
     await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 0, rateModel: "REVSHARE", rate: "1", cost: "8", origin: "ASG" } });
     const mx = await geoMatrix(P);
     expect(mx.countries).not.toContain("ZZ");
-    expect(mx.value("one.test", "JP")).toBeCloseTo(((22 - 28) / 28) * 100, 3); // $20 + $2 own deal vs $24 + half of the $8
+    const jpCost = 24 + 8 * (12 / 22);
+    expect(mx.value("one.test", "JP")).toBeCloseTo(((22 - jpCost) / jpCost) * 100, 3); // $20 + $2 own deal vs $24 + the revenue share of the $8
+    const table = (await geoTable(P, { siteIds: ["s1"] }, 0)).find((r) => r.country === "JP")!;
+    expect(mx.value("one.test", "JP")).toBeCloseTo(table.romi!, 6);
+  });
+
+  it("a day without a country cut keeps its money on «Без страны»: nothing of it is guessed onto countries", async () => {
+    const D3 = new Date("2026-09-19T00:00:00Z");
+    await db.factRevenueGeo.create({ data: { date: D3, siteId: "s1", networkId: net.net.id, countryCode: "ZZ", device: "UNKNOWN", pageLoads: 10_000, revenueReported: "20" } });
+    await db.factCost.create({ data: { date: D3, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 0, rateModel: "REVSHARE", rate: "1", cost: "6", origin: "ASG" } });
+    const rows = await geoTable({ from: "2026-09-19", to: "2026-09-21" }, { siteIds: ["s1"] }, 0);
+    expect(rows.find((r) => r.country === "ZZ")).toMatchObject({ revenue: 20, cost: 6, pageLoads: 10_000, romi: null });
+    expect(rows.find((r) => r.country === "JP")!.cost).toBe(24); // untouched by the totals-only day
+    expect(rows.reduce((a, r) => a + r.revenue, 0)).toBeCloseTo((await totals({ from: "2026-09-19", to: "2026-09-21" }, { siteIds: ["s1"] })).revenue, 6);
   });
 });
