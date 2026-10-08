@@ -1,0 +1,15 @@
+# The app under a base path: https://APP_DOMAIN/BASE_PATH (e.g. xhubtraffic.com/admin, docs/ops/xhubtraffic-admin.md).
+# Caddy gets the certificate for APP_DOMAIN itself. The root of the domain redirects to the app,
+# robots are kept out of everything, anything else is 404.
+{$APP_DOMAIN} {
+	encode zstd gzip
+	redir / {$BASE_PATH} 302
+	respond /robots.txt "User-agent: *
+Disallow: /" 200
+	handle {$BASE_PATH}/* {
+		reverse_proxy web:3000
+	}
+	handle {
+		respond 404
+	}
+}

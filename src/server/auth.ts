@@ -5,6 +5,13 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import bcrypt from "bcryptjs";
 import type { PrismaClient } from "@/generated/prisma/client";
 
+import { cookiePath } from "@/lib/base-path";
+
+/** Options of the session cookie: HttpOnly, Lax, Secure on HTTPS (COOKIE_SECURE=1), scoped to the app's base path. */
+export function sessionCookieOptions(secure = process.env.COOKIE_SECURE === "1") {
+  return { httpOnly: true, sameSite: "lax" as const, secure, path: cookiePath(), maxAge: SESSION_DAYS * 86_400 };
+}
+
 export const SESSION_COOKIE = "ts_session";
 export const SESSION_DAYS = 30;
 const PASSWORD_KEY = "password_hash";

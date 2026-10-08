@@ -7,6 +7,10 @@ cd /opt/tubestat
 IMAGE="$1"
 export APP_IMAGE="$IMAGE"
 
+# Domain and base path come from GitHub variables (APP_DOMAIN, BASE_PATH in the environment of this call);
+# empty values leave .env as it is. Values are never printed.
+bash /opt/tubestat/apply-env.sh
+
 echo "==> Pull $IMAGE"
 docker compose pull web
 [ -n "${COMPOSE_PROFILES:-}" ] || grep -q "^COMPOSE_PROFILES=" .env 2>/dev/null || echo "note: worker is off (COMPOSE_PROFILES=worker not set in .env)"

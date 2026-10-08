@@ -24,7 +24,7 @@ export default defineConfig({
   },
   webServer: {
     command: `npx next start -p ${PORT}`,
-    url: `http://127.0.0.1:${PORT}/api/health`,
+    url: `http://127.0.0.1:${PORT}${(process.env.BASE_PATH ?? "").replace(/\/$/, "")}/api/health`, // E2E runs the root build; BASE_PATH only when checking a base-path build by hand
     reuseExistingServer: false,
     timeout: 120_000,
     env: { DATABASE_URL: E2E_DATABASE_URL, APP_LOGIN: E2E_LOGIN, APP_PASSWORD: E2E_PASSWORD, REDIS_URL: "redis://127.0.0.1:1", NODE_ENV: "production" },

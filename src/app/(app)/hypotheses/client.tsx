@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useState, useTransition } from "react";
 import { ActionForm, FormField } from "@/components/forms/action-form";
 import { Button } from "@/components/ui/button";
@@ -75,6 +76,6 @@ export function HypothesisActions({ id, status }: { id: string; status: string }
 /** On /alerts: the alert becomes a hypothesis right away (the nightly run would do it too). */
 export function ToHypothesisButton({ alertId, exists }: { alertId: string; exists: boolean }) {
   const [pending, start] = useTransition();
-  if (exists) return <a href="/hypotheses" className="text-xs text-accent hover:underline">в гипотезах</a>;
+  if (exists) return <Link href="/hypotheses" className="text-xs text-accent hover:underline">в гипотезах</Link>;
   return <Button size="sm" variant="ghost" disabled={pending} onClick={() => start(() => hypothesisFromAlertAction(alertId))}>В гипотезу</Button>;
 }

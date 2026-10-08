@@ -7,6 +7,7 @@ import { StatusBadge } from "@/components/data/misc";
 import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Section } from "@/components/ui/card";
+import { withBase } from "@/lib/base-path";
 import { fmtDate, fmtMoney, fmtPercent } from "@/lib/format";
 import { daysBetween, periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
@@ -54,7 +55,7 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
     <>
       <PageHeader title="Финансы по тьюбам" sub="Сколько каждый сайт заработал, сколько ещё придёт и где мы в минусе" period={p}
         extraPresets={[{ id: "quarter", label: "Квартал" }]}
-        actions={<a href={`/api/export/month?month=${p.from.slice(0, 7)}`} className="inline-flex h-8 items-center rounded-md border border-border bg-surface px-3 text-[13px] hover:bg-surface-hover">Отчёт за месяц (CSV)</a>} />
+        actions={<a href={withBase(`/api/export/month?month=${p.from.slice(0, 7)}`)} className="inline-flex h-8 items-center rounded-md border border-border bg-surface px-3 text-[13px] hover:bg-surface-hover">Отчёт за месяц (CSV)</a>} />
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-4 min-[1800px]:grid-cols-8">
         <div className="card flex flex-col gap-2 p-4 lg:col-span-1">
           <span className="text-xs font-medium text-muted">Выручка всего</span>
