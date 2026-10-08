@@ -111,7 +111,9 @@ jobs:
         with:
           context: .
           push: true
-          build-args: APP_VERSION=${{ github.sha }}
+          build-args: |
+            APP_VERSION=${{ github.sha }}
+            BASE_PATH=${{ vars.APP_BASE_PATH }}
           tags: |
             ${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.IMAGE }}:latest
@@ -134,11 +136,11 @@ jobs:
 
       - name: Upload stack files
         if: steps.app.outputs.ready == 'true'
-        run: scp deploy/docker-compose.yml deploy/Caddyfile deploy/deploy.sh deploy/backup.sh deploy@${{ secrets.DEPLOY_HOST }}:/opt/tubestat/
+        run: scp deploy/docker-compose.yml deploy/Caddyfile deploy/Caddyfile.basepath deploy/deploy.sh deploy/apply-env.sh deploy/backup.sh deploy@${{ secrets.DEPLOY_HOST }}:/opt/tubestat/
 
       - name: Deploy
         if: steps.app.outputs.ready == 'true'
         run: |
           ssh deploy@${{ secrets.DEPLOY_HOST }} \
             "echo '${{ secrets.GITHUB_TOKEN }}' | docker login ghcr.io -u '${{ github.actor }}' --password-stdin \
-             && bash /opt/tubestat/deploy.sh '${{ env.IMAGE }}:${{ github.sha }}'; rc=\$?; docker logout ghcr.io >/dev/null; exit \$rc"
+             && APP_DOMAIN='${{ vars.APP_DOMAIN }}' BASE_PATH='${{ vars.APP_BASE_PATH }}' bash /opt/tubestat/deploy.sh '${{ env.IMAGE }}:${{ github.sha }}'; rc=\$?; docker logout ghcr.io >/dev/null; exit \$rc"

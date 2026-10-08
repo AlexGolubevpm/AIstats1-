@@ -16,7 +16,9 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
-ENV NEXT_TELEMETRY_DISABLED=1
+# BASE_PATH="" serves the app at the root, "/admin" under xhubtraffic.com/admin (docs/CICD.md#domain). Fixed per image.
+ARG BASE_PATH=""
+ENV NEXT_TELEMETRY_DISABLED=1 BASE_PATH=$BASE_PATH
 RUN npx prisma generate && npm run build
 
 FROM base AS runner
