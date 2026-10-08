@@ -24,37 +24,28 @@ const day = (s: string) => new Date(`${s}T00:00:00Z`);
 export interface RuleContext { db: PrismaClient; asOf: string; configuredSources: string[] }
 
 /**
- * 1. Loss-making geo: 7 days, revenue < cost, cost > $5, ≥ 10 000 loads. Only days the site has a
- * country cut (a day with just the ZZ total has no country revenue and would look like a loss).
- * ZZ cost (traffic sources, ADR 0006) is spread over the day's countries by loads, the same way the
- * geo table does it (ADR 0008), so the alert and the page agree. XX (unrecognised) is skipped.
+ * 1. Loss-making geo: over 7 days the country's revenue is below its cost (cost > $5, ≥ 10 000 loads).
+ * Cost by country comes from v_site_geo_alloc_daily: the country's own cost plus the site's no-country
+ * rate cost by loads and revshare cost by revenue (ADR 0015) — the same figures the geo pages show.
  */
 async function lossGeo({ db, asOf }: RuleContext): Promise<Candidate[]> {
-  const rows = await db.$queryRaw<{ site_id: string; domain: string; country_code: string; rev: unknown; cost: unknown; loads: unknown }[]>`
-    WITH g AS (
-      SELECT g.site_id, g.date, g.country_code, g.revenue, g.cost, g.page_loads
-      FROM v_site_geo_daily g
-      WHERE g.date >= ${day(addDays(asOf, -7))} AND g.date < ${day(asOf)} AND g.country_code <> 'XX'
-        AND EXISTS (SELECT 1 FROM "FactRevenueGeo" r WHERE r."siteId" = g.site_id AND r.date = g.date AND r."countryCode" <> 'ZZ')
-    ), zz AS (SELECT site_id, date, SUM(cost) zz_cost FROM g WHERE country_code = 'ZZ' GROUP BY 1, 2),
-    tot AS (SELECT site_id, date, SUM(page_loads) loads FROM g WHERE country_code <> 'ZZ' GROUP BY 1, 2),
-    c AS (
-      SELECT g.site_id, g.country_code, g.revenue, g.page_loads,
-             g.cost + COALESCE(zz.zz_cost, 0) * g.page_loads / NULLIF(tot.loads, 0) AS cost
-      FROM g JOIN tot USING (site_id, date) LEFT JOIN zz USING (site_id, date) WHERE g.country_code <> 'ZZ'
-    )
-    SELECT c.site_id, s.domain, c.country_code, SUM(c.revenue) rev, SUM(c.cost) cost, SUM(c.page_loads) loads
-    FROM c JOIN "Site" s ON s.id = c.site_id WHERE s.status <> 'ARCHIVED'
-    GROUP BY 1, 2, 3 HAVING SUM(c.revenue) < SUM(c.cost) AND SUM(c.cost) > 5 AND SUM(c.page_loads) >= 10000`;
+  // One allocation for the alert and the pages: v_site_geo_alloc_daily (ADR 0015). Days without a country
+  // cut keep their money on ZZ and are not in the country rows, so a totals-only day never looks like a loss.
+  const rows = await db.$queryRaw<{ site_id: string; domain: string; country_code: string; rev: unknown; cost: unknown; cost_rate: unknown; cost_rs: unknown; loads: unknown }[]>`
+    SELECT a.site_id, s.domain, a.country_code, SUM(a.revenue) rev, SUM(a.cost) cost, SUM(a.cost_rate) cost_rate, SUM(a.cost_revshare) cost_rs, SUM(a.page_loads) loads
+    FROM v_site_geo_alloc_daily a JOIN "Site" s ON s.id = a.site_id
+    WHERE a.date >= ${day(addDays(asOf, -7))} AND a.date < ${day(asOf)} AND a.country_code NOT IN ('ZZ', 'XX') AND s.status <> 'ARCHIVED'
+    GROUP BY 1, 2, 3 HAVING SUM(a.revenue) < SUM(a.cost) AND SUM(a.cost) > 5 AND SUM(a.page_loads) >= 10000`;
   return rows.map((r) => {
-    const rev = n(r.rev), cost = n(r.cost), romi = ((rev - cost) / cost) * 100;
+    const rev = n(r.rev), cost = n(r.cost), rate = n(r.cost_rate), rs = n(r.cost_rs), romi = ((rev - cost) / cost) * 100;
+    const split = rs > 0 ? ` Расход: по ставке ${money(rate)}, доля revshare ${money(rs)} (оценка по выручке страны).` : "";
     return {
       rule: "loss_geo", entityKey: `site:${r.site_id}|country:${r.country_code}`, level: "CRITICAL",
       title: `Убыточное гео ${r.country_code} на ${r.domain}`,
-      message: `За 7 дней выручка ${money(rev)} при расходе ${money(cost)} (ROMI ${romi.toFixed(1)}%, ${int(n(r.loads))} загрузок).`,
+      message: `За 7 дней выручка ${money(rev)} при расходе ${money(cost)} (ROMI ${romi.toFixed(1)}%, ${int(n(r.loads))} загрузок).${split}`,
       action: "Снизить закупку гео или поднять флор.",
       link: `/sites/${r.domain}?by=geo&preset=7d`, siteId: r.site_id, moneyAtRisk: cost - rev,
-      payload: { country: r.country_code, revenue: rev, cost, romi },
+      payload: { country: r.country_code, revenue: rev, cost, costRate: rate, costRevshare: rs, romi },
     };
   });
 }

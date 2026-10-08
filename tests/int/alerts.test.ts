@@ -131,22 +131,43 @@ describe("alert rules", () => {
     expect(await RULES.sourceUnconfigured(ctx())).toHaveLength(0);
   });
 
-  it("1: a day with only the site total is not a loss; ZZ source cost is spread over the day's countries by loads", async () => {
+  it("1: a day with only the site total is not a loss; ZZ revshare cost follows the countries' revenue, ZZ rate cost their loads", async () => {
     // s1 D1/D2 have JP/US rows. Add a totals-only day with a country cost row: no country cut → ignored.
     const D3 = new Date("2026-09-19T00:00:00Z");
     await db.factRevenueGeo.create({ data: { date: D3, siteId: "s1", networkId: net.net.id, countryCode: "ZZ", device: "UNKNOWN", pageLoads: 10_000, revenueReported: "20" } });
     await db.factCost.create({ data: { date: D3, siteId: "s1", countryCode: "DE", sourceSlug: "tubecrown", uniquesBought: 100, rateModel: "CPM", rate: "1", cost: "50", origin: "RATE" } });
     let c = await RULES.lossGeo(ctx());
     expect(c.some((x) => x.entityKey === "site:s1|country:DE")).toBe(false);
-    // ZZ cost on a day with a country cut lands on JP and US by loads (equal loads → half each): US turns red too.
+    // ZZ revshare cost on D1 follows the day's revenue: JP $12 ($10 + $2 own deal), US $10 → 12/22 and 10/22 of $30. US turns red too.
     const base = async (cc: string) => Number((await db.factCost.aggregate({ _sum: { cost: true }, where: { siteId: "s1", countryCode: cc, date: { in: [D1, D2] } } }))._sum.cost ?? 0);
     const usBase = await base("US"), jpBase = await base("JP");
     await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 0, rateModel: "REVSHARE", rate: "1", cost: "30", origin: "ASG" } });
     c = await RULES.lossGeo(ctx());
     const us = c.find((x) => x.entityKey === "site:s1|country:US")!;
     expect(us).toBeDefined();
-    expect(us.payload.cost).toBeCloseTo(usBase + 15, 2);
-    expect(c.find((x) => x.entityKey === "site:s1|country:JP")!.payload.cost).toBeCloseTo(jpBase + 15, 2);
+    expect(us.payload.cost).toBeCloseTo(usBase + 30 * (10 / 22), 2);
+    expect(us.payload.costRevshare).toBeCloseTo(30 * (10 / 22), 2);
+    expect(us.message).toContain("доля revshare");
+    expect(c.find((x) => x.entityKey === "site:s1|country:JP")!.payload.cost).toBeCloseTo(jpBase + 30 * (12 / 22), 2);
+    // ZZ rate cost (bought per unique) goes by loads: equal loads → half each.
+    await db.factCost.create({ data: { date: D2, siteId: "s1", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 500, rateModel: "CPU", rate: "0.02", cost: "10", origin: "RATE" } });
+    c = await RULES.lossGeo(ctx());
+    expect(c.find((x) => x.entityKey === "site:s1|country:US")!.payload.costRate).toBeCloseTo(usBase + 5, 2);
+    // The page agrees with the alert: one allocation (ADR 0015).
+    const { geoTable } = await import("@/server/queries/reports");
+    const usRow = (await geoTable({ from: "2026-09-15", to: "2026-09-21" }, { siteIds: ["s1"] }, 0)).find((r) => r.country === "US")!;
+    expect(usRow.cost).toBeCloseTo(c.find((x) => x.entityKey === "site:s1|country:US")!.payload.cost as number, 4);
+  });
+
+  it("1: a site paid only by revshare has no loss-making country of its own — a cheap geo gets a cheap share of the cost", async () => {
+    // s2: drop the per-country CPU cost, keep one ZZ revshare cost that exceeds half the revenue; India brings most loads and little money.
+    await db.factCost.deleteMany({ where: { siteId: "s2" } });
+    for (const date of [D1, D2]) {
+      await db.factRevenueGeo.create({ data: { date, siteId: "s2", networkId: net.net.id, countryCode: "IN", device: "MOBILE", pageLoads: 200_000, impsOwn: 150_000, revenueReported: "1" } });
+      await db.factCost.create({ data: { date, siteId: "s2", countryCode: "ZZ", sourceSlug: "tubecrown", uniquesBought: 0, rateModel: "REVSHARE", rate: "0.6", cost: "12.6", origin: "ASG" } }); // 60% of $21
+    }
+    const c = await RULES.lossGeo(ctx());
+    expect(c.filter((x) => x.siteId === "s2")).toEqual([]); // by loads India would have carried ~$23 of cost against $2 of revenue
   });
 
   it("archived sites and system networks never alert; a 'network' with a tiny share has no price rank", async () => {

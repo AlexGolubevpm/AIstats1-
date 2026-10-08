@@ -49,7 +49,7 @@ export async function collectCandidates(today = iso(new Date())): Promise<Hypoth
       GROUP BY 1, 2, 3, 4, 5`,
     db.$queryRaw<Raw[]>`
       SELECT g.site_id, s.domain, g.country_code, SUM(g.revenue)::float8 revenue, SUM(g.page_loads)::float8 page_loads
-      FROM v_site_geo_daily g JOIN "Site" s ON s.id = g.site_id AND s.status <> 'ARCHIVED'
+      FROM v_site_geo_alloc_daily g JOIN "Site" s ON s.id = g.site_id AND s.status <> 'ARCHIVED'
       WHERE g.date BETWEEN ${r7.from} AND ${r7.to} GROUP BY 1, 2, 3`,
     db.$queryRaw<Raw[]>`SELECT site_id, format, SUM(revenue)::float8 revenue, SUM(page_loads)::float8 page_loads FROM v_format_daily WHERE date BETWEEN ${r7.from} AND ${r7.to} GROUP BY 1, 2`,
     db.$queryRaw<Raw[]>`
