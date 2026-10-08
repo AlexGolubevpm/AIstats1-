@@ -37,9 +37,9 @@ export default async function Alerts({ searchParams }: { searchParams: Promise<R
     <>
       <PageHeader title="Алерты" sub="Что требует действия. Правила считаются каждую ночь после загрузки данных" />
       <form className="flex flex-wrap items-center gap-2 text-sm">
-        <Select name="rule" defaultValue={sp.rule ?? ""} className="w-52"><option value="">Все правила</option>
+        <Select name="rule" defaultValue={sp.rule ?? ""} className="w-full sm:w-52"><option value="">Все правила</option>
           {Object.entries(RULE_LABEL).map(([k, v]) => <option key={k} value={k}>{v}</option>)}</Select>
-        <Select name="bundle" defaultValue={sp.bundle ?? ""} className="w-44"><option value="">Все бандлы</option>
+        <Select name="bundle" defaultValue={sp.bundle ?? ""} className="w-full sm:w-44"><option value="">Все бандлы</option>
           {bundles.map((b) => <option key={b.slug} value={b.slug}>{b.title}</option>)}</Select>
         <label className="flex items-center gap-2 text-muted"><input type="checkbox" name="hidden" value="1" defaultChecked={Boolean(sp.hidden)} /> Показать скрытые</label>
         <button className="h-9 rounded-md border border-border px-3 hover:bg-surface-hover">Применить</button>
@@ -56,13 +56,13 @@ export default async function Alerts({ searchParams }: { searchParams: Promise<R
               const row = (a: (typeof all)[number]) => {
                 const snoozed = Boolean(a.snoozedUntil && a.snoozedUntil > now);
                 return (
-                  <li key={a.id} className="flex items-start gap-2">
+                  <li key={a.id} className="flex flex-col gap-1 sm:flex-row sm:items-start sm:gap-2">
                     <div className="min-w-0 flex-1">
                       <AlertBadge level={a.level} title={a.title} message={a.message} link={a.link}
                         meta={<>с {fmtDate(a.firstSeenAt)} · {days(a.firstSeenAt, a.lastSeenAt)} дн. подряд
                           {Number(a.moneyAtRisk) > 0 && <> · под риском {fmtMoney(Number(a.moneyAtRisk))}</>}{snoozed && <> · скрыт до {fmtDate(a.snoozedUntil)}</>}</>} />
                     </div>
-                    <div className="flex items-center gap-1 pt-2.5"><ToHypothesisButton alertId={a.id} exists={inHypotheses.has(`${a.rule}|${a.entityKey}`)} /><SnoozeButton id={a.id} snoozed={snoozed} /></div>
+                    <div className="flex shrink-0 items-center gap-1 pl-12 pb-1 sm:pl-0 sm:pt-2.5 sm:pb-0"><ToHypothesisButton alertId={a.id} exists={inHypotheses.has(`${a.rule}|${a.entityKey}`)} /><SnoozeButton id={a.id} snoozed={snoozed} /></div>
                   </li>
                 );
               };

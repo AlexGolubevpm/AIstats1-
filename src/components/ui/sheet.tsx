@@ -11,8 +11,8 @@ export function Sheet({ open, onOpenChange, title, description, children, width 
   return (
     <D.Root open={open} onOpenChange={onOpenChange}>
       <D.Portal>
-        <D.Overlay className="fixed inset-0 z-40 bg-slate-900/20" />
-        <D.Content className={cn("fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-border bg-surface shadow-xl", width)} data-sheet>
+        <D.Overlay className="ts-overlay fixed inset-0 z-40 bg-slate-900/20" />
+        <D.Content className={cn("ts-sheet fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-border bg-surface shadow-xl", width)} data-sheet>
           <div className="flex items-start justify-between gap-4 border-b border-border px-4 py-4 sm:px-6">
             <div>
               <D.Title className="text-base font-semibold">{title}</D.Title>
@@ -34,8 +34,8 @@ export function Confirm({ open, onOpenChange, title, body, confirmLabel, onConfi
   return (
     <D.Root open={open} onOpenChange={onOpenChange}>
       <D.Portal>
-        <D.Overlay className="fixed inset-0 z-40 bg-slate-900/30" />
-        <D.Content className="fixed top-1/2 left-1/2 z-50 w-[92vw] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-surface p-6 shadow-xl">
+        <D.Overlay className="ts-overlay fixed inset-0 z-40 bg-slate-900/30" />
+        <D.Content className="ts-pop fixed top-1/2 left-1/2 z-50 w-[92vw] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-xl border border-border bg-surface p-6 shadow-xl">
           <D.Title className="text-base font-semibold">{title}</D.Title>
           {body && <D.Description asChild><div className="mt-2 text-sm text-muted">{body}</div></D.Description>}
           <div className="mt-6 flex justify-end gap-2">

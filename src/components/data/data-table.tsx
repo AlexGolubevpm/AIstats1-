@@ -113,7 +113,7 @@ export function DataTable({ id, columns, rows, totals, defaultSort, pageSize = 2
           {exportName && <button onClick={exportCsv} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted hover:bg-surface-hover"><Download className="size-3.5" />CSV</button>}
         </div>
       )}
-      <div className="-mx-5 overflow-x-auto">
+      <div className="ts-scroll -mx-5 overflow-x-auto">
         <table className="num w-full border-collapse text-[13px] leading-[18px]">
           {caption && <caption className="sr-only">{caption}</caption>}
           <thead className="sticky top-0 z-10 bg-surface">
@@ -122,7 +122,7 @@ export function DataTable({ id, columns, rows, totals, defaultSort, pageSize = 2
               {columns.map((c, i) => (
                 <th key={c.id} scope="col" title={c.tooltip}
                   className={cn("h-8 px-3 text-xs font-medium tracking-[0.01em] whitespace-nowrap text-muted select-none", isNumeric(c.kind) ? "text-right" : "text-left",
-                    i === 0 && !hasNested && "pl-5", i === columns.length - 1 && "pr-5", c.sortable !== false && "cursor-pointer hover:text-text")}
+                    i === 0 && !hasNested && "pl-5 max-sm:sticky max-sm:left-0 max-sm:z-[2] max-sm:bg-surface", i === columns.length - 1 && "pr-5", c.sortable !== false && "cursor-pointer hover:text-text")}
                   onClick={() => toggleSort(c)} aria-sort={sortId === c.id ? (sortDir === "asc" ? "ascending" : "descending") : undefined}>
                   <span className={cn("inline-flex items-center gap-0.5", isNumeric(c.kind) && "flex-row-reverse")}>
                     {c.header}
@@ -154,7 +154,7 @@ export function DataTable({ id, columns, rows, totals, defaultSort, pageSize = 2
                       const inner = renderCell(c, r, { mean: means[c.id] ?? null });
                       return (
                         <td key={c.id} style={{ background: cellBackground(c, r, means[c.id] ?? null) }}
-                          className={cn("px-3 whitespace-nowrap", isNumeric(c.kind) ? "text-right" : "text-left", i === 0 && !hasNested && "pl-5", i === columns.length - 1 && "pr-5")}>
+                          className={cn("px-3 whitespace-nowrap", isNumeric(c.kind) ? "text-right" : "text-left", i === 0 && !hasNested && "pl-5 max-sm:sticky max-sm:left-0 max-sm:z-[1] max-sm:bg-surface max-sm:shadow-[1px_0_0_var(--border)]", i === columns.length - 1 && "pr-5")}>
                           {i === 0 && r._href ? <Link href={r._href} className="hover:text-accent hover:underline">{inner}</Link> : inner}
                         </td>
                       );

@@ -46,7 +46,7 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
     <>
       <PageHeader title="Сводка" sub="Маржа по всем сайтам и бандлам" period={p} />
       <KpiRow k={k} keys={["revenue", "cost", "margin", "romi", "uniques", "rpm"]} partial={coverage.warn} />
-      <div className="grid gap-4 xl:grid-cols-3">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
         <Section title="Выручка по сеткам" className="min-w-0 xl:col-span-2" sub="Столбцы — выручка по сеткам AdSpyglass и прямые фикс-дилы">
           <TrendChart data={data} series={series.map((s, i) => ({ key: s, label: s, color: colorFor(s, i, known), type: "bar" as const, stack: "rev" }))} />
         </Section>
@@ -58,7 +58,7 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
           )}
         </Section>
       </div>
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <Section title="Расходы" className="min-w-0" sub="Столбцы — расход на трафик по источникам и операционные расходы по дням (KPI «Расход на трафик» выше — без опер. расходов)">
           <TrendChart data={costs.data} series={costs.series.map((s, i) => ({ key: s, label: s, color: colorFor(s, i, costKnown), type: "bar" as const, stack: "cost" }))} />
         </Section>
@@ -93,7 +93,7 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
           </ul>
         </Section>
       )}
-      <div className="grid gap-4 md:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
         {([["Маржа выросла", movers.up, "text-positive"], ["Маржа упала", movers.down, "text-negative"]] as const).map(([title, list, cls]) => (
           <Section key={title} title={title} sub="к прошлому равному периоду">
             {list.length === 0 ? <p className="py-4 text-sm text-muted">Нет изменений</p> : (

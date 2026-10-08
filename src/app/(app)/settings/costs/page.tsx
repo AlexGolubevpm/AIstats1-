@@ -1,3 +1,4 @@
+import { TableScroll } from "@/components/data/table-scroll";
 import { Badge } from "@/components/ui/badge";
 import { Section } from "@/components/ui/card";
 import { fmtDate, fmtMoney } from "@/lib/format";
@@ -25,7 +26,7 @@ export default async function CostsSettings() {
         actions={<AddRateButton sources={sources.map((s) => ({ id: s.slug, label: s.title }))} sites={sites.map((s) => ({ id: s.id, label: s.domain }))} />}>
         {noRate.length > 0 && <p className="rounded-lg bg-warning-soft px-3 py-2 text-sm text-warning">Нет применимой ставки у активных сайтов с трафиком: {noRate.join(", ")}</p>}
         <div className="-mx-5 overflow-x-auto">
-          <table className="num w-full text-[13px]">
+          <TableScroll flush><table className="tbl num w-full text-[13px]">
             <thead><tr className="border-b border-border text-xs text-muted">{["Источник", "Сайт", "Гео", "Модель", "Ставка", "Действует с", "по", ""].map((h, i) =>
               <th key={i} className={`h-9 px-3 font-medium ${i === 4 ? "text-right" : "text-left"} ${i === 0 ? "pl-5" : ""}`}>{h}</th>)}</tr></thead>
             <tbody>{rates.map((r) => {
@@ -44,7 +45,7 @@ export default async function CostsSettings() {
               );
             })}
             {rates.length === 0 && <tr><td colSpan={8} className="py-8 text-center text-sm text-muted">Ставок нет — расход не считается</td></tr>}</tbody>
-          </table>
+          </table></TableScroll>
         </div>
         <div className="border-t border-border pt-4"><RecalcForm /></div>
       </Section>

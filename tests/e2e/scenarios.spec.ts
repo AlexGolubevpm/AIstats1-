@@ -251,7 +251,8 @@ test("hypotheses: system proposals on demo data, scope chips, an own hypothesis 
   await page.locator("input[name=impactMonth]").fill("150");
   await page.getByRole("button", { name: "Добавить" }).click();
   await expect(page.getByText("Гипотеза добавлена")).toBeVisible();
-  await page.goto("/hypotheses?tab=proposed");
+  // Proposals are paginated (50 a page, critical and biggest effect first): find the own one through its scope chip.
+  await page.goto("/hypotheses?tab=proposed&scope=site");
   const own = page.locator("li[data-scope]", { hasText: "E2E: поднять флор баннеров" });
   await expect(own.getByText("своя")).toBeVisible();
   await own.getByRole("button", { name: "Принять" }).click();

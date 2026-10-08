@@ -58,7 +58,7 @@ export default async function DealPage({ params }: { params: Promise<{ id: strin
       </div>
 
       <Section title="По дням" sub="Столбцы — выручка по статусам, линии — наши показы и показы рекламодателя">
-        <div className="grid gap-4 lg:grid-cols-2">
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
           <TrendChart data={x.daily} height={240} series={[
             { key: "confirmed", label: "Подтверждено", color: "#16A34A", type: "bar", stack: "r" },
             { key: "invoiced", label: "Выставлено", color: "#4F8DF7", type: "bar", stack: "r" },

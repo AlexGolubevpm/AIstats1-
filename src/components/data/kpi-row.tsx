@@ -26,7 +26,7 @@ export function KpiRow({ k, keys, partial }: { k: KpiSet; keys: KpiKey[]; partia
   };
   const cols = keys.length + (keys.includes("romi") ? 1 : 0);
   return (
-    <div className="grid grid-cols-2 gap-4 md:grid-cols-4 xl:[grid-template-columns:repeat(var(--c),minmax(0,1fr))]" style={{ ["--c" as string]: cols }}>
+    <div className="grid grid-cols-2 gap-3 sm:gap-4 md:grid-cols-3 min-[1700px]:[grid-template-columns:repeat(var(--c),minmax(0,1fr))]" style={{ ["--c" as string]: cols }}>
       {keys.map((key) => cards[key])}
     </div>
   );

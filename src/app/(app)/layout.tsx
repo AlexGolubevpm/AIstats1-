@@ -29,7 +29,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
             Демо-данные: цифры сгенерированы. Удалить можно в Настройки → Интеграции.
           </div>
         )}
-        <div className="mx-auto flex max-w-[1600px] flex-col gap-4 px-4 pt-18 pb-6 sm:px-6 lg:pt-6">{children}</div>
+        <div className="ts-page mx-auto flex max-w-[1600px] flex-col gap-4 px-4 pt-18 pb-6 sm:px-6 lg:pt-6">{children}</div>
       </main>
     </div>
   );

@@ -7,7 +7,7 @@ import { fmtDate, fmtMoney } from "@/lib/format";
 import { cn } from "@/lib/cn";
 import { db } from "@/server/db";
 import { METRIC_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATUS_LABEL, type HypScope, type Metric } from "@/server/domain/hypotheses";
-import { TAB_LABEL, hypothesesList, hypothesisCounts, type HypothesisTab } from "@/server/queries/hypotheses";
+import { HYPOTHESES_PAGE, TAB_LABEL, hypothesesList, hypothesisCounts, type HypothesisTab } from "@/server/queries/hypotheses";
 import { HypothesisActions, NewHypothesisButton } from "./client";
 
 const SCOPES = Object.keys(SCOPE_LABEL) as HypScope[];
@@ -32,15 +32,18 @@ export default async function Hypotheses({ searchParams }: { searchParams: Promi
   ]);
   const bundle = bundles.find((b) => b.slug === sp.bundle) ?? null;
   const filter = { bundleSiteIds: bundle ? bundle.sites.map((s) => s.siteId) : null, bundleId: bundle?.id ?? null };
-  const [list, counts] = await Promise.all([hypothesesList({ tab, scope, ...filter }), hypothesisCounts(filter)]);
+  const pageNo = Math.max(1, Number(sp.page) || 1);
+  const [list, counts] = await Promise.all([hypothesesList({ tab, scope, ...filter, page: pageNo }), hypothesisCounts(filter)]);
   const tabStatuses: Record<HypothesisTab, string[]> = { proposed: ["PROPOSED"], accepted: ["ACCEPTED"], done: ["DONE", "REJECTED"], all: ["PROPOSED", "ACCEPTED", "DONE", "REJECTED"] };
   const scopeCount = (s: HypScope) => counts.scopes.filter((x) => x.scope === s && tabStatuses[tab].includes(x.status)).reduce((a, x) => a + x._count._all, 0);
   const impact = list.reduce((a, h) => a + Math.max(0, Number(h.impactMonth ?? 0)), 0);
+  const shown = list.total;
   const href = (over: Record<string, string | undefined>) => {
     const q = new URLSearchParams();
     for (const [k, v] of Object.entries({ ...sp, ...over })) if (v) q.set(k, v);
     return `/hypotheses${q.size ? `?${q}` : ""}`;
   };
+  const pageHref = (n: number) => href({ page: n > 1 ? String(n) : undefined });
   const chip = (active: boolean) => cn("rounded-full border px-3 py-1 text-sm", active ? "border-accent bg-accent-soft text-accent" : "border-border text-muted hover:bg-surface-hover");
   const tag = "rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted";
   const SUB: Record<HypothesisTab, string> = {
@@ -52,17 +55,17 @@ export default async function Hypotheses({ searchParams }: { searchParams: Promi
 
   return (
     <>
-      <PageHeader title="Гипотезы" sub={`Что могло бы заработать больше или перестать терять — по бандлам, сайтам, гео, зонам, сеткам, форматам, дилам и источникам. Система предлагает, человек принимает, делает и проверяет · ${list.length} ${list.length === 1 ? "гипотеза" : list.length < 5 ? "гипотезы" : "гипотез"}${impact ? ` · эффект до ${fmtMoney(impact)}/мес` : ""}`}
+      <PageHeader title="Гипотезы" sub={`Что могло бы заработать больше или перестать терять — по бандлам, сайтам, гео, зонам, сеткам, форматам, дилам и источникам. Система предлагает, человек принимает, делает и проверяет · ${shown} ${shown === 1 ? "гипотеза" : shown < 5 ? "гипотезы" : "гипотез"}${impact ? ` · эффект на странице до ${fmtMoney(impact)}/мес` : ""}`}
         actions={<NewHypothesisButton bundles={bundles.map((b) => ({ id: b.id, title: b.title }))} sites={sites.map((s) => ({ id: s.id, domain: s.domain, bundleIds: s.bundles.map((b) => b.bundleId) }))} formats={Object.keys(FORMAT_LABEL)} />} />
       <div className="flex flex-wrap items-center gap-2">
-        {TABS.map((t) => <Link key={t} href={href({ tab: t, scope: undefined })} className={chip(tab === t)} data-tab={t}>{TAB_LABEL[t]} <span className="text-faint">{counts.tabs[t]}</span></Link>)}
+        {TABS.map((t) => <Link key={t} href={href({ tab: t, scope: undefined, page: undefined })} className={chip(tab === t)} data-tab={t}>{TAB_LABEL[t]} <span className="text-faint">{counts.tabs[t]}</span></Link>)}
         <span className="mx-1 text-faint">|</span>
         <Link href={href({ bundle: undefined })} className={chip(!bundle)}>Все бандлы</Link>
         {bundles.map((b) => <Link key={b.slug} href={href({ bundle: b.slug })} className={chip(bundle?.slug === b.slug)}>{b.title}</Link>)}
       </div>
       <div className="flex flex-wrap items-center gap-2">
-        <Link href={href({ scope: undefined })} className={chip(!scope)}>Все разрезы</Link>
-        {SCOPES.map((s) => scopeCount(s) > 0 && <Link key={s} href={href({ scope: s })} className={chip(scope === s)}>{SCOPE_LABEL[s]} <span className="text-faint">{scopeCount(s)}</span></Link>)}
+        <Link href={href({ scope: undefined, page: undefined })} className={chip(!scope)}>Все разрезы</Link>
+        {SCOPES.map((s) => scopeCount(s) > 0 && <Link key={s} href={href({ scope: s, page: undefined })} className={chip(scope === s)}>{SCOPE_LABEL[s]} <span className="text-faint">{scopeCount(s)}</span></Link>)}
       </div>
       <Section title={scope ? `${TAB_LABEL[tab]} · ${SCOPE_LABEL[scope]}` : TAB_LABEL[tab]} sub={SUB[tab]}>
         {list.length === 0 ? (
@@ -75,7 +78,8 @@ export default async function Hypotheses({ searchParams }: { searchParams: Promi
             const delta = base != null && res != null && base !== 0 ? (res - base) / Math.abs(base) : null;
             const better = delta != null && (metric === "cost_per_1k" || metric === "cost_share" ? delta < 0 : delta > 0);
             return (
-              <li key={h.id} className="flex gap-3 px-5 py-3 hover:bg-surface-hover" data-scope={h.scope} data-status={h.status}>
+              <li key={h.id} className="flex flex-col gap-3 px-5 py-3 transition-colors hover:bg-surface-hover sm:flex-row" data-scope={h.scope} data-status={h.status}>
+                <div className="flex min-w-0 flex-1 gap-3">
                 <span className={cn("mt-0.5 grid size-7 shrink-0 place-items-center rounded-full", LEVEL[h.level])}><FlaskConical className="size-3.5" /></span>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -96,11 +100,23 @@ export default async function Hypotheses({ searchParams }: { searchParams: Promi
                   </p>
                   {h.resultNote && <p className="mt-1 text-xs text-muted">{h.resultNote}</p>}
                 </div>
-                <div className="num shrink-0 text-right text-sm">{Number(h.impactMonth ?? 0) > 0 ? <><div className="font-medium">{fmtMoney(Number(h.impactMonth))}</div><div className="text-[11px] text-faint">в месяц</div></> : <span className="text-faint">—</span>}</div>
-                <HypothesisActions id={h.id} status={h.status} />
+                </div>
+                <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 sm:flex-col sm:items-end sm:justify-start">
+                  <div className="num shrink-0 text-right text-sm">{Number(h.impactMonth ?? 0) > 0 ? <><span className="font-medium">{fmtMoney(Number(h.impactMonth))}</span><span className="ml-1 text-[11px] text-faint">в месяц</span></> : <span className="text-faint">—</span>}</div>
+                  <HypothesisActions id={h.id} status={h.status} />
+                </div>
               </li>
             );
           })}</ul>
+        )}
+        {list.pages > 1 && (
+          <nav className="mt-3 flex items-center justify-between border-t border-border pt-3 text-sm" aria-label="Страницы">
+            <span className="text-muted">{(list.page - 1) * HYPOTHESES_PAGE + 1}–{Math.min(list.total, list.page * HYPOTHESES_PAGE)} из {list.total}</span>
+            <span className="flex gap-1">
+              {list.page > 1 && <Link href={pageHref(list.page - 1)} className="rounded-md border border-border px-3 py-1 hover:bg-surface-hover">← Назад</Link>}
+              {list.page < list.pages && <Link href={pageHref(list.page + 1)} className="rounded-md border border-border px-3 py-1 hover:bg-surface-hover">Дальше →</Link>}
+            </span>
+          </nav>
         )}
       </Section>
     </>

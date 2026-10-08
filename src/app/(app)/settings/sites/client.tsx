@@ -1,4 +1,5 @@
 "use client";
+import { TableScroll } from "@/components/data/table-scroll";
 import { useState, useTransition } from "react";
 import { ActionForm, FormField } from "@/components/forms/action-form";
 import { StatusBadge } from "@/components/data/misc";
@@ -65,7 +66,7 @@ export function SitesManager({ sites, bundles }: { sites: SiteRow[]; bundles: { 
         </div>
       )}
       <section className="card overflow-x-auto p-0">
-        <table className="num w-full text-[13px]">
+        <TableScroll flush><table className="tbl num w-full text-[13px]">
           <thead><tr className="border-b border-border text-xs text-muted">
             <th className="w-10 pl-4"><input type="checkbox" aria-label="Выбрать все" checked={visible.length > 0 && visible.every((s) => sel.has(s.id))}
               onChange={(e) => setSel(e.target.checked ? new Set(visible.map((s) => s.id)) : new Set())} /></th>
@@ -87,7 +88,7 @@ export function SitesManager({ sites, bundles }: { sites: SiteRow[]; bundles: { 
           ))}
           {visible.length === 0 && <tr><td colSpan={9} className="py-10 text-center text-sm text-muted">Сайтов нет — добавьте первый или подтяните из AdSpyglass</td></tr>}
           </tbody>
-        </table>
+        </table></TableScroll>
       </section>
       <Sheet open={edit != null} onOpenChange={(v) => !v && setEdit(null)} title={edit === "new" ? "Новый сайт" : "Сайт"}>
         {edit != null && <SiteForm key={edit === "new" ? "new" : edit.id} site={edit === "new" ? undefined : edit} onDone={() => setEdit(null)} />}
