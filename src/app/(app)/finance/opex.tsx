@@ -23,7 +23,7 @@ export function OpexButton({ sites, values, label = "Добавить расхо
           {values?.id && <input type="hidden" name="id" value={values.id} />}
           <FormField name="month" label="Месяц"><Input type="month" name="month" defaultValue={values?.month ?? defaultMonth} required /></FormField>
           <FormField name="title" label="Что"><Input name="title" defaultValue={values?.title} placeholder="Серверы Hetzner" required /></FormField>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <FormField name="category" label="Категория">
               <Select name="category" defaultValue={values?.category ?? "HOSTING"}>{OPEX_CATEGORIES.map((c) => <option key={c} value={c}>{OPEX_LABEL[c]}</option>)}</Select>
             </FormField>

@@ -31,7 +31,7 @@ export default async function Deals({ searchParams }: { searchParams: Promise<Re
         period={tab === "deals" ? p : undefined} actions={<div className="flex items-center gap-2"><ReforecastButton />
           <DealFormButton sites={opts.sites} advertisers={opts.advertisers} placements={opts.placements} label="Новый дил"
             autoOpen={sp.new === "1"} values={sp.place?.includes("|") ? { siteIds: [sp.place.split("|")[0]], placeSlugs: [sp.place.split("|")[1]] } : {}} /></div>} />
-      <nav className="flex gap-1 border-b border-border">
+      <nav className="flex gap-1 overflow-x-auto border-b border-border whitespace-nowrap">
         {TABS.map(([t, label]) => (
           <Link key={t} href={q({ tab: t === "deals" ? undefined : t })} className={cn("-mb-px border-b-2 px-3 py-2 text-sm", tab === t ? "border-accent font-medium text-accent" : "border-transparent text-muted hover:text-text")}>
             {label}{t === "todo" && todo.length > 0 && <Badge tone="warning" className="ml-1.5">{todo.length}</Badge>}

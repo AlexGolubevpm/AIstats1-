@@ -27,15 +27,16 @@ export function PeriodPicker({ from, to, preset, extra = [] }: { from: string; t
   const label = all.find((p) => p.id === preset)?.label ?? "Свой период";
   return (
     <P.Root open={open} onOpenChange={setOpen}>
-      <P.Trigger className="card inline-flex h-10 items-center gap-2 px-3 text-sm hover:bg-surface-hover">
-        <Calendar className="size-4 text-muted" />
+      <P.Trigger className="card inline-flex h-10 w-full items-center gap-2 px-3 text-sm whitespace-nowrap hover:bg-surface-hover sm:w-auto">
+        <Calendar className="size-4 shrink-0 text-muted" />
         <span className="num">{fmtDate(from)} — {fmtDate(to)}</span>
-        <span className="h-5 w-px bg-border" />
-        <span className="text-muted">{label}</span>
+        <span className="hidden h-5 w-px bg-border sm:block" />
+        <span className="hidden text-muted sm:inline">{label}</span>
+        <span className="flex-1 sm:hidden" />
         <ChevronDown className="size-4 text-muted" />
       </P.Trigger>
       <P.Portal>
-        <P.Content align="end" sideOffset={6} className="card z-50 w-72 p-2">
+        <P.Content align="end" sideOffset={6} collisionPadding={8} className="card z-50 w-72 max-w-[calc(100vw-16px)] p-2">
           <div className="grid gap-0.5">
             {all.map((p) => (
               <button key={p.id} onClick={() => go({ preset: p.id })}

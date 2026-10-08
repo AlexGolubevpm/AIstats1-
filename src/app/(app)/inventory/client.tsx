@@ -163,7 +163,7 @@ export function ZonesButton({ siteId, domain, zones, unmapped, places }: {
       </button>
       <Sheet open={open} onOpenChange={setOpen} title={`Зоны · ${domain}`} width="max-w-2xl"
         description="Какой формат заполняет каждая зона AdSpyglass. По названию привязываются только зоны с названием формата внутри («Tablink 1»); остальные — здесь, вручную. Выручка — за выбранный период.">
-        <table className="num w-full text-[13px]">
+        <div className="overflow-x-auto"><table className="num w-full text-[13px]">
           <thead><tr className="border-b border-border text-xs text-muted">
             <th className="h-8 text-left font-medium">Зона</th><th className="h-8 text-left font-medium">Тип ADOK</th>
             <th className="h-8 text-right font-medium">Выручка</th><th className="h-8 text-left font-medium">Формат</th></tr></thead>
@@ -180,7 +180,7 @@ export function ZonesButton({ siteId, domain, zones, unmapped, places }: {
               </td>
             </tr>
           ))}</tbody>
-        </table>
+        </table></div>
       </Sheet>
     </>
   );

@@ -1,9 +1,10 @@
 "use client";
-// Sidebar 240px, collapses to 56px (state in localStorage). Freshness indicator at the bottom:
-// yellow dot when older than 2 h, red when the last run failed.
+// Sidebar 240px, collapses to 56px (state in localStorage). Under lg it is a drawer behind a top bar
+// with a burger (closes on navigation). Freshness indicator at the bottom: yellow dot when older than
+// 2 h, red when the last run failed.
 import {
-  ArrowLeftRight, BarChart3, ChevronDown, ChevronsLeft, ChevronsRight, CircleDollarSign, Globe, LayoutDashboard, Layers, LogOut, Moon, Settings,
-  FlaskConical, LayoutGrid, Sun, TrendingUp, TriangleAlert,
+  ArrowLeftRight, BarChart3, ChevronDown, ChevronsLeft, ChevronsRight, CircleDollarSign, Globe, LayoutDashboard, Layers, LogOut, Menu, Moon, Settings,
+  FlaskConical, LayoutGrid, Sun, TrendingUp, TriangleAlert, X,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -36,7 +37,11 @@ const NAV = [
 
 export function Sidebar({ bundles, counts, freshness, mcpConnected }: SidebarProps) {
   const path = usePathname();
-  const [collapsed, setCollapsed] = useState(false);
+  const [stored, setCollapsed] = useState(false);
+  const [mobileOpen, setMobileOpen] = useState(false);
+  // The drawer always shows labels: "collapsed" only applies to the desktop sidebar.
+  const collapsed = stored && !mobileOpen;
+  useEffect(() => { setMobileOpen(false); }, [path]);
   const [bundlesOpen, setBundlesOpen] = useState(true);
   const [dark, setDark] = useState(false);
   useEffect(() => {
@@ -55,10 +60,21 @@ export function Sidebar({ bundles, counts, freshness, mcpConnected }: SidebarPro
     active ? "bg-accent-soft font-medium text-accent" : "text-muted hover:bg-surface-hover hover:text-text", collapsed && "justify-center px-0");
 
   return (
-    <aside className={cn("sticky top-0 flex h-screen shrink-0 flex-col border-r border-border bg-surface transition-[width]", collapsed ? "w-14" : "w-60")}>
+    <>
+      <div className="fixed inset-x-0 top-0 z-30 flex h-14 items-center gap-3 border-b border-border bg-surface px-4 lg:hidden">
+        <button onClick={() => setMobileOpen(true)} className="rounded-md p-2 text-muted hover:bg-surface-hover" aria-label="Открыть меню" aria-expanded={mobileOpen}><Menu className="size-5" /></button>
+        <Logo /><span className="text-[17px] font-semibold tracking-[-0.01em]">TubeStat</span>
+        <span className="flex-1" />
+        {counts.alerts > 0 && <Link href="/alerts" className="num flex items-center gap-1 rounded-full bg-negative-soft px-2 py-0.5 text-xs font-medium text-negative"><TriangleAlert className="size-3.5" />{counts.alerts}</Link>}
+      </div>
+      {mobileOpen && <div className="fixed inset-0 z-40 bg-slate-900/30 lg:hidden" onClick={() => setMobileOpen(false)} aria-hidden />}
+    <aside data-mobile-open={mobileOpen || undefined} className={cn("fixed inset-y-0 left-0 z-50 flex h-screen w-72 shrink-0 flex-col border-r border-border bg-surface transition-transform lg:sticky lg:top-0 lg:z-auto lg:translate-x-0 lg:transition-[width]",
+      mobileOpen ? "translate-x-0" : "-translate-x-full", collapsed ? "lg:w-14" : "lg:w-60")}>
       <div className={cn("flex h-16 items-center gap-2 px-5", collapsed && "justify-center px-0")}>
         <Logo />
         {!collapsed && <span className="text-[17px] font-semibold tracking-[-0.01em]">TubeStat</span>}
+        <span className="flex-1 lg:hidden" />
+        <button onClick={() => setMobileOpen(false)} className="rounded-md p-2 text-muted hover:bg-surface-hover lg:hidden" aria-label="Закрыть меню"><X className="size-5" /></button>
       </div>
       <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2" aria-label="Основная навигация">
         {NAV.map((n) => {
@@ -119,11 +135,12 @@ export function Sidebar({ bundles, counts, freshness, mcpConnected }: SidebarPro
         <div className={cn("flex items-center gap-1", collapsed ? "flex-col" : "justify-between px-1")}>
           <button onClick={toggleTheme} className="rounded-md p-2 text-muted hover:bg-surface-hover" aria-label="Сменить тему">{dark ? <Sun className="size-4" /> : <Moon className="size-4" />}</button>
           <form action={logoutAction}><button className="rounded-md p-2 text-muted hover:bg-surface-hover" aria-label="Выйти"><LogOut className="size-4" /></button></form>
-          <button onClick={toggle} className="rounded-md p-2 text-muted hover:bg-surface-hover" aria-label={collapsed ? "Развернуть меню" : "Свернуть меню"}>
+          <button onClick={toggle} className="hidden rounded-md p-2 text-muted hover:bg-surface-hover lg:block" aria-label={collapsed ? "Развернуть меню" : "Свернуть меню"}>
             {collapsed ? <ChevronsRight className="size-4" /> : <ChevronsLeft className="size-4" />}
           </button>
         </div>
       </div>
     </aside>
+    </>
   );
 }

@@ -12,15 +12,15 @@ export function Sheet({ open, onOpenChange, title, description, children, width 
     <D.Root open={open} onOpenChange={onOpenChange}>
       <D.Portal>
         <D.Overlay className="fixed inset-0 z-40 bg-slate-900/20" />
-        <D.Content className={cn("fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-border bg-surface shadow-xl", width)}>
-          <div className="flex items-start justify-between gap-4 border-b border-border px-6 py-4">
+        <D.Content className={cn("fixed inset-y-0 right-0 z-50 flex w-full flex-col border-l border-border bg-surface shadow-xl", width)} data-sheet>
+          <div className="flex items-start justify-between gap-4 border-b border-border px-4 py-4 sm:px-6">
             <div>
               <D.Title className="text-base font-semibold">{title}</D.Title>
               {description && <D.Description className="mt-0.5 text-sm text-muted">{description}</D.Description>}
             </div>
             <D.Close className="rounded p-1 text-muted hover:bg-surface-hover" aria-label="Закрыть"><X className="size-4" /></D.Close>
           </div>
-          <div className="flex-1 overflow-y-auto px-6 py-5">{children}</div>
+          <div className="flex-1 overflow-y-auto px-4 py-5 sm:px-6">{children}</div>
         </D.Content>
       </D.Portal>
     </D.Root>

@@ -10,7 +10,7 @@ import { discrepancyLevel } from "@/lib/metrics";
 /** Tabs are links: the active cut lives in ?by=. */
 export function BreakdownTabs({ tabs, active, hrefFor }: { tabs: { id: string; label: string; count?: number }[]; active: string; hrefFor: (id: string) => string }) {
   return (
-    <nav className="flex gap-1 border-b border-border" aria-label="Разрезы">
+    <nav className="flex gap-1 overflow-x-auto border-b border-border whitespace-nowrap" aria-label="Разрезы">
       {tabs.map((t) => (
         <Link key={t.id} href={hrefFor(t.id)} scroll={false} aria-current={t.id === active ? "page" : undefined}
           className={cn("-mb-px border-b-2 px-3 py-2 text-sm", t.id === active ? "border-accent font-medium text-accent" : "border-transparent text-muted hover:text-text")}>
