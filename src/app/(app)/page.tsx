@@ -11,6 +11,7 @@ import { fmtMoney } from "@/lib/format";
 import { eachDay, periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
 import { costCoverage, dailyTotals, kpis } from "@/server/queries/common";
+import { topHypotheses } from "@/server/queries/hypotheses";
 import { bundlesTable, costSplitDaily, dataExists, opexDaily, overlappingSites, revenueSplitDaily, topMovers } from "@/server/queries/reports";
 
 type SP = Promise<Record<string, string | string[] | undefined>>;
@@ -25,10 +26,10 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
       </>
     );
   }
-  const [k, bundles, overlap, movers, split, daily, alerts, networks, costSplit, opex, coverage] = await Promise.all([
+  const [k, bundles, overlap, movers, split, daily, alerts, networks, costSplit, opex, coverage, hypotheses] = await Promise.all([
     kpis(p), bundlesTable(p), overlappingSites(), topMovers(p), revenueSplitDaily(p, {}, "networks"), dailyTotals(p),
     db.alert.findMany({ where: { resolvedAt: null, OR: [{ snoozedUntil: null }, { snoozedUntil: { lt: new Date() } }] }, orderBy: [{ level: "desc" }, { moneyAtRisk: "desc" }], take: 5 }),
-    db.network.findMany(), costSplitDaily(p), opexDaily(p), costCoverage(p),
+    db.network.findMany(), costSplitDaily(p), opexDaily(p), costCoverage(p), topHypotheses(3),
   ]);
   const { data, series } = pivot(split, eachDay(p));
   const known = Object.fromEntries(networks.map((n) => [n.title, n.color]));
@@ -80,6 +81,18 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
           rows={bundles.map((b) => ({ ...b, _key: b.id, _href: `/bundles/${b.slug}` }))}
           totals={{ title: "Итого по сети", uniques: k.cur.uniques, revenue: k.cur.revenue, cost: k.cur.cost, margin: k.cur.margin, romi: k.cur.romi, rpm: k.cur.rpm }} />
       </Section>
+      {hypotheses.length > 0 && (
+        <Section title="Гипотезы недели" sub="Что система предлагает попробовать — по ожидаемому эффекту в месяц" actions={<Link href="/hypotheses" className="text-sm text-accent hover:underline">Все →</Link>}>
+          <ul className="divide-y divide-border">
+            {hypotheses.map((h) => (
+              <li key={h.id} className="flex items-start justify-between gap-4 py-2 text-[13px]">
+                <div className="min-w-0"><Link href="/hypotheses" className="font-medium hover:text-accent">{h.title}</Link><p className="mt-0.5 line-clamp-2 text-xs text-muted">{h.hypothesis}</p></div>
+                <span className="num shrink-0 text-right">{Number(h.impactMonth ?? 0) > 0 ? <><div className="font-medium">{fmtMoney(Number(h.impactMonth))}</div><div className="text-[11px] text-faint">в месяц</div></> : <span className="text-faint">—</span>}</span>
+              </li>
+            ))}
+          </ul>
+        </Section>
+      )}
       <div className="grid gap-4 md:grid-cols-2">
         {([["Маржа выросла", movers.up, "text-positive"], ["Маржа упала", movers.down, "text-negative"]] as const).map(([title, list, cls]) => (
           <Section key={title} title={title} sub="к прошлому равному периоду">

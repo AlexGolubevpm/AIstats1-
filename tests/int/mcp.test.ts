@@ -78,7 +78,7 @@ describe("MCP route", () => {
     expect(init.status).toBe(200);
     expect((await init.json()).result.instructions).toContain("rev_per_1k_loads");
     const list = await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" }, token)).json();
-    expect(list.result.tools.map((t: { name: string }) => t.name).sort()).toEqual(["get_alerts", "get_deals", "get_network_matrix", "get_pnl", "get_zones", "query"]);
+    expect(list.result.tools.map((t: { name: string }) => t.name).sort()).toEqual(["get_alerts", "get_deals", "get_hypotheses", "get_network_matrix", "get_pnl", "get_zones", "query"]);
     expect(list.result.tools.find((t: { name: string }) => t.name === "query").description).toContain("v_site_geo_daily(");
     const call = await (await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "query", arguments: { sql: 'SELECT * FROM "Site"' } } }, token)).json();
     expect(call.result.isError).toBe(true);

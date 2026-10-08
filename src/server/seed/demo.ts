@@ -35,7 +35,7 @@ export async function isDemo(db: PrismaClient): Promise<boolean> {
 /** Removes every non-reference row. Used before loading demo data and by "Удалить демо-данные". */
 export async function clearData(db: PrismaClient): Promise<void> {
   const tables = ["FactRevenueGeo", "FactRevenueZone", "FactTraffic", "FactCost", "FactFixDeal", "DealPeriod", "DealSite", "Deal", "Advertiser",
-    "Zone", "BundleSite", "Bundle", "Site", "CostRate", "Alert", "IngestRun", "ImportBatch", "AuditLog", "AsgPayout", "UnresolvedAlias"];
+    "Zone", "BundleSite", "Bundle", "Site", "CostRate", "Alert", "Hypothesis", "IngestRun", "ImportBatch", "AuditLog", "AsgPayout", "UnresolvedAlias"];
   await db.$executeRawUnsafe(`TRUNCATE ${tables.map((t) => `"${t}"`).join(", ")} CASCADE`);
   await db.appSetting.deleteMany({ where: { key: { in: ["demo_data", "asg_unknown_sites"] } } });
 }

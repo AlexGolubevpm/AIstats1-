@@ -39,10 +39,10 @@ src/
     db.ts                    Prisma client (создаётся при первом обращении)
     config.ts                переменные окружения
     auth.ts, session.ts      пароль, сессии, MCP-токен
-    queries/                 чтение для страниц: common, reports, finance, deals, month-report, forecast, recommendations, inventory
-    actions/                 server actions: auth, alerts, deals, finance, settings; result.ts — общий формат ответа
-    services/                операции над базой: costs, deals, finance (выплаты ASG), settings
-    domain/                  чистая логика без базы: deals, costs, alerts/rules, inventory, recommendations, errors (RuleError); src/lib/forecast.ts — прогноз месяца
+    queries/                 чтение для страниц: common, reports, finance, deals, month-report, forecast, hypotheses, inventory
+    actions/                 server actions: auth, alerts, deals, finance, hypotheses, settings; result.ts — общий формат ответа
+    services/                операции над базой: costs, deals, finance (выплаты ASG), hypotheses (генерация, статусы, измерение), settings
+    domain/                  чистая логика без базы: deals, costs, alerts/rules, inventory, hypotheses (правила автогипотез), errors (RuleError); src/lib/forecast.ts — прогноз месяца
     ingest/
       adspyglass/            клиент с лимитами, маппинг, запись, пересчёт из сырья
       metrika/
@@ -122,7 +122,7 @@ CSV текущей таблицы формируется в браузере и�
 | `asg:sites` | `asg` | 04:00 | T-`ASG_RESTATE_DAYS`…T-1 | В день: `group_by=website` (итоги для сверки) и `group_by=spot` по аккаунту (зона → сайт по домену в названии). По каждому сайту с `platforms_ids[]=<id>`: `group_by=country`, `adnetwork_squashed`, `device`, `traffic_source` → `FactRevenueGeo`, `FactRevenueNetwork`, `FactRevenueDevice`, `FactTrafficSource`, затем расход по ревшаре источников (`revshareCosts` → `FactCost`, `origin = ASG`). Сайт × день = 4 запроса (27 сайтов × 2 дня ≈ 220 в ночь + 48 почасовых — в бюджете 800 с запасом ≈ 500 на бэкфилл). Выручка по странам сверяется с итогом сайта из `group_by=website`: расхождение больше 2% (и больше $0.05) пишется в `IngestRun.error`, прогон — `partial` |
 | `asg:backfill` | `asg` | каждые 30 минут; без заданного окна — пропуск без запросов | окно задаётся блоком «Бэкфилл AdSpyglass» на «Интеграциях» (по умолчанию: все разрезы — с 1-го числа текущего месяца, только итоги — с 1-го числа прошлого; по T-3) | Два режима. **Все разрезы** — то же, что `asg:sites` (2 + 4 × сайтов запросов на день); **только итоги по сайтам** — один `group_by=website` на день (строки `ZZ`, дни с готовой разбивкой по странам не трогаются) — хватает для графиков, прогноза и сравнения месяцев. По одному дню от новых к старым и только пока `использовано + запросов_на_день ≤ ASG_DAILY_BUDGET − ASG_BACKFILL_RESERVE`; счётчик обнуляется в полночь UTC, так что длинное окно само растягивается на несколько суток. Состояние (`pending/done/failed`) — `AppSetting asg_backfill`; каждая порция с запросами — свой `IngestRun`. Когда последний день загружен — `derive` за всё окно |
 | `metrika` | `main` | каждый час, :15 | вчера + сегодня | → `FactTraffic` |
-| `derive` | `main` | 04:45 | T-4…T-1 | Расход по ставкам → прогноз дилов (флэт «в месяц» — по дням календарного месяца) → алерты, строго по порядку |
+| `derive` | `main` | 04:45 | T-4…T-1 | Расход по ставкам → прогноз дилов (флэт «в месяц» — по дням календарного месяца) → алерты → гипотезы (правила по дневной аналитике + алерты, [ADR 0013](../adr/0013-hypotheses.md)), строго по порядку |
 | `geo:reprocess` | `main` | по кнопке | 90 дней | Переписывает строки стран и устройств из сохранённого сырья (после сопоставления страны или чтобы заново разложить выручку сеток по итогу сайта), затем `derive`. Запросов к API нет |
 
 Ручной запуск и бэкфилл — на `/settings/integrations` (action ставит джоб в очередь). Для бэкфилла `asg:sites` форма считает число запросов и требует подтверждения, если оно больше дневного бюджета. Раскладка сумм периода по дням (`distributePeriod`) выполняется сразу в action ввода периода или оплаты.

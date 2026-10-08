@@ -234,14 +234,31 @@ test("forecast: the month is drawn day by day, the pace switch changes the URL, 
   await expect(page.locator("tr[data-kind=forecast]")).toHaveCount(0); // a finished month has no forecast rows
 });
 
-test("recommendations: the list opens, scope chips filter and change the URL", async ({ page }) => {
+test("hypotheses: system proposals on demo data, scope chips, an own hypothesis accepted into work; old /recommendations links redirect", async ({ page }) => {
   await login(page, "/recommendations");
-  await expect(page.getByRole("heading", { name: "Рекомендации", exact: true }).first()).toBeVisible();
+  await expect(page).toHaveURL(/\/hypotheses/);
+  await expect(page.getByRole("heading", { name: "Гипотезы", exact: true }).first()).toBeVisible();
+  // The worker is not running in E2E: the nightly generation is replaced by the alerts/derive job the demo seed ran; proposals exist either way.
   await expect(page.locator("li[data-scope]").first()).toBeVisible();
-  await page.locator("a[href*='scope=format']").click();
+  await page.locator("a[href*='scope=format']").first().click();
   await expect(page).toHaveURL(/scope=format/);
   await expect(page.locator("li[data-scope]:not([data-scope=format])")).toHaveCount(0);
-  await expect(page.getByText("Что сделать:").first()).toBeVisible();
+  // An own hypothesis: bundle + site + sentence; it lands in «Предложено системой» as «своя», «Принять» moves it to «В работе».
+  await page.getByRole("button", { name: "Новая гипотеза" }).click();
+  await page.locator("select[name=siteId]").selectOption({ label: "japan-tube.demo" });
+  await page.locator("input[name=title]").fill("E2E: поднять флор баннеров");
+  await page.locator("textarea[name=hypothesis]").fill("Если поднять флор баннеров до $1, то rev/1000 loads вырастет на 10%");
+  await page.locator("input[name=impactMonth]").fill("150");
+  await page.getByRole("button", { name: "Добавить" }).click();
+  await expect(page.getByText("Гипотеза добавлена")).toBeVisible();
+  await page.goto("/hypotheses?tab=proposed");
+  const own = page.locator("li[data-scope]", { hasText: "E2E: поднять флор баннеров" });
+  await expect(own.getByText("своя")).toBeVisible();
+  await own.getByRole("button", { name: "Принять" }).click();
+  await expect(page.getByText(/Гипотеза в работе/)).toBeVisible();
+  await page.goto("/hypotheses?tab=accepted");
+  await expect(page.locator("li[data-status=ACCEPTED]", { hasText: "E2E: поднять флор баннеров" })).toBeVisible();
+  await expect(page.getByText(/в работе с/).first()).toBeVisible();
 });
 
 test("integrations: the backfill block shows the window, queues the job and reports progress", async ({ page }) => {

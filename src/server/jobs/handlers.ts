@@ -14,6 +14,7 @@ import { daysThatFit, defaultWindow, readBackfill, requestsPerDay, saveBackfill,
 import { recalcCosts, revshareCosts } from "@/server/services/costs";
 import { matchZonesToPlacements } from "@/server/services/inventory";
 import { forecastDeals } from "@/server/services/deals";
+import { generateHypotheses } from "@/server/services/hypotheses";
 
 export interface JobContext { db: PrismaClient; cfg: Config; raw: RawStore; today?: string; fetchImpl?: typeof fetch }
 export interface JobData { from?: string; to?: string; siteId?: string; mode?: BackfillMode }
@@ -93,7 +94,8 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
     const deals = await forecastDeals(db, w.from, w.to);
     const sources = [cfg.asg.configured && "adspyglass", cfg.metrika.configured && "metrika"].filter(Boolean) as string[];
     const alerts = await evaluateAlerts({ db, asOf: todayOf(ctx), configuredSources: sources });
-    return { rows: costs + deals + alerts.active };
+    const hyp = await generateHypotheses(db, todayOf(ctx)); // after the alerts: they feed the proposals
+    return { rows: costs + deals + alerts.active + hyp.created + hyp.refreshed };
   });
 }
 
