@@ -59,7 +59,7 @@ export default async function BundlePage({ params, searchParams }: Props) {
           rows={sites.map((s) => ({ ...s, _key: s.id, _href: `/sites/${s.domain}` }))}
           totals={{ domain: "Итого", uniques: k.cur.uniques, pageviews: k.cur.pageviews, depth: k.cur.depth, revenue: k.cur.revenue, cost: k.cur.cost, margin: k.cur.margin, romi: k.cur.romi, rpm: k.cur.rpm }} />
       </Section>
-      <div className="grid gap-4 2xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 2xl:grid-cols-2">
         <Section title="Форматы" sub="CPM сравнивается только внутри формата; для баннеров — view rate и viewable CPM">
           <DataTable id="fmt" exportName={`bundle-${slug}-formats`} defaultSort={{ id: "revenue", dir: "desc" }} columns={FORMAT_COLS}
             rows={formats.map((f) => ({ ...f, format: FORMAT_LABEL[f.format] ?? f.format, _key: f.format }))} />

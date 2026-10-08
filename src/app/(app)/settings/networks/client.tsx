@@ -1,4 +1,5 @@
 "use client";
+import { TableScroll } from "@/components/data/table-scroll";
 import { useState } from "react";
 import { ActionForm, FormField } from "@/components/forms/action-form";
 import { Badge } from "@/components/ui/badge";
@@ -16,7 +17,7 @@ export function NetworksTable({ nets, max }: { nets: NetRow[]; max: number }) {
     <>
       <p className="text-sm text-muted">Цветных сеток: {shown} из {max}. Остальные схлопываются в «Прочее» на всех графиках.</p>
       <section className="card p-0">
-        <table className="num w-full text-[13px]">
+        <TableScroll flush><table className="tbl num w-full text-[13px]">
           <thead><tr className="border-b border-border text-xs text-muted">{["Сетка", "Слаг", "Тип", "В легенде", "Выручка за 30 дней"].map((h, i) =>
             <th key={h} className={`h-9 px-4 font-medium ${i === 4 ? "text-right" : "text-left"}`}>{h}</th>)}</tr></thead>
           <tbody>{nets.map((n) => (
@@ -29,7 +30,7 @@ export function NetworksTable({ nets, max }: { nets: NetRow[]; max: number }) {
               <td className="px-4 text-right">{fmtMoney(n.revenue30)}</td>
             </tr>
           ))}</tbody>
-        </table>
+        </table></TableScroll>
       </section>
       <Sheet open={edit != null} onOpenChange={(v) => !v && setEdit(null)} title={edit?.title ?? ""} description={edit?.slug === "own_deals" ? "own_deals — системная, цвет всегда зелёный" : undefined}>
         {edit && (

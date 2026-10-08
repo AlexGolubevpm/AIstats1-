@@ -7,6 +7,7 @@ import { StatusBadge } from "@/components/data/misc";
 import { PageHeader } from "@/components/layout/page-header";
 import { Badge } from "@/components/ui/badge";
 import { Section } from "@/components/ui/card";
+import { TableScroll } from "@/components/data/table-scroll";
 import { withBase } from "@/lib/base-path";
 import { fmtDate, fmtMoney, fmtPercent } from "@/lib/format";
 import { daysBetween, periodFromParams } from "@/lib/period";
@@ -86,7 +87,7 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
       </Section>
 
       <Section title="По месяцам" sub="Календарные месяцы: фикс-дилы и операционные расходы ложатся на дни своего месяца. Текущий месяц — не закрыт">
-        <table className="num w-full text-[13px] [&_td]:px-2 [&_td:first-child]:pl-0 [&_th]:px-2 [&_th:first-child]:pl-0">
+        <TableScroll><table className="tbl num w-full text-[13px] [&_td]:px-2 [&_td:first-child]:pl-0 [&_th]:px-2 [&_th:first-child]:pl-0">
           <thead><tr className="border-b border-border text-xs text-muted">
             <th className="py-2 text-left font-medium">Месяц</th><th className="text-right font-medium">AdSpyglass</th><th className="text-right font-medium">Фикс-дилы</th>
             <th className="text-right font-medium">Выручка</th><th className="text-right font-medium">Расход на трафик</th><th className="text-right font-medium">Опер. расходы</th>
@@ -101,13 +102,13 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
             </tr>
           ))}
           {months.length === 0 && <tr><td colSpan={8} className="py-6 text-center text-sm text-muted">Данных ещё нет</td></tr>}</tbody>
-        </table>
+        </table></TableScroll>
       </Section>
 
       <Section title="Операционные расходы" sub="Хостинг, люди, софт — цифра за месяц, делится поровну на его дни. Без сайта — расход всей сети"
         actions={<OpexButton sites={sites} defaultMonth={thisMonth} />}>
         {opex.length === 0 ? <p className="py-6 text-center text-sm text-muted">Расходов пока нет — добавьте первый: месяц, что и сколько</p> : (
-          <table className="num w-full text-[13px] [&_td]:px-2 [&_td:first-child]:pl-0 [&_th]:px-2 [&_th:first-child]:pl-0">
+          <TableScroll><table className="tbl num w-full text-[13px] [&_td]:px-2 [&_td:first-child]:pl-0 [&_th]:px-2 [&_th:first-child]:pl-0">
             <thead><tr className="border-b border-border text-xs text-muted">
               <th className="py-2 text-left font-medium">Месяц</th><th className="text-left font-medium">Что</th><th className="text-left font-medium">Категория</th>
               <th className="text-left font-medium">Сайт</th><th className="text-right font-medium">За месяц</th><th className="text-right font-medium">В день</th><th /></tr></thead>
@@ -126,7 +127,7 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
                 </tr>
               )),
             ])}</tbody>
-          </table>
+          </table></TableScroll>
         )}
       </Section>
 
@@ -149,10 +150,10 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
           totals={{ domain: bundle ? `Итого по бандлу ${bundle}` : "Итого по сети", ...tot, margin: tot.revenue - tot.cost - tot.opex, romi: tot.cost ? ((tot.revenue - tot.cost) / tot.cost) * 100 : null }} />
       </Section>
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
         <Section title="Выплаты AdSpyglass" sub="Полученная сумма подтверждает выручку месяца">
           {payouts.length === 0 ? <p className="py-6 text-center text-sm text-muted">Нет выручки AdSpyglass</p> : (
-            <table className="num w-full text-[13px] [&_td]:px-2 [&_td:first-child]:pl-0 [&_th]:px-2 [&_th:first-child]:pl-0">
+            <TableScroll><table className="tbl num w-full text-[13px] [&_td]:px-2 [&_td:first-child]:pl-0 [&_th]:px-2 [&_th:first-child]:pl-0">
               <thead><tr className="border-b border-border text-xs text-muted">
                 <th className="py-2 text-left font-medium">Месяц</th><th className="text-right font-medium">Отчёт</th><th className="text-right font-medium">Получено</th>
                 <th className="text-right font-medium">Расхождение</th><th className="text-right font-medium">Статус</th><th /></tr></thead>
@@ -166,12 +167,12 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
                   <td className="text-right">{x.status !== "OPEN" && <PayoutButton month={x.month} reported={x.reported} label={x.received == null ? "Внести выплату" : "Изменить"} />}</td>
                 </tr>
               ))}</tbody>
-            </table>
+            </table></TableScroll>
           )}
         </Section>
         <Section title="Дебиторка по фикс-дилам" actions={<Link href="/deals?tab=payments" className="text-sm text-accent hover:underline">Все оплаты →</Link>}>
           {recv.length === 0 ? <p className="py-6 text-center text-sm text-muted">Неоплаченных счетов нет</p> : (
-            <table className="num w-full text-[13px] [&_td]:px-2 [&_td:first-child]:pl-0 [&_th]:px-2 [&_th:first-child]:pl-0">
+            <TableScroll><table className="tbl num w-full text-[13px] [&_td]:px-2 [&_td:first-child]:pl-0 [&_th]:px-2 [&_th:first-child]:pl-0">
               <thead><tr className="border-b border-border text-xs text-muted">
                 <th className="py-2 text-left font-medium">Рекламодатель · дил</th><th className="text-left font-medium">Период</th><th className="text-right font-medium">Остаток</th>
                 <th className="text-right font-medium">Срок</th><th className="text-right font-medium">Просрочка</th></tr></thead>
@@ -184,7 +185,7 @@ export default async function Finance({ searchParams }: { searchParams: Promise<
                   <td className="text-right">{r.status === "DISPUTED" ? <StatusBadge status="DISPUTED" /> : r.overdueDays > 0 ? <span className="text-negative">{r.overdueDays} дн.</span> : <span className="text-faint">—</span>}</td>
                 </tr>
               ))}</tbody>
-            </table>
+            </table></TableScroll>
           )}
         </Section>
       </div>

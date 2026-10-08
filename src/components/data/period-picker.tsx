@@ -36,7 +36,7 @@ export function PeriodPicker({ from, to, preset, extra = [] }: { from: string; t
         <ChevronDown className="size-4 text-muted" />
       </P.Trigger>
       <P.Portal>
-        <P.Content align="end" sideOffset={6} collisionPadding={8} className="card z-50 w-72 max-w-[calc(100vw-16px)] p-2">
+        <P.Content align="end" sideOffset={6} collisionPadding={8} className="ts-pop card z-50 w-72 max-w-[calc(100vw-16px)] p-2">
           <div className="grid gap-0.5">
             {all.map((p) => (
               <button key={p.id} onClick={() => go({ preset: p.id })}

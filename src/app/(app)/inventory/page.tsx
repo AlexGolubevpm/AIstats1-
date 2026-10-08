@@ -73,7 +73,7 @@ export default async function Inventory({ searchParams }: Props) {
           {(Object.keys(USE_LABEL) as (keyof typeof USE_LABEL)[]).map((u) => <span key={u} className="flex items-center gap-1.5"><span className={`size-2.5 rounded-sm ${TONE[u]}`} />{USE_LABEL[u]}</span>)}
         </div>
         <div className="-mx-5 overflow-x-auto">
-          <table className="num w-full border-separate border-spacing-0 text-[12px]">
+          <table className="tbl num w-full border-separate border-spacing-0 text-[12px]">
             <thead>
               <tr className="text-xs text-muted">
                 <th className="sticky left-0 z-10 h-10 border-b border-border bg-surface pl-5 pr-3 text-left font-medium">Сайт</th>

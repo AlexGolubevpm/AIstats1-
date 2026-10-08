@@ -134,7 +134,8 @@ const sitesTotalsFor = (rows: { siteId: string; bundleId: string; bundleTitle: s
 export type HypothesisTab = "proposed" | "accepted" | "done" | "all";
 export const TAB_LABEL: Record<HypothesisTab, string> = { proposed: "Предложено системой", accepted: "В работе", done: "Проверено", all: "Все" };
 
-export interface HypothesisFilter { tab: HypothesisTab; scope?: HypScope | null; bundleSiteIds?: string[] | null; bundleId?: string | null }
+export interface HypothesisFilter { tab: HypothesisTab; scope?: HypScope | null; bundleSiteIds?: string[] | null; bundleId?: string | null; page?: number }
+export const HYPOTHESES_PAGE = 50;
 
 const TAB_WHERE: Record<HypothesisTab, Prisma.HypothesisWhereInput> = {
   proposed: { status: "PROPOSED" }, accepted: { status: "ACCEPTED" }, done: { status: { in: ["DONE", "REJECTED"] } }, all: { status: { not: "EXPIRED" } },
@@ -146,10 +147,14 @@ export async function hypothesesList(f: HypothesisFilter) {
     ...TAB_WHERE[f.tab], ...(f.scope ? { scope: f.scope } : {}),
     ...(f.bundleSiteIds ? { OR: [{ siteId: { in: f.bundleSiteIds } }, ...(f.bundleId ? [{ bundleId: f.bundleId }] : [])] } : {}),
   };
-  const rows = await db.hypothesis.findMany({ where, include: { site: { select: { id: true, domain: true } }, bundle: { select: { id: true, title: true, slug: true } } },
-    orderBy: [{ level: "desc" }, { impactMonth: { sort: "desc", nulls: "last" } }, { lastSeenAt: "desc" }] });
-  // Prisma sorts enums by definition order (INFO < WARNING < CRITICAL), so desc puts critical first.
-  return rows;
+  const page = Math.max(1, f.page ?? 1);
+  const [rows, total] = await Promise.all([
+    db.hypothesis.findMany({ where, include: { site: { select: { id: true, domain: true } }, bundle: { select: { id: true, title: true, slug: true } } },
+      // Prisma sorts enums by definition order (INFO < WARNING < CRITICAL), so desc puts critical first.
+      orderBy: [{ level: "desc" }, { impactMonth: { sort: "desc", nulls: "last" } }, { lastSeenAt: "desc" }], skip: (page - 1) * HYPOTHESES_PAGE, take: HYPOTHESES_PAGE }),
+    db.hypothesis.count({ where }),
+  ]);
+  return Object.assign(rows, { total, page, pages: Math.max(1, Math.ceil(total / HYPOTHESES_PAGE)) });
 }
 
 export async function hypothesisCounts(f: Omit<HypothesisFilter, "tab" | "scope">) {

@@ -2,7 +2,8 @@
 // Charts: no 3D, gradients or shadows; Y from zero; horizontal grid only; tooltip lists all
 // series sorted by value; clickable legend on top; gaps are gaps (null), never zeros.
 import { useState } from "react";
-import { Area, Bar, CartesianGrid, ComposedChart, Legend, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import { cn } from "@/lib/cn";
+import { Area, Bar, CartesianGrid, ComposedChart, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 import { formatText, type ColumnKind } from "./format-cell";
 
 export interface Series { key: string; label: string; color: string; type: "bar" | "line" | "area"; stack?: string; dashed?: boolean }
@@ -30,16 +31,27 @@ export function TrendChart({ data, series, kind = "money", height = 280, xKey = 
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   if (!data.length) return <div className="flex items-center justify-center text-sm text-muted" style={{ height }}>Нет данных за период</div>;
   return (
-    <div className="min-w-0 overflow-hidden" style={{ height }}>
+    <div className="flex min-w-0 flex-col" style={{ height }}>
+      <ul className="mb-1 flex flex-wrap justify-end gap-x-3 gap-y-1 px-1 text-xs" aria-label="Легенда">
+        {series.map((s) => {
+          const off = hidden.has(s.key);
+          return (
+            <li key={s.key}>
+              <button type="button" onClick={() => { const n = new Set(hidden); off ? n.delete(s.key) : n.add(s.key); setHidden(n); }} aria-pressed={!off}
+                className={cn("inline-flex items-center gap-1.5 rounded px-1 py-0.5 transition-colors hover:bg-surface-hover", off ? "text-faint line-through" : "text-muted")}>
+                <span className="size-2 rounded-full" style={{ background: s.color, opacity: off ? 0.4 : 1 }} />{s.label}
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
       <ResponsiveContainer width="100%" height="100%" debounce={50}>
         <ComposedChart data={data} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
           <CartesianGrid vertical={false} stroke="var(--border)" />
           <XAxis dataKey={xKey} tick={tick} tickLine={false} axisLine={false} tickFormatter={shortDate} minTickGap={16} />
           <YAxis tick={tick} tickLine={false} axisLine={false} width={56} domain={[0, "auto"]} tickFormatter={(v) => formatText(kind === "money" ? "compact" : kind, v).replace("—", "0")} />
           <Tooltip content={<ChartTooltip kind={kind} />} cursor={{ fill: "var(--surface-hover)" }} labelFormatter={(l) => String(l)} />
-          <Legend verticalAlign="top" align="right" height={28} iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12, cursor: "pointer" }}
-            onClick={(e) => { const k = String((e as { dataKey?: unknown }).dataKey); const n = new Set(hidden); n.has(k) ? n.delete(k) : n.add(k); setHidden(n); }}
-            formatter={(v, e) => <span style={{ color: hidden.has(String((e as { dataKey?: unknown }).dataKey)) ? "var(--text-faint)" : "var(--text-muted)" }}>{v}</span>} />
           {series.map((s) => {
             const common = { key: s.key, dataKey: s.key, name: s.label, hide: hidden.has(s.key), isAnimationActive: false };
             if (s.type === "bar") return <Bar {...common} stackId={s.stack} fill={s.color} radius={s.stack ? 0 : [3, 3, 0, 0]} maxBarSize={28} />;
@@ -48,6 +60,7 @@ export function TrendChart({ data, series, kind = "money", height = 280, xKey = 
           })}
         </ComposedChart>
       </ResponsiveContainer>
+      </div>
     </div>
   );
 }

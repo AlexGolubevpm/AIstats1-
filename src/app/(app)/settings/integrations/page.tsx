@@ -1,3 +1,4 @@
+import { TableScroll } from "@/components/data/table-scroll";
 import { StatusBadge } from "@/components/data/misc";
 import { Badge } from "@/components/ui/badge";
 import { Section } from "@/components/ui/card";
@@ -97,7 +98,7 @@ export default async function Integrations() {
       <Section title="Лог за 7 дней">
         {runs.length === 0 ? <p className="text-sm text-muted">Запусков не было</p> : (
           <div className="-mx-5 overflow-x-auto">
-            <table className="num w-full text-[13px]">
+            <TableScroll flush><table className="tbl num w-full text-[13px]">
               <thead><tr className="border-b border-border text-xs text-muted">{["Когда", "Джоб", "Окно", "Статус", "Строк", "Запросов", "Длительность", "Ошибка"].map((h, i) =>
                 <th key={h} className={`h-9 px-3 font-medium ${i === 0 ? "pl-5" : ""} ${[4, 5].includes(i) ? "text-right" : "text-left"}`}>{h}</th>)}</tr></thead>
               <tbody>{runs.map((r) => (
@@ -112,7 +113,7 @@ export default async function Integrations() {
                   <td className="max-w-md px-3 py-2 pr-5">{r.error ? <details><summary className="cursor-pointer truncate text-negative">{r.error.slice(0, 80)}</summary><pre className="mt-1 text-xs whitespace-pre-wrap text-muted">{r.error}</pre></details> : <span className="text-faint">—</span>}</td>
                 </tr>
               ))}</tbody>
-            </table>
+            </table></TableScroll>
           </div>
         )}
       </Section>

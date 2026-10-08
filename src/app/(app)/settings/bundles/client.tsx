@@ -1,4 +1,5 @@
 "use client";
+import { TableScroll } from "@/components/data/table-scroll";
 import { useState, useTransition } from "react";
 import { ActionForm, FormField } from "@/components/forms/action-form";
 import { Button } from "@/components/ui/button";
@@ -69,7 +70,7 @@ export function BundlesManager({ bundles, sites, palette }: { bundles: BundleRow
     <>
       <div className="flex justify-end"><Button size="sm" variant="primary" onClick={() => setEdit("new")}>Создать бандл</Button></div>
       <section className="card p-0">
-        <table className="num w-full text-[13px]">
+        <TableScroll flush><table className="tbl num w-full text-[13px]">
           <thead><tr className="border-b border-border text-xs text-muted">{["Название", "Слаг", "Сайтов", "Выручка за 30 дней", ""].map((h, i) =>
             <th key={i} className={cn("h-9 px-4 font-medium", i >= 2 && i < 4 ? "text-right" : "text-left")}>{h}</th>)}</tr></thead>
           <tbody>{bundles.map((b) => (
@@ -82,7 +83,7 @@ export function BundlesManager({ bundles, sites, palette }: { bundles: BundleRow
             </tr>
           ))}
           {bundles.length === 0 && <tr><td colSpan={5} className="py-10 text-center text-sm text-muted">Бандлов нет</td></tr>}</tbody>
-        </table>
+        </table></TableScroll>
       </section>
       <Sheet open={edit != null} onOpenChange={(v) => !v && setEdit(null)} title={edit === "new" ? "Новый бандл" : "Бандл"} width="max-w-2xl">
         {edit != null && <BundleForm key={edit === "new" ? "new" : edit.id} b={edit === "new" ? undefined : edit} sites={sites} used={used} palette={palette} onDone={() => setEdit(null)} />}

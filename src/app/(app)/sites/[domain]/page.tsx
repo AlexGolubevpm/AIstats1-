@@ -115,7 +115,7 @@ export default async function SitePage({ params, searchParams }: Props) {
         <div className="-mx-5 -mt-2 mb-3 px-5"><BreakdownTabs tabs={TABS} active={by} hrefFor={tabHref} /></div>
         {table}
       </Section>
-      <div className="grid gap-4 lg:grid-cols-2">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
         {alerts.length > 0 && (
           <Section title="Алерты по сайту">
             <div className="-mx-2">{alerts.map((a) => <AlertBadge key={a.id} level={a.level} title={a.title} message={a.message} link={a.link} />)}</div>

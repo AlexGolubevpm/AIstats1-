@@ -56,7 +56,7 @@ export function HypothesisActions({ id, status }: { id: string; status: string }
     </ActionForm>
   );
   return (
-    <div className="flex shrink-0 flex-wrap items-center justify-end gap-1.5">
+    <div className="flex flex-wrap items-center justify-end gap-1.5 sm:shrink-0">
       {(status === "PROPOSED" || status === "EXPIRED") && <>{quick("ACCEPTED", "Принять", "primary")}{quick("REJECTED", "Отклонить", "ghost")}</>}
       {status === "ACCEPTED" && <>
         <Button size="sm" variant="primary" onClick={() => setFinish(true)}>Завершить</Button>

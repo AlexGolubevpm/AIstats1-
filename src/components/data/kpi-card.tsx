@@ -36,15 +36,15 @@ export function KpiCard({ label, value, format, delta, deltaMode = "percent", sp
   const good = delta == null ? null : tone === "inverse" ? delta < 0 : delta > 0;
   const deltaCls = tone === "neutral" || delta == null || delta === 0 ? "text-muted" : good ? "text-positive" : "text-negative";
   return (
-    <div className={cn("card flex min-w-0 flex-col gap-2 p-4", emphasis && "sm:col-span-2", negativeFrame && "border-negative/60")}>
+    <div className={cn("card flex min-w-0 flex-col gap-2 p-3 sm:p-4", emphasis && "sm:col-span-2", negativeFrame && "border-negative/60")}>
       <div className="flex items-center gap-2 text-[13px] text-muted">
         {Icon && <span className="grid size-7 place-items-center rounded-lg" style={{ background: `color-mix(in srgb, ${color} 12%, transparent)`, color }}><Icon className="size-4" /></span>}
-        <span className="truncate">{label}</span>
+        <span className="line-clamp-2 min-w-0 leading-4">{label}</span>
         {warn && <Tip content={warn}><span className="text-warning">⚠</span></Tip>}
       </div>
       <div className="flex items-end justify-between gap-3">
         <div className="min-w-0">
-          <div className={cn("num text-[28px] leading-9 font-semibold tracking-[-0.02em]", value != null && value < 0 && "text-negative")}>{fmt(value, format)}</div>
+          <div className={cn("num text-[24px] leading-8 font-semibold tracking-[-0.02em] whitespace-nowrap sm:text-[28px] sm:leading-9", value != null && value < 0 && "text-negative")}>{fmt(value, format)}</div>
           <div className="mt-0.5 flex items-center gap-1.5 text-xs whitespace-nowrap" title="К предыдущему равному периоду">
             {delta != null && <span className={cn("num font-medium", deltaCls)}>{delta > 0 ? "↑" : delta < 0 ? "↓" : ""} {fmtDelta(delta, deltaMode).replace(/^[+−]/, "")}</span>}
             {sub && <span className="truncate text-muted">{sub}</span>}

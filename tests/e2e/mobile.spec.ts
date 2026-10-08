@@ -4,7 +4,7 @@ import { login } from "./helpers";
 // Phone layout: the sidebar is a drawer behind a top bar, nothing overflows the viewport sideways.
 test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 
-const PAGES = ["/", "/finance", "/forecast", "/sites", "/geo", "/deals", "/inventory", "/alerts", "/hypotheses", "/settings/sites", "/settings/integrations"];
+const PAGES = ["/", "/finance", "/forecast", "/sites", "/geo", "/deals", "/deals?tab=payments", "/inventory", "/alerts", "/hypotheses", "/settings/sites", "/settings/bundles", "/settings/networks", "/settings/costs", "/settings/integrations", "/settings/access"];
 
 test("mobile: drawer menu, no horizontal overflow on every page", async ({ page }) => {
   await login(page, "/sites");
@@ -15,7 +15,8 @@ test("mobile: drawer menu, no horizontal overflow on every page", async ({ page 
   for (const path of PAGES) {
     await page.goto(path);
     await expect(page.locator("h1").first()).toBeVisible();
-    const over = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    const { vw, over } = await page.evaluate(() => ({ vw: window.innerWidth, over: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth }));
+    expect(vw, `${path}: a block wider than the phone made the browser zoom the layout out`).toBe(390);
     expect(over, `${path} overflows by ${over}px`).toBeLessThanOrEqual(1);
     // Nothing fixed hides the page title: the header starts below the top bar.
     const top = await page.locator("h1").first().evaluate((el) => el.getBoundingClientRect().top);
@@ -27,7 +28,8 @@ test("mobile: drawer menu, no horizontal overflow on every page", async ({ page 
     const href = await page.locator(link).first().getAttribute("href");
     if (!href) continue;
     await page.goto(href);
-    const over = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    const { vw, over } = await page.evaluate(() => ({ vw: window.innerWidth, over: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) - window.innerWidth }));
+    expect(vw, `${href}: layout zoomed out`).toBe(390);
     expect(over, `${href} overflows by ${over}px`).toBeLessThanOrEqual(1);
   }
   // Burger opens the drawer; a tap on an item navigates and closes it.
