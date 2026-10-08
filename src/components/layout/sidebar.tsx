@@ -3,7 +3,7 @@
 // yellow dot when older than 2 h, red when the last run failed.
 import {
   ArrowLeftRight, BarChart3, ChevronDown, ChevronsLeft, ChevronsRight, CircleDollarSign, Globe, LayoutDashboard, Layers, LogOut, Moon, Settings,
-  LayoutGrid, Lightbulb, Sun, TrendingUp, TriangleAlert,
+  FlaskConical, LayoutGrid, Sun, TrendingUp, TriangleAlert,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -16,7 +16,7 @@ import { logoutAction } from "@/server/actions/auth";
 
 export interface SidebarProps {
   bundles: { slug: string; title: string; color: string }[];
-  counts: { alerts: number; deals: number };
+  counts: { alerts: number; deals: number; hypotheses: number };
   freshness: { source: string; label: string; lastOk: string | null; failed: boolean }[];
   mcpConnected: boolean;
 }
@@ -31,7 +31,7 @@ const NAV = [
   { href: "/deals", label: "Фикс-дилы", icon: ArrowLeftRight, count: "deals" as const },
   { href: "/inventory", label: "Форматы", icon: LayoutGrid },
   { href: "/alerts", label: "Алерты", icon: TriangleAlert, count: "alerts" as const },
-  { href: "/recommendations", label: "Рекомендации", icon: Lightbulb },
+  { href: "/hypotheses", label: "Гипотезы", icon: FlaskConical, count: "hypotheses" as const },
 ];
 
 export function Sidebar({ bundles, counts, freshness, mcpConnected }: SidebarProps) {

@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { db } from "@/server/db";
 import { MCP_VIEWS, SqlRejected } from "./sql-guard";
-import { getAlerts, getDeals, getNetworkMatrix, getPnl, getZones, queryTool, ToolError } from "./tools";
+import { getAlerts, getDeals, getHypotheses, getNetworkMatrix, getPnl, getZones, queryTool, ToolError } from "./tools";
 
 export const INSTRUCTIONS = `TubeStat — маржа по сети тьюб-сайтов. Только чтение. Все деньги в USD.
 Правила анализа:
@@ -78,5 +78,10 @@ export async function createMcpServer(): Promise<McpServer> {
     inputSchema: { status: z.enum(["ACTIVE", "PAUSED", "ENDED", "DRAFT"]).optional(), advertiser: z.string().optional(), date_from: date.optional(), date_to: date.optional() },
     annotations: ro,
   }, wrap("get_deals", getDeals));
+  server.registerTool("get_hypotheses", {
+    description: "Гипотезы: что могло бы заработать больше или перестать терять — предложенные системой (ночные правила по дневной аналитике и алерты), из алертов и свои. Статус, ожидаемый эффект $/мес, метрика проверки, база и итог. По умолчанию — предложенные.",
+    inputSchema: { status: z.enum(["PROPOSED", "ACCEPTED", "DONE", "REJECTED", "EXPIRED"]).optional(), bundle: z.string().optional().describe("слаг бандла"), site: z.string().optional().describe("домен"),
+      scope: z.enum(["bundle", "site", "geo", "zone", "network", "format", "deal", "source", "system"]).optional() }, annotations: ro,
+  }, wrap("get_hypotheses", getHypotheses));
   return server;
 }

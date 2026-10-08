@@ -43,6 +43,7 @@ model Site {
   deals      FactFixDeal[]
   dealSites  DealSite[]
   opex       OpexEntry[]
+  hypotheses Hypothesis[]
 
   @@index([status])
 }
@@ -53,6 +54,7 @@ model Bundle {
   title String
   color String
   sites BundleSite[]
+  hypotheses Hypothesis[]
 }
 
 // A site can belong to several bundles: network totals are computed over sites, never by summing bundles.
@@ -590,6 +592,68 @@ model Alert {
 
   @@unique([rule, entityKey])
   @@index([resolvedAt, level])
+}
+
+// ---------- Hypotheses ----------
+// What could earn more or stop a loss: proposed by the nightly rules (AUTO), taken from an alert
+// (ALERT) or written by the owner (MANUAL). Accepting one freezes the metric's baseline; closing
+// it measures the same metric again. docs/product/03-pages.md#hypotheses, ADR 0013.
+enum HypothesisSource {
+  AUTO
+  ALERT
+  MANUAL
+}
+
+enum HypothesisStatus {
+  PROPOSED
+  ACCEPTED
+  DONE
+  REJECTED
+  EXPIRED
+}
+
+enum HypothesisLevel {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+model Hypothesis {
+  id          String           @id @default(cuid())
+  source      HypothesisSource
+  status      HypothesisStatus @default(PROPOSED)
+  level       HypothesisLevel  @default(WARNING)
+  ruleKey     String? // AUTO/ALERT: the rule, e.g. site_rev_below_bundle (dedupe with objectKey)
+  objectKey   String? // AUTO/ALERT: the object, e.g. site:<id>|format:BANNER
+  scope       String // site | geo | zone | network | deal | source | format | bundle | system
+  alertId     String?
+  bundleId    String?
+  siteId      String?
+  format      AdFormat?
+  zoneId      String?
+  networkId   String?
+  countryCode String?
+  sourceSlug  String?
+  dealId      String?
+  title       String
+  hypothesis  String // «если …, то …»: why and what to do
+  evidence    Json             @default("{}") // the numbers it rests on: window, values, benchmark
+  impactMonth Decimal?         @db.Decimal(12, 4) // expected effect, $ per month
+  link        String           @default("/hypotheses")
+  metric      String? // what is measured: revenue | margin | rev_per_1k | rpm | view_rate | cost_per_1k | cost_share
+  baseline    Decimal?         @db.Decimal(14, 6) // the metric over the 14 days before acceptance
+  result      Decimal?         @db.Decimal(14, 6) // the metric over the last 14 days before closing
+  resultNote  String?
+  firstSeenAt DateTime         @default(now())
+  lastSeenAt  DateTime         @default(now())
+  acceptedAt  DateTime?
+  closedAt    DateTime?
+  createdAt   DateTime         @default(now())
+  site        Site?            @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  bundle      Bundle?          @relation(fields: [bundleId], references: [id], onDelete: SetNull)
+
+  @@unique([ruleKey, objectKey])
+  @@index([status, level])
 }
 
 model ImportBatch {

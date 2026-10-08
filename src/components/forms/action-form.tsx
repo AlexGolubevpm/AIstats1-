@@ -10,9 +10,9 @@ import type { ActionResult } from "@/server/actions/result";
 const ErrCtx = createContext<ActionResult>({});
 export const useFormResult = () => useContext(ErrCtx);
 
-export function ActionForm({ action, children, submit, onDone, className, cancel }: {
+export function ActionForm({ action, children, submit, onDone, className, cancel, submitVariant = "primary", submitSize }: {
   action: (s: ActionResult, f: FormData) => Promise<ActionResult>; children: ReactNode; submit: string; onDone?: (r: ActionResult) => void;
-  className?: string; cancel?: () => void;
+  className?: string; cancel?: () => void; submitVariant?: "primary" | "secondary" | "ghost" | "destructive"; submitSize?: "sm" | "md";
 }) {
   const toast = useToast();
   // Toast and onDone fire right when the action answers, not in an effect: the action's
@@ -29,7 +29,7 @@ export function ActionForm({ action, children, submit, onDone, className, cancel
         {children}
         <div className="flex justify-end gap-2 pt-2">
           {cancel && <Button type="button" onClick={cancel}>Отмена</Button>}
-          <Button variant="primary" disabled={pending}>{pending ? "Сохраняем…" : submit}</Button>
+          <Button variant={submitVariant} size={submitSize} disabled={pending}>{pending ? "Сохраняем…" : submit}</Button>
         </div>
       </form>
     </ErrCtx.Provider>

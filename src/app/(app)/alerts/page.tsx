@@ -5,12 +5,13 @@ import { Section } from "@/components/ui/card";
 import { Select } from "@/components/ui/input";
 import { fmtDate, fmtMoney } from "@/lib/format";
 import { db } from "@/server/db";
+import { ToHypothesisButton } from "../hypotheses/client";
 import { SnoozeButton } from "./snooze";
 
 const RULE_LABEL: Record<string, string> = {
   loss_geo: "Убыточное гео", waterfall_inversion: "Инверсия waterfall", discrepancy: "Дискрепанси", invisible_zone: "Невидимая зона",
   dead_zone: "Мёртвая зона", low_fill: "Низкий фил", deal_no_numbers: "Дил без цифр", overdue_payment: "Просроченная оплата", ingest_down: "Ингест",
-  deal_ending: "Фикс-дил заканчивается",
+  deal_ending: "Фикс-дил заканчивается", source_unconfigured: "Доля источника не подтверждена",
 };
 
 export default async function Alerts({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
@@ -27,6 +28,9 @@ export default async function Alerts({ searchParams }: { searchParams: Promise<R
     orderBy: [{ moneyAtRisk: "desc" }, { lastSeenAt: "desc" }],
   });
   const bundles = await db.bundle.findMany({ orderBy: { title: "asc" } });
+  // Alerts that already live on /hypotheses (the nightly run creates them; the button is for "now").
+  const inHypotheses = new Set((await db.hypothesis.findMany({ where: { status: { in: ["PROPOSED", "ACCEPTED"] }, ruleKey: { in: [...new Set(alerts.map((a) => a.rule))] } }, select: { ruleKey: true, objectKey: true } }))
+    .map((h) => `${h.ruleKey}|${h.objectKey}`));
   const groups = [["CRITICAL", "Критичные"], ["WARNING", "Предупреждения"]] as const;
   const days = (a: Date, b: Date) => Math.max(1, Math.round((b.getTime() - a.getTime()) / 86_400_000) + 1);
   return (
@@ -58,7 +62,7 @@ export default async function Alerts({ searchParams }: { searchParams: Promise<R
                         meta={<>с {fmtDate(a.firstSeenAt)} · {days(a.firstSeenAt, a.lastSeenAt)} дн. подряд
                           {Number(a.moneyAtRisk) > 0 && <> · под риском {fmtMoney(Number(a.moneyAtRisk))}</>}{snoozed && <> · скрыт до {fmtDate(a.snoozedUntil)}</>}</>} />
                     </div>
-                    <div className="pt-2.5"><SnoozeButton id={a.id} snoozed={snoozed} /></div>
+                    <div className="flex items-center gap-1 pt-2.5"><ToHypothesisButton alertId={a.id} exists={inHypotheses.has(`${a.rule}|${a.entityKey}`)} /><SnoozeButton id={a.id} snoozed={snoozed} /></div>
                   </li>
                 );
               };

@@ -125,3 +125,19 @@ export async function getDeals(a: { status?: string; advertiser?: string; date_f
     forecast: d.forecast, invoiced: d.invoiced, confirmed: d.confirmed, outstanding: rest.get(d.id) ?? 0, imps_multiplier: d.multiplier, period: p,
   }));
 }
+
+export async function getHypotheses(a: { status?: string; bundle?: string; site?: string; scope?: string }) {
+  const siteIds = a.site ? [await siteId(a.site)] : a.bundle ? await bundleSites(a.bundle) : null;
+  const bundle = a.bundle ? await appDb.bundle.findUnique({ where: { slug: a.bundle } }) : null;
+  const rows = await appDb.hypothesis.findMany({
+    where: { status: (a.status?.toUpperCase() as "PROPOSED") ?? "PROPOSED", ...(a.scope ? { scope: a.scope } : {}),
+      ...(siteIds ? { OR: [{ siteId: { in: siteIds } }, ...(bundle ? [{ bundleId: bundle.id }] : [])] } : {}) },
+    include: { site: { select: { domain: true } }, bundle: { select: { title: true } } },
+    orderBy: [{ level: "desc" }, { impactMonth: { sort: "desc", nulls: "last" } }],
+  });
+  const base = process.env.APP_URL?.replace(/\/$/, "") ?? "";
+  return rows.map((h) => ({ id: h.id, status: h.status, source: h.source, level: h.level, scope: h.scope, rule: h.ruleKey, site: h.site?.domain ?? null, bundle: h.bundle?.title ?? null,
+    format: h.format, country: h.countryCode, title: h.title, hypothesis: h.hypothesis, impact_month: h.impactMonth == null ? null : Number(h.impactMonth), metric: h.metric,
+    baseline: h.baseline == null ? null : Number(h.baseline), result: h.result == null ? null : Number(h.result), result_note: h.resultNote, evidence: plain(h.evidence),
+    since: h.firstSeenAt.toISOString().slice(0, 10), accepted_at: h.acceptedAt?.toISOString().slice(0, 10) ?? null, closed_at: h.closedAt?.toISOString().slice(0, 10) ?? null, link: `${base}${h.link}` }));
+}

@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { D1, D2 } from "@tests/factories/network";
 import { buildNetwork } from "@tests/factories/network";
 import { monthForecast } from "@/server/queries/forecast";
-import { recommendations } from "@/server/queries/recommendations";
 import { saveOpex } from "@/server/services/opex";
 import { resetDb, testDb } from "./helpers";
 
@@ -47,19 +46,5 @@ describe("month forecast", () => {
       startsAt: new Date("2026-09-01T00:00:00Z"), billedVia: "DIRECT", sites: { create: [{ siteId: "s1" }] } } });
     const f = await monthForecast("2026-09-22", 3, "2026-09");
     expect(f.knownDeals).toBeCloseTo((310 / 30) * 9, 6);
-  });
-});
-
-describe("recommendations query", () => {
-  it("collects alerts and rules over the factory network", async () => {
-    await db.alert.create({ data: { rule: "loss_geo", entityKey: "site:s1|country:JP", level: "CRITICAL", title: "Убыточное гео JP на one.test",
-      message: "За 7 дней выручка $20.00 при расходе $24.00 (ROMI -16.7%). Снизить закупку гео или поднять флор.", link: "/sites/one.test?by=geo", siteId: "s1", moneyAtRisk: "4", payload: {} } });
-    const list = await recommendations("2026-09-22");
-    const ids = list.map((r) => r.id);
-    expect(ids).toContain("alert:" + (await db.alert.findFirstOrThrow()).id);
-    expect(ids).toContain(`zone-invisible:${net.zone.id}`); // 6 000 views of 60 000 impressions over the week
-    expect(ids.some((i) => i.startsWith("free:"))).toBe(true); // every factory site has 10 free places
-    expect(list[0].level).toBe("CRITICAL");
-    expect(list.every((r) => r.action && r.title && r.link)).toBe(true);
   });
 });
