@@ -23,7 +23,7 @@ export function NewHypothesisButton({ sites, bundles, formats }: { sites: SiteOp
       <Sheet open={open} onOpenChange={setOpen} title="Новая гипотеза"
         description="Что попробовать и где. Выберите бандл или сайт, при желании формат и гео. «Принять» зафиксирует метрику за 14 дней до, «Завершить» измерит её снова.">
         <ActionForm action={createHypothesisAction} submit="Добавить" onDone={() => setOpen(false)} cancel={() => setOpen(false)}>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <FormField name="bundleId" label="Бандл" hint="Пусто — конкретный сайт">
               <Select name="bundleId" value={bundleId} onChange={(e) => setBundleId(e.target.value)}><option value="">—</option>{bundles.map((b) => <option key={b.id} value={b.id}>{b.title}</option>)}</Select>
             </FormField>
@@ -31,13 +31,13 @@ export function NewHypothesisButton({ sites, bundles, formats }: { sites: SiteOp
               <Select name="siteId" defaultValue=""><option value="">—</option>{shown.map((s) => <option key={s.id} value={s.id}>{s.domain}</option>)}</Select>
             </FormField>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <FormField name="format" label="Формат"><Select name="format" defaultValue=""><option value="">Любой</option>{formats.map((f) => <option key={f} value={f}>{FORMAT_LABEL[f] ?? f}</option>)}</Select></FormField>
             <FormField name="countryCode" label="Гео" hint="ISO-код, например JP"><Input name="countryCode" maxLength={2} placeholder="—" className="uppercase" /></FormField>
           </div>
           <FormField name="title" label="Заголовок"><Input name="title" placeholder="Поднять флор баннеров на japan-tube" required /></FormField>
           <FormField name="hypothesis" label="Гипотеза"><Textarea name="hypothesis" rows={3} placeholder="Если …, то …" required /></FormField>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid gap-3 sm:grid-cols-2">
             <FormField name="impactMonth" label="Ожидаемый эффект, $/мес"><Input name="impactMonth" inputMode="decimal" className="num" placeholder="0" /></FormField>
             <FormField name="metric" label="Чем проверяем"><Select name="metric" defaultValue="rev_per_1k"><option value="">—</option>{METRICS.map((k) => <option key={k} value={k}>{METRIC_LABEL[k]}</option>)}</Select></FormField>
           </div>

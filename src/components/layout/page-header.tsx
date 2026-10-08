@@ -16,12 +16,12 @@ export function PageHeader({ title, sub, crumbs, badges, period, extraPresets, a
           </nav>
         )}
         <div className="flex flex-wrap items-center gap-2">
-          <h1 className="text-[24px] leading-8 font-semibold tracking-[-0.01em]">{title}</h1>
+          <h1 className="text-[22px] leading-7 font-semibold tracking-[-0.01em] sm:text-[24px] sm:leading-8">{title}</h1>
           {badges}
         </div>
         {sub && <p className="mt-0.5 text-sm text-muted">{sub}</p>}
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
         {actions}
         {period && <PeriodPicker from={period.from} to={period.to} preset={period.preset} extra={extraPresets} />}
       </div>
