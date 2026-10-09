@@ -355,7 +355,7 @@ test("tiers: the settings page changes a country's tier with an audit line, the 
   await page.goto("/geo?preset=30d&tier=2");
   await expect(page.getByTestId("tier-chips")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Страны · T2" })).toBeVisible();
-  await expect(page.locator("table#geo tbody, [data-table=geo] tbody").first()).toContainText("JP");
+  await expect(page.locator("section", { hasText: "Страны · T2" }).locator("table tbody").first()).toContainText("JP");
   await page.goto("/deals");
   await page.getByRole("button", { name: /Новый дил|Новый фикс-дил/ }).first().click();
   await expect(page.getByTestId("deal-tiers")).toBeVisible();
