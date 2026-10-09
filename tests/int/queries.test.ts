@@ -7,7 +7,7 @@ import { dealDetail, dealsList, paymentsRegister, todoQueue } from "@/server/que
 import { asgPayouts, financeKpis, pnlTable, receivables, revenueStructure } from "@/server/queries/finance";
 import {
   bundlesTable, dataExists, devicesTable, formatsTable, geoMatrix, geoTable, networksTable, overlappingSites, revenueSplitDaily,
-  siteGeoWithNetworks, sitesTable, sourcesTable, topMovers, zonesTable,
+  formatFillDaily, peerMedians, siteDataQuality, siteGeoWithNetworks, sitesTable, sourcesTable, topMovers, zonesTable,
 } from "@/server/queries/reports";
 import { enterPeriod, recordPayment } from "@/server/services/deals";
 import { resetDb, testDb } from "./helpers";
@@ -253,5 +253,64 @@ describe("zones: «кандидат на снос» uses the dead-zone alert's t
     // Below 50 000 impressions the share alone is not enough.
     await db.factRevenueZone.update({ where: { date_zoneId: { date: D1, zoneId: dead.id } }, data: { impsOwn: 40_000 } });
     expect((await zonesTable(P, "s1")).find((r) => r.zone === "Banners_Dead")).toMatchObject({ candidateRemove: false });
+  });
+});
+
+describe("site page: peers, dynamics, data quality, source ROMI (PR C)", () => {
+  it("peerMedians: medians over the other sites of the bundle and of the network, without the site itself", async () => {
+    // Factory: s1 (jav), s2 (jav + hentai), s3 (hentai); every site has 20 000 loads over P. Revenue 42 / 42 / 46 → rev/1k 2.1 / 2.1 / 2.3.
+    const forS1 = await peerMedians(P, "s1");
+    const { totals: tot } = await import("@/server/queries/common");
+    const [t2, t3] = await Promise.all([tot(P, { siteIds: ["s2"] }), tot(P, { siteIds: ["s3"] })]);
+    expect(forS1.bundle.sites).toBe(1); // only s2 shares a bundle with s1
+    expect(forS1.bundle.revPer1k).toBeCloseTo(t2.revPer1k!, 6); // the peer's own ratio of sums
+    expect(forS1.network.sites).toBe(2);
+    expect(forS1.network.revPer1k).toBeCloseTo((t2.revPer1k! + t3.revPer1k!) / 2, 6); // median of two = their mean
+    const forS3 = await peerMedians(P, "s3");
+    expect(forS3.bundle.sites).toBe(1); // s2 via hentai
+    expect(forS3.network.romi).not.toBeNull();
+    await db.site.update({ where: { id: "s2" }, data: { status: "ARCHIVED" } });
+    expect((await peerMedians(P, "s1")).bundle.sites).toBe(0); // an archived peer is not a peer
+  });
+
+  it("siteDataQuality names what is missing: country cut, zones, freshness, cost, the ADOK site filter", async () => {
+    const site = await db.site.findUniqueOrThrow({ where: { id: "s1" } });
+    const q = await siteDataQuality(P, site, "2026-09-22");
+    const byKey = Object.fromEntries(q.map((x) => [x.key, x]));
+    expect(byKey.cut).toMatchObject({ ok: true }); expect(byKey.cut.text).toContain("все 2 дн.");
+    expect(byKey.asg).toMatchObject({ ok: true }); // data through 09-21 = yesterday
+    expect(byKey.metrika).toMatchObject({ ok: false }); expect(byKey.metrika.text).toContain("счётчик не задан");
+    expect(byKey.zones.text).toContain("Зоны: 1");
+    expect(byKey.filter).toBeUndefined();
+    // A day with only the site total, an unmapped zone, a stale ADOK, the filter flag.
+    await db.factRevenueGeo.deleteMany({ where: { siteId: "s1", date: D2, countryCode: { not: "ZZ" } } });
+    await db.factRevenueGeo.create({ data: { date: D2, siteId: "s1", networkId: net.net.id, countryCode: "ZZ", device: "UNKNOWN", pageLoads: 10, revenueReported: "1" } });
+    await db.zone.update({ where: { id: net.zone.id }, data: { placementSlug: null } });
+    await db.appSetting.create({ data: { key: "asg_site_filter_ignored:platforms_ids", value: "тест" } });
+    const q2 = Object.fromEntries((await siteDataQuality(P, { ...site, metrikaId: "1" }, "2026-09-25")).map((x) => [x.key, x]));
+    expect(q2.cut).toMatchObject({ ok: false }); expect(q2.cut.text).toContain("1 из 2 дн.");
+    expect(q2.zones).toMatchObject({ ok: false }); expect(q2.zones.text).toContain("1 без места");
+    expect(q2.asg).toMatchObject({ ok: false }); expect(q2.asg.text).toContain("отстают");
+    expect(q2.metrika).toMatchObject({ ok: false }); expect(q2.metrika.text).toContain("отстают"); // traffic through 09-21, today 09-25
+    expect(q2.filter).toMatchObject({ ok: false });
+    const { costCoverage: cov } = await import("@/server/queries/common");
+    expect(q2.cost.ok).toBe((await cov(P, { siteIds: ["s1"] })).missing === 0);
+  });
+
+  it("daily splits by country, zone, device and platform; fill rate of formats by day; the sources table carries ROMI and bought uniques", async () => {
+    const geo = await revenueSplitDaily(P, { siteIds: ["s1"] }, "geo");
+    expect(new Set(geo.map((r) => r.key))).toEqual(new Set(["JP", "US"]));
+    expect(geo.reduce((a, r) => a + r.value, 0)).toBeCloseTo(42, 6);
+    expect((await revenueSplitDaily(P, { siteIds: ["s1"] }, "zones")).map((r) => r.key)).toEqual(["Banners_Footer_A"]);
+    expect(await revenueSplitDaily(P, { siteIds: ["s1"] }, "devices")).toEqual([]); // no device cut in the factory
+    expect(await revenueSplitDaily(P, { siteIds: ["s1"] }, "platforms")).toEqual([]);
+    const fill = await formatFillDaily(P, { siteIds: ["s1"] });
+    expect(fill).toEqual([{ date: "2026-09-20", key: "BANNER", value: 6 }]); // 60 000 imps on 10 000 zone loads: a zone sum, not the format's loads
+    await db.costSource.create({ data: { slug: "cpu-src", title: "CPU source", asgName: "CPU source", revShare: 0, confirmed: true } });
+    await db.factTrafficSource.create({ data: { date: D1, siteId: "s1", sourceSlug: "cpu-src", pageLoads: 1000, revenueReported: "12" } });
+    await db.factCost.create({ data: { date: D1, siteId: "s1", countryCode: "ZZ", sourceSlug: "cpu-src", uniquesBought: 500, rateModel: "CPU", rate: "0.012", cost: "6", origin: "RATE" } });
+    const src = (await sourcesTable(P, "s1")).find((r) => r.source === "CPU source")!;
+    expect(src).toMatchObject({ reported: 12, cost: 6, romi: 100, uniquesBought: 500 });
+    expect(src.revPer1k).toBeCloseTo(12);
   });
 });

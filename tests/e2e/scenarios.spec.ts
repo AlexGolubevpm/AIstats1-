@@ -330,3 +330,17 @@ test("integrations: the ADOK request plan shows its cost live, saves, and the ba
   await expect(page.getByTestId("asg-cuts").locator("input[name='cut:ad_type']")).toBeChecked();
   await expect(page.getByText(/запросов на день для/)).toBeVisible(); // the backfill paragraph quotes the plan's per-day cost
 });
+
+test("site page: KPI cards compare with the bundle and the network, «Динамика» draws the cut by day, «Качество данных» lists the sources", async ({ page }) => {
+  await login(page, "/sites/japan-tube.demo?preset=30d");
+  await expect(page.locator("[data-compare]").first()).toBeVisible();
+  await expect(page.locator("[data-compare]").first()).toContainText(/медиана бандла|сети/);
+  await expect(page.getByTestId("data-quality")).toBeVisible();
+  await expect(page.getByTestId("data-quality").locator("li")).toHaveCount(5);
+  await page.getByTestId("trend-toggle").click();
+  await expect(page).toHaveURL(/trend=1/);
+  await expect(page.getByTestId("trend-chart")).toBeVisible();
+  await page.getByRole("link", { name: "Форматы" }).last().click();
+  await expect(page).toHaveURL(/by=formats/);
+  await expect(page.getByText("Fill rate форматов по дням")).toBeVisible();
+});
