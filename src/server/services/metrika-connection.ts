@@ -43,11 +43,11 @@ export async function saveMetrikaApp(db: PrismaClient, cfg: Config, i: { clientI
 }
 
 /** Step 2: the confirmation code from Yandex → tokens. */
-export async function connectMetrika(db: PrismaClient, cfg: Config, code: string, fetchImpl: typeof fetch = fetch, now = new Date()): Promise<{ expiresAt: Date }> {
+export async function connectMetrika(db: PrismaClient, cfg: Config, code: string, fetchImpl: typeof fetch = fetch, now = new Date(), redirectUri?: string | null): Promise<{ expiresAt: Date }> {
   const conn = await getMetrikaConnection(db, cfg);
   if (!conn) throw new RuleError("app", "Сначала сохраните ID и секрет приложения", "code");
-  if (!/^[0-9A-Za-z]{4,64}$/.test(code.trim())) throw new RuleError("code", "Код подтверждения — цифры со страницы Яндекса", "code");
-  const t = await exchangeCode({ clientId: conn.clientId, clientSecret: conn.clientSecret }, code, fetchImpl, undefined, now);
+  if (!/^[0-9A-Za-z_-]{4,128}$/.test(code.trim())) throw new RuleError("code", "Код подтверждения — цифры со страницы Яндекса", "code");
+  const t = await exchangeCode({ clientId: conn.clientId, clientSecret: conn.clientSecret }, code, fetchImpl, undefined, now, redirectUri);
   const prev = (await readStored(db))!;
   await write(db, { ...prev, accessToken: encryptSecret(t.accessToken, cfg.appSecret), refreshToken: t.refreshToken ? encryptSecret(t.refreshToken, cfg.appSecret) : undefined,
     expiresAt: t.expiresAt.toISOString(), connectedAt: now.toISOString() });
@@ -122,4 +122,12 @@ export async function applyMetrikaCounters(db: PrismaClient, rows: { siteId: str
     n++;
   }
   return n;
+}
+
+/**
+ * Where Yandex may send the code back: the app's public https address + the callback route. Null while the app
+ * is served over plain http by IP (Yandex accepts only https redirect URIs) — then the code is pasted by hand.
+ */
+export function metrikaCallbackUrl(cfg: Config): string | null {
+  return cfg.appUrl.startsWith("https://") ? `${cfg.appUrl}/api/metrika/oauth/callback` : null;
 }

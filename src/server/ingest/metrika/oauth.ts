@@ -7,11 +7,14 @@ export const YANDEX_OAUTH = "https://oauth.yandex.ru";
 export interface OAuthApp { clientId: string; clientSecret: string }
 export interface OAuthTokens { accessToken: string; refreshToken: string | null; expiresAt: Date }
 
-export function authorizeUrl(clientId: string, base = YANDEX_OAUTH): string {
+/** With `redirectUri` Yandex sends the code back to the app (the callback route); without it the code is shown on verification_code for pasting. */
+export function authorizeUrl(clientId: string, opts: { redirectUri?: string | null; state?: string | null } = {}, base = YANDEX_OAUTH): string {
   const u = new URL(`${base}/authorize`);
   u.searchParams.set("response_type", "code");
   u.searchParams.set("client_id", clientId);
   u.searchParams.set("force_confirm", "yes");
+  if (opts.redirectUri) u.searchParams.set("redirect_uri", opts.redirectUri);
+  if (opts.state) u.searchParams.set("state", opts.state);
   return u.toString();
 }
 
@@ -42,8 +45,8 @@ async function tokenRequest(body: Record<string, string>, app: OAuthApp, fetchIm
 }
 
 /** The confirmation code the owner pasted → tokens. */
-export function exchangeCode(app: OAuthApp, code: string, fetchImpl: typeof fetch = fetch, base = YANDEX_OAUTH, now = new Date()): Promise<OAuthTokens> {
-  return tokenRequest({ grant_type: "authorization_code", code: code.trim() }, app, fetchImpl, base, now);
+export function exchangeCode(app: OAuthApp, code: string, fetchImpl: typeof fetch = fetch, base = YANDEX_OAUTH, now = new Date(), redirectUri?: string | null): Promise<OAuthTokens> {
+  return tokenRequest({ grant_type: "authorization_code", code: code.trim(), ...(redirectUri ? { redirect_uri: redirectUri } : {}) }, app, fetchImpl, base, now);
 }
 
 /** A new access token from the refresh token (Yandex tokens live about a year). */
