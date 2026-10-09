@@ -331,6 +331,27 @@ test("integrations: the ADOK request plan shows its cost live, saves, and the ba
   await expect(page.getByText(/запросов на день для/)).toBeVisible(); // the backfill paragraph quotes the plan's per-day cost
 });
 
+test("integrations: the daily ADOK budget is ours to change — a number, or «без лимита» that drops the bar and the plan ceiling", async ({ page }) => {
+  await login(page, "/settings/integrations");
+  const form = page.getByTestId("asg-budget");
+  await form.locator("input[name='daily']").fill("1200");
+  await form.getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText(/Суточный бюджет: 1200 запросов/)).toBeVisible();
+  await expect(page.getByTestId("asg-used")).toContainText("/ 1200");
+  await expect(page.getByTestId("asg-plan-cost")).toContainText("из 1200");
+  await form.getByTestId("budget-unlimited").check();
+  await form.getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText(/Лимит снят/)).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("asg-used")).toContainText("без лимита");
+  await expect(page.getByTestId("asg-plan-cost")).toContainText("без ограничения");
+  await expect(page.getByTestId("budget-unlimited")).toBeChecked();
+  await page.getByTestId("budget-unlimited").uncheck(); // back to the default for the other scenarios
+  await page.getByTestId("asg-budget").locator("input[name='daily']").fill("800");
+  await page.getByTestId("asg-budget").getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText(/Суточный бюджет: 800 запросов/)).toBeVisible();
+});
+
 test("site page: KPI cards compare with the bundle and the network, «Динамика» draws the cut by day, «Качество данных» lists the sources", async ({ page }) => {
   await login(page, "/sites/japan-tube.demo?preset=30d");
   await expect(page.locator("[data-compare]").first()).toBeVisible();

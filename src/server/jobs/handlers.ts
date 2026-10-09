@@ -9,7 +9,7 @@ import { MetrikaClient } from "@/server/ingest/metrika/client";
 import { ingestMetrika } from "@/server/ingest/metrika/ingest";
 import type { RawStore } from "@/server/ingest/raw-store";
 import { AsgError } from "@/server/ingest/adspyglass/client";
-import { asgPause, asgRequestsToday, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
+import { asgBudget, asgPause, asgRequestsToday, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
 import { daysThatFit, defaultWindow, readBackfill, requestsPerDay, saveBackfill, startBackfill, type BackfillMode } from "./backfill";
 import { DEFAULT_PLAN, planCost, readPlan, type AsgPlan } from "@/server/ingest/adspyglass/plan";
 import { recalcCosts, revshareCosts } from "@/server/services/costs";
@@ -39,7 +39,8 @@ function days(from: string, to: string): string[] {
 function asgClient(ctx: JobContext): AsgClient {
   const { asg } = ctx.cfg;
   return new AsgClient({ baseUrl: asg.baseUrl, email: asg.email, token: asg.token, minIntervalMs: asg.minIntervalMs,
-    takeBudget: () => takeAsgBudget(ctx.db, asg.dailyBudget), fetchImpl: ctx.fetchImpl });
+    // the ceiling is read per request: a change on /settings/integrations applies to a run already going
+    takeBudget: async () => takeAsgBudget(ctx.db, (await asgBudget(ctx.db, asg.dailyBudget)).limit), fetchImpl: ctx.fetchImpl });
 }
 
 /** Default windows: the hourly totals look at today (and yesterday when the plan says so); the nightly job at the plan's restate window. */
@@ -127,7 +128,8 @@ async function runBackfill(ctx: JobContext, client: AsgClient, w: { from: string
   const perDay = requestsPerDay(sites, mode, plan);
   // The reserve is what the plan itself needs today (nightly restate + hourly totals + a margin), computed over all sites.
   const allSites = state.siteId ? await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null } } }) : sites;
-  const reserve = planCost(plan, allSites, cfg.asg.dailyBudget).reserve;
+  const budget = (await asgBudget(db, cfg.asg.dailyBudget)).limit;
+  const reserve = planCost(plan, allSites, budget).reserve;
   const first = state.pending[0];
   return withIngestRun(db, { source: "adspyglass", job: "asg:backfill", from: first, to: first }, async (runId) => {
     const deps = { db, client, raw, runId };
@@ -135,7 +137,7 @@ async function runBackfill(ctx: JobContext, client: AsgClient, w: { from: string
     let rows = 0, stop: string | null = null, lo = first, hi = first;
     for (const day of [...state!.pending]) {
       const used = await asgRequestsToday(db); // same UTC-day key the budget counter uses
-      if (daysThatFit(used, cfg.asg.dailyBudget, reserve, perDay) < 1) { stop = `бюджет: использовано ${used} из ${cfg.asg.dailyBudget}, резерв плана ${reserve}`; break; }
+      if (daysThatFit(used, budget, reserve, perDay) < 1) { stop = `бюджет: использовано ${used} из ${budget}, резерв плана ${reserve}`; break; }
       try {
         if (mode === "totals") {
           rows += (await ingestSiteTotals(deps, [day])).rows; // site totals only; days that already have countries are left alone

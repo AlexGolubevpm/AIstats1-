@@ -1,6 +1,7 @@
 // IngestRun bookkeeping, AdSpyglass pause (circuit breaker) and the daily request budget.
 import type { PrismaClient } from "@/generated/prisma/client";
 import { AsgError } from "@/server/ingest/adspyglass/client";
+import { UNLIMITED } from "@/server/ingest/adspyglass/plan";
 
 export interface RunResult { rows: number; requests?: number; rawKey?: string | null; partial?: string[] }
 
@@ -67,4 +68,24 @@ export async function takeAsgBudget(db: PrismaClient, limit: number, day = new D
 export async function asgRequestsToday(db: PrismaClient, day = new Date().toISOString().slice(0, 10)): Promise<number> {
   const s = await db.appSetting.findUnique({ where: { key: `asg_requests:${day}` } });
   return s ? Number(s.value) : 0;
+}
+
+/**
+ * Our own daily ceiling on ADOK requests (ADOK sets none; it only blocks bursts, which the pause between requests
+ * prevents). Set on /settings/integrations (AppSetting `asg_budget`), else ASG_DAILY_BUDGET. 0 = no ceiling.
+ */
+export const BUDGET_KEY = "asg_budget";
+export async function asgBudget(db: PrismaClient, envBudget: number): Promise<{ limit: number; unlimited: boolean; fromUi: boolean }> {
+  const row = await db.appSetting.findUnique({ where: { key: BUDGET_KEY } });
+  const v = row ? Number(row.value) : NaN;
+  const daily = Number.isInteger(v) && v >= 0 ? v : envBudget;
+  return { limit: daily === 0 ? UNLIMITED : daily, unlimited: daily === 0, fromUi: Boolean(row) && Number.isInteger(v) && v >= 0 };
+}
+export async function setAsgBudget(db: PrismaClient, daily: number): Promise<void> {
+  if (!Number.isInteger(daily) || daily < 0 || daily > 100_000) throw new Error("Бюджет — целое число от 0 до 100 000 (0 — без лимита)");
+  const before = await db.appSetting.findUnique({ where: { key: BUDGET_KEY } });
+  await db.$transaction([
+    db.appSetting.upsert({ where: { key: BUDGET_KEY }, create: { key: BUDGET_KEY, value: String(daily) }, update: { value: String(daily) } }),
+    db.auditLog.create({ data: { entity: "AppSetting", entityId: BUDGET_KEY, field: "daily", before: before?.value ?? null, after: String(daily) } }),
+  ]);
 }

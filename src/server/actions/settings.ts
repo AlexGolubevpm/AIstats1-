@@ -6,7 +6,7 @@ import { config } from "@/server/config";
 import { db } from "@/server/db";
 import { RuleError } from "@/server/domain/errors";
 import { checkSite, withAsg } from "@/server/ingest/probe";
-import { resumeAsg } from "@/server/ingest/run";
+import { asgBudget, resumeAsg, setAsgBudget } from "@/server/ingest/run";
 import { JOB_NAMES, type JobName } from "@/server/jobs/handlers";
 import { cancelBackfill, daysBetween, requestsPerDay, startBackfill, type BackfillMode } from "@/server/jobs/backfill";
 import { CUTS, normalizePlan, planCost, readPlan, savePlan, type CutKey } from "@/server/ingest/adspyglass/plan";
@@ -178,7 +178,7 @@ export async function runJobAction(_: ActionResult, f: FormData): Promise<Action
     const days = Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1;
     const sites = await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(opt(f, "siteId") ? { id: opt(f, "siteId")! } : {}) } });
     const requests = days * requestsPerDay(sites, "full", await readPlan(db));
-    const budget = config().asg.dailyBudget;
+    const budget = (await asgBudget(db, config().asg.dailyBudget)).limit;
     if (requests > budget && str(f, "confirm") !== "1") {
       return { error: `Бэкфилл потребует ~${requests} запросов к AdSpyglass при дневном бюджете ${budget}. Сократите диапазон или отметьте подтверждение — джоб продолжит на следующий день.`, field: "confirm" };
     }
@@ -261,7 +261,7 @@ export async function startBackfillAction(_: ActionResult, f: FormData): Promise
     const sites = await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(siteId ? { id: siteId } : {}) } });
     const cfg = config();
     const plan = await readPlan(db);
-    const perDay = Math.floor(planCost(plan, sites, cfg.asg.dailyBudget).backfill / requestsPerDay(sites, mode, plan));
+    const perDay = Math.floor(planCost(plan, sites, (await asgBudget(db, cfg.asg.dailyBudget)).limit).backfill / requestsPerDay(sites, mode, plan));
     const nights = perDay > 0 ? Math.ceil(state.pending.length / perDay) : null;
     revalidatePath("/settings/integrations");
     return { ok: true, message: `Бэкфилл (${mode === "totals" ? "только итоги" : "все разрезы"}): ${state.pending.length} из ${daysBetween(from, to).length} дней — первая порция в ближайшие 30 минут${nights ? `, всего ≈ ${nights} сут. при ${perDay} дн./сутки` : ""}` };
@@ -342,7 +342,7 @@ export async function saveAsgPlanAction(_: ActionResult, f: FormData): Promise<A
     const cuts = Object.fromEntries(CUTS.map((c) => [c.key, c.required || f.get(`cut:${c.key}`) === "1"])) as Record<CutKey, boolean>;
     const plan = await savePlan(db, normalizePlan({ cuts, restateDays: Number(str(f, "restateDays")), hourlyToday: f.get("hourlyToday") === "1" }));
     const sites = await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null } } });
-    const cost = planCost(plan, Math.max(1, sites), config().asg.dailyBudget);
+    const cost = planCost(plan, Math.max(1, sites), (await asgBudget(db, config().asg.dailyBudget)).limit);
     revalidatePath("/settings/integrations");
     return { ok: true, message: cost.over ? `План сохранён, но не влезает в бюджет: ${cost.total} запросов в сутки` : `План сохранён: ${cost.total} запросов в сутки, бэкфиллу остаётся ${cost.backfill}` };
   });
@@ -370,5 +370,18 @@ export async function bulkTiersAction(_: ActionResult, f: FormData): Promise<Act
     const n = await setCountryTiers(db, tiers, opt(f, "reason"));
     revalidatePath("/settings/geo");
     return { ok: true, message: n ? `Изменено стран: ${n}` : "Все указанные страны уже в этих тирах" };
+  });
+}
+
+/** Our daily ceiling on ADOK requests; empty or 0 = no ceiling. ADOK itself sets none. */
+export async function saveAsgBudgetAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  const raw = str(f, "daily").replace(/\s/g, "");
+  const daily = f.get("unlimited") === "1" || raw === "" ? 0 : Number(raw);
+  if (!Number.isInteger(daily) || daily < 0 || daily > 100_000) return { error: "Целое число от 1 до 100 000 или «без лимита»", field: "daily" };
+  return guarded(async () => {
+    await setAsgBudget(db, daily);
+    revalidatePath("/settings/integrations");
+    return { ok: true, message: daily === 0 ? "Лимит снят — пауза между запросами остаётся" : `Суточный бюджет: ${daily} запросов` };
   });
 }

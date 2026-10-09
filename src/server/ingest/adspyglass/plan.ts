@@ -21,6 +21,8 @@ export const CUTS: CutInfo[] = [
 /** Account-level requests a day: website totals (the per-site reference) and, unless zones are pulled per site, the account spot cut. */
 export const accountRequestsPerDay = (plan: AsgPlan) => 1 + (plan.cuts.spot_site ? 0 : 1);
 /** Requests the plan leaves unspent on top of the planned ones: retries and the owner's checks. */
+/** Budget meaning "no ceiling" (set as 0 in the UI): far more than a day holds at one request per 5 s. */
+export const UNLIMITED = 1_000_000;
 export const PLAN_MARGIN = 30;
 
 export interface AsgPlan { cuts: Record<CutKey, boolean>; restateDays: number; hourlyToday: boolean }

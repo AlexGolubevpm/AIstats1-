@@ -6,7 +6,7 @@ import { AsgClient } from "@/server/ingest/adspyglass/client";
 import { DEFAULT_PLAN } from "@/server/ingest/adspyglass/plan";
 import { FILTER_IGNORED_KEY, ingestSiteGeo, ingestSiteTotals, ingestSiteZones, rawGeoKeys, reconcile, reprocessGeoFromRaw, scopedToSite } from "@/server/ingest/adspyglass/ingest";
 import { LocalRawStore, rawKey } from "@/server/ingest/raw-store";
-import { asgPause, asgRequestsToday, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
+import { asgBudget, asgPause, asgRequestsToday, setAsgBudget, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
 import { seedReference } from "@/server/seed/reference";
 import { resetDb, testDb } from "./helpers";
 
@@ -298,6 +298,20 @@ describe("AdSpyglass ingest", () => {
     const results = await Promise.all(Array.from({ length: 8 }, () => takeAsgBudget(db, 5, DATE)));
     expect(results.filter(Boolean)).toHaveLength(5);
     expect(await asgRequestsToday(db, DATE)).toBe(5);
+  });
+
+  it("daily budget: env by default, the UI value over it, 0 = no ceiling (requests still counted); changes audited", async () => {
+    expect(await asgBudget(db, 800)).toEqual({ limit: 800, unlimited: false, fromUi: false });
+    await setAsgBudget(db, 1500);
+    expect(await asgBudget(db, 800)).toEqual({ limit: 1500, unlimited: false, fromUi: true });
+    await setAsgBudget(db, 0);
+    const b = await asgBudget(db, 800);
+    expect(b).toMatchObject({ unlimited: true, fromUi: true });
+    const results = await Promise.all(Array.from({ length: 20 }, () => takeAsgBudget(db, b.limit, DATE)));
+    expect(results.every(Boolean)).toBe(true);
+    expect(await asgRequestsToday(db, DATE)).toBe(20);
+    await expect(setAsgBudget(db, -1)).rejects.toThrow("0 до 100 000");
+    expect((await db.auditLog.findMany({ where: { entityId: "asg_budget" }, orderBy: { at: "asc" } })).map((a) => a.after)).toEqual(["1500", "0"]);
   });
 });
 

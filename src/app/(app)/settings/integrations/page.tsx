@@ -5,7 +5,7 @@ import { Section } from "@/components/ui/card";
 import { fmtAgo, fmtDate, fmtInt } from "@/lib/format";
 import { config } from "@/server/config";
 import { db } from "@/server/db";
-import { asgPause, asgRequestsToday } from "@/server/ingest/run";
+import { asgBudget, asgPause, asgRequestsToday } from "@/server/ingest/run";
 import { SCHEDULES } from "@/server/jobs/handlers";
 import { daysBetween, defaultWindow, readBackfill, requestsPerDay } from "@/server/jobs/backfill";
 import { CUTS, planCost, readPlan } from "@/server/ingest/adspyglass/plan";
@@ -13,7 +13,7 @@ import { isDemo } from "@/server/seed/demo";
 import { authorizeUrl } from "@/server/ingest/metrika/oauth";
 import { metrikaCallbackUrl, metrikaStatus } from "@/server/services/metrika-connection";
 import { withBase } from "@/lib/base-path";
-import { AliasRow, BackfillBlock, CutsPlanner, DemoButtons, MetrikaBlock, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
+import { AliasRow, BackfillBlock, BudgetForm, CutsPlanner, DemoButtons, MetrikaBlock, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
 
 const JOB_LABEL: Record<string, string> = {
   "asg:sites": "AdSpyglass: разрезы по сайтам из плана ниже (страны, сетки, устройства, источники, форматы), зоны + расход (ночной)",
@@ -43,12 +43,12 @@ export default async function Integrations({ searchParams }: { searchParams: Pro
     : metrika.kind === "app" ? `приложение …${metrika.clientId.slice(-4)} сохранено, токена ещё нет — получите код ниже`
     : metrika.kind === "env" ? `токен из .env: ${tail(cfg.metrika.token)}`
     : metrika.kind === "broken" ? metrika.error : "не подключена — блок «Яндекс Метрика» ниже";
-  const [backfill, plan] = await Promise.all([readBackfill(db), readPlan(db)]);
+  const [backfill, plan, budget] = await Promise.all([readBackfill(db), readPlan(db), asgBudget(db, cfg.asg.dailyBudget)]);
   const today = new Date().toISOString().slice(0, 10);
   const asgSites = sites.filter((s) => s.status === "ACTIVE" && s.adsgSiteId).length;
   const nSites = backfill?.siteId ? 1 : Math.max(1, asgSites);
   // What the plan spends a day over all sites; the backfill gets what is left.
-  const cost = planCost(plan, Math.max(1, asgSites), cfg.asg.dailyBudget);
+  const cost = planCost(plan, Math.max(1, asgSites), budget.limit);
   const perNight = { full: Math.max(0, Math.floor(cost.backfill / requestsPerDay(nSites, "full", plan))), totals: Math.max(0, Math.floor(cost.backfill / requestsPerDay(nSites, "totals", plan))) };
   const backfillView = backfill ? { from: backfill.from, to: backfill.to, mode: backfill.mode ?? "full", siteDomain: backfill.siteId ? sites.find((s) => s.id === backfill.siteId)?.domain ?? null : null,
     total: daysBetween(backfill.from, backfill.to).length, done: backfill.done.length, failed: backfill.failed.length, pending: backfill.pending.length,
@@ -82,14 +82,15 @@ export default async function Integrations({ searchParams }: { searchParams: Pro
       </Section>
       </div>
 
-      <Section title="Разрезы ADOK" sub={`План запросов к AdSpyglass на сутки: какие разрезы по каждому сайту тянет ночной джоб, за сколько прошлых дней, и перечитывать ли вчера почасовыми итогами. Бюджет ${cfg.asg.dailyBudget} запросов в сутки (ASG_DAILY_BUDGET); что не занято планом, достаётся бэкфиллу`}>
-        <CutsPlanner plan={plan} cuts={CUTS.map((c) => ({ key: c.key, title: c.title, what: c.what, required: Boolean(c.required) }))} sites={Math.max(1, asgSites)} budget={cfg.asg.dailyBudget} />
+      <Section title="Разрезы ADOK" sub={`План запросов к AdSpyglass на сутки: какие разрезы по каждому сайту тянет ночной джоб, за сколько прошлых дней, и перечитывать ли вчера почасовыми итогами. ${budget.unlimited ? "Суточного лимита нет" : `Бюджет ${budget.limit} запросов в сутки`} (блок «Лимиты AdSpyglass» ниже); что не занято планом, достаётся бэкфиллу`}>
+        <CutsPlanner plan={plan} cuts={CUTS.map((c) => ({ key: c.key, title: c.title, what: c.what, required: Boolean(c.required) }))} sites={Math.max(1, asgSites)} budget={budget.limit} />
       </Section>
 
-      <Section title="Лимиты AdSpyglass" sub="ADOK блокирует частые запросы: один запрос за раз, пауза между запросами, дневной бюджет">
+      <Section title="Лимиты AdSpyglass" sub="Суточный бюджет — наш предохранитель: ADOK лимита не задаёт, но блокирует частые запросы, поэтому один запрос за раз и пауза между ними остаются всегда">
         <div className="num grid gap-4 text-sm sm:grid-cols-3">
-          <div><div className="text-xs text-muted">Запросов сегодня (UTC)</div><div className="text-lg font-semibold">{used} / {cfg.asg.dailyBudget}</div>
-            <div className="mt-1 h-1.5 rounded-full bg-surface-hover"><div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, (used / cfg.asg.dailyBudget) * 100)}%` }} /></div></div>
+          <div><div className="text-xs text-muted">Запросов сегодня (UTC)</div><div className="text-lg font-semibold" data-testid="asg-used">{used}{budget.unlimited ? <span className="ml-1 text-sm font-normal text-muted">без лимита</span> : <> / {budget.limit}</>}</div>
+            {!budget.unlimited && <div className="mt-1 h-1.5 rounded-full bg-surface-hover"><div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, (used / budget.limit) * 100)}%` }} /></div>}
+            <BudgetForm daily={budget.unlimited ? 0 : budget.limit} /></div>
           <div><div className="text-xs text-muted">Интервал между запросами</div><div className="text-lg font-semibold">{cfg.asg.minIntervalMs / 1000} с</div></div>
           <div><div className="text-xs text-muted">Состояние</div>
             {pause ? <div className="flex flex-col items-start gap-1"><Badge tone="negative">пауза до {pause.until.slice(11, 16)} UTC</Badge><span className="text-xs text-muted">{pause.reason}</span><ResumeAsg /></div>
