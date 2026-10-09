@@ -8,8 +8,13 @@ export const SITE_COLS: Column[] = [
 ];
 
 export const FORMAT_COLS: Column[] = [
-  { id: "format", header: "Формат", kind: "text" }, { id: "pageLoads", header: "Page loads", kind: "int" }, { id: "imps", header: "Показы", kind: "int" },
-  { id: "fillRate", header: "Fill rate", kind: "percent" }, { id: "cpm", header: "Ср. CPM", kind: "cpm", tooltip: "Сравнивать только внутри формата" },
+  { id: "format", header: "Формат", kind: "text" },
+  { id: "requests", header: "Запросы", kind: "int", tooltip: "Обращения за рекламой по данным ADOK (поле requests разреза ad_type); пусто, пока разрез по форматам не загружен" },
+  { id: "pageLoads", header: "Page loads", kind: "int", tooltip: "Загрузки кода формата из разреза ad_type; для дней без него — сумма зон формата" }, { id: "imps", header: "Показы", kind: "int" },
+  { id: "fillRate", header: "Fill rate", kind: "percent", tooltip: "Показы / загрузки — наш расчёт" },
+  { id: "fillRateAsg", header: "Fill ADOK", kind: "percent", tooltip: "Fill rate, который считает сам ADOK (поле fill_rate); расхождение с нашим — повод свериться" },
+  { id: "ctr", header: "CTR", kind: "percent", tooltip: "Клики / показы" },
+  { id: "cpm", header: "Ср. CPM", kind: "cpm", tooltip: "Сравнивать только внутри формата" },
   { id: "viewRate", header: "View rate", kind: "percent" }, { id: "viewableCpm", header: "Viewable CPM", kind: "cpm" },
   { id: "revenue", header: "Выручка", kind: "money" }, { id: "share", header: "Доля", kind: "share" },
 ];
@@ -25,7 +30,8 @@ export const GEO_COLS: Column[] = [
 export const NETWORK_COLS: Column[] = [
   { id: "network", header: "Сетка", kind: "text" }, { id: "pageLoads", header: "Page loads", kind: "int" }, { id: "volShare", header: "Доля объёма", kind: "share" },
   { id: "fillRate", header: "Fill rate", kind: "percent" }, { id: "revPer1k", header: "Rev/1000 loads", kind: "cpm", tooltip: "Основная метрика сравнения сеток" },
-  { id: "rank", header: "Ранг по цене", kind: "int" }, { id: "discrepancy", header: "Дискрепанси", kind: "discrepancy" }, { id: "revenue", header: "Выручка", kind: "money" },
+  { id: "rank", header: "Ранг по цене", kind: "int" }, { id: "discrepancy", header: "Дискрепанси", kind: "discrepancy" }, { id: "ctr", header: "CTR", kind: "percent", tooltip: "Клики / показы" },
+  { id: "revenue", header: "Выручка", kind: "money" },
 ];
 
 export const FORMAT_LABEL: Record<string, string> = {

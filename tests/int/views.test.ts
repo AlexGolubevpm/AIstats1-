@@ -108,6 +108,30 @@ describe("zone, network, format, deal views", () => {
   });
 });
 
+describe("v_format_daily (ADR 0016)", () => {
+  it("zone sums when a site-day has no format cut; the cut alone when it does, views from the zones, clicks everywhere", async () => {
+    // The factory has one BANNER zone on s1 for D1 (10 000 loads, 60 000 imps, 6 000 views) and no format cut.
+    const before = await db.$queryRaw<{ page_loads: unknown; views: unknown; from_format_cut: boolean; clicks: unknown }[]>`
+      SELECT page_loads, views, from_format_cut, clicks FROM v_format_daily WHERE site_id = 's1' AND date = ${D1}`;
+    expect(before.map((x) => [Number(x.page_loads), Number(x.views), x.from_format_cut, Number(x.clicks)])).toEqual([[10_000, 6_000, false, 0]]);
+    await db.factRevenueFormat.createMany({ data: [
+      { date: D1, siteId: "s1", format: "BANNER", requests: 9_000, pageLoads: 8_000, impsOwn: 60_000, clicks: 120, revenueReported: "1.2", fillRateAsg: "0.8" },
+      { date: D1, siteId: "s1", format: "POPUNDER", requests: 7_000, pageLoads: 7_000, impsOwn: 6_500, clicks: 650, revenueReported: "30" },
+    ] });
+    const after = await db.$queryRaw<{ format: string; page_loads: unknown; views: unknown; requests: unknown; clicks: unknown; from_format_cut: boolean }[]>`
+      SELECT format, page_loads, views, requests, clicks, from_format_cut FROM v_format_daily WHERE site_id = 's1' AND date = ${D1} ORDER BY format`;
+    expect(after.map((x) => [x.format, Number(x.page_loads), Number(x.views), Number(x.requests), Number(x.clicks), x.from_format_cut])).toEqual([
+      ["BANNER", 8_000, 6_000, 9_000, 120, true], // the cut's loads, the zones' views
+      ["POPUNDER", 7_000, 0, 7_000, 650, true],
+    ]);
+    await db.factRevenueFormat.deleteMany();
+    const zones = await db.$queryRaw<{ clicks: unknown }[]>`SELECT clicks FROM v_zone_daily WHERE site_id = 's1'`;
+    expect(zones).toHaveLength(1);
+    const nets = await db.$queryRaw<{ clicks: unknown }[]>`SELECT SUM(clicks) clicks FROM v_network_geo WHERE site_id = 's1'`;
+    expect(nets[0].clicks).not.toBeUndefined();
+  });
+});
+
 describe("mcp_reader role", () => {
   it("can read views but not tables", async () => {
     await expect(db.$transaction(async (tx) => {

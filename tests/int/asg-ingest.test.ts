@@ -267,7 +267,7 @@ describe("AdSpyglass ingest", () => {
     await db.countryAlias.create({ data: { source: "adspyglass", raw: "Atlantis", countryCode: "GR" } });
     await reprocessGeoFromRaw(db, raw, [{ key: rawKey("adspyglass", "country/101", DATE, "r5"), date: DATE, siteId: "a", adsgSiteId: 101, cut: "country" }]);
     expect((await geoRows()).map((x) => x.countryCode)).toEqual(["GR"]);
-    expect(calls).toHaveLength(5); // website totals + country + network + device + traffic source during ingest; none during reprocess
+    expect(calls).toHaveLength(6); // website totals + country + network + device + traffic source + ad_type during ingest; none during reprocess
   });
 
   it("finds the latest raw country response per site and day", async () => {
@@ -297,5 +297,35 @@ describe("AdSpyglass ingest", () => {
     const results = await Promise.all(Array.from({ length: 8 }, () => takeAsgBudget(db, 5, DATE)));
     expect(results.filter(Boolean)).toHaveLength(5);
     expect(await asgRequestsToday(db, DATE)).toBe(5);
+  });
+});
+
+
+describe("format cut and the request plan (ADR 0016)", () => {
+  it("ad_type rows land in FactRevenueFormat with requests, ADOK fill and the site's network side spread over formats; a cut switched off is not requested", async () => {
+    const seen: string[] = [];
+    const { client } = fakeAsg((u) => {
+      const g = u.searchParams.get("group_by"); seen.push(g!);
+      if (g === "website") return [{ name: "101. alpha.test", hits: 1000, impressions: 600, broker_hits: 580, broker_income: 10, predicted_income: 10 }];
+      if (g === "country") return [{ name: "Japan", iso: "JP", hits: 1000, impressions: 600, broker_income: 10, predicted_income: 10 }];
+      if (g === "ad_type") return [
+        { name: "Popunder", hits: 600, impressions: 300, clicks: 30, requests: 550, broker_clicks: 28, fill_rate: 50, predicted_income: 7.5 },
+        { name: "Banner", hits: 400, impressions: 300, clicks: 3, requests: 390, broker_clicks: 3, fill_rate: 0.75, predicted_income: 2.5 },
+      ];
+      return [];
+    });
+    const plan = { cuts: { country: true, network: false, device: false, traffic_source: false, ad_type: true }, restateDays: 3, hourlyToday: true };
+    const r = await ingestSiteGeo({ db, client, raw, runId: "f1" }, [DATE], "a", plan);
+    expect(r.failed).toEqual([]);
+    expect(seen).toEqual(["website", "country", "ad_type"]); // network, device and traffic_source are off in this plan
+    const rows = await db.factRevenueFormat.findMany({ where: { siteId: "a" }, orderBy: { format: "asc" } });
+    expect(rows.map((x) => [x.format, x.pageLoads, x.impsOwn, x.requests, x.clicks, x.brokerClicks, Number(x.fillRateAsg), Number(x.revenueReported), x.impsNetwork])).toEqual([
+      ["POPUNDER", 600, 300, 550, 30, 28, 0.5, 7.5, 290], // $10 and 580 network imps split 75/25 by predicted income and 50/50 by impressions
+      ["BANNER", 400, 300, 390, 3, 3, 0.75, 2.5, 290],
+    ]);
+    // The format view prefers the cut over zone sums and carries the extra fields.
+    const v = await db.$queryRaw<{ format: string; requests: unknown; page_loads: unknown; fill_rate_asg: unknown; from_format_cut: boolean }[]>`
+      SELECT format, requests, page_loads, fill_rate_asg, from_format_cut FROM v_format_daily WHERE site_id = 'a' ORDER BY format`;
+    expect(v.map((x) => [x.format, Number(x.requests), Number(x.page_loads), Number(x.fill_rate_asg), x.from_format_cut])).toEqual([["BANNER", 390, 400, 0.75, true], ["POPUNDER", 550, 600, 0.5, true]]);
   });
 });

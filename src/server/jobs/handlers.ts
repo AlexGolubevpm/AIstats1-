@@ -11,6 +11,7 @@ import type { RawStore } from "@/server/ingest/raw-store";
 import { AsgError } from "@/server/ingest/adspyglass/client";
 import { asgPause, asgRequestsToday, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
 import { daysThatFit, defaultWindow, readBackfill, requestsPerDay, saveBackfill, startBackfill, type BackfillMode } from "./backfill";
+import { DEFAULT_PLAN, planCost, readPlan, type AsgPlan } from "@/server/ingest/adspyglass/plan";
 import { recalcCosts, revshareCosts } from "@/server/services/costs";
 import { matchZonesToPlacements } from "@/server/services/inventory";
 import { forecastDeals } from "@/server/services/deals";
@@ -41,13 +42,13 @@ function asgClient(ctx: JobContext): AsgClient {
     takeBudget: () => takeAsgBudget(ctx.db, asg.dailyBudget), fetchImpl: ctx.fetchImpl });
 }
 
-/** Default windows: hourly jobs look at yesterday + today; nightly ones at the restate window. */
-export function windowFor(name: JobName, ctx: JobContext, data: JobData): { from: string; to: string } {
+/** Default windows: the hourly totals look at today (and yesterday when the plan says so); the nightly job at the plan's restate window. */
+export function windowFor(name: JobName, ctx: JobContext, data: JobData, plan: AsgPlan = DEFAULT_PLAN): { from: string; to: string } {
   const t = todayOf(ctx);
   if (data.from && data.to) return { from: data.from, to: data.to };
   switch (name) {
-    case "asg:totals": return { from: addDays(t, -1), to: t };
-    case "asg:sites": return { from: addDays(t, -ctx.cfg.asg.restateDays), to: addDays(t, -1) };
+    case "asg:totals": return { from: plan.hourlyToday ? t : addDays(t, -1), to: t };
+    case "asg:sites": return { from: addDays(t, -plan.restateDays), to: addDays(t, -1) };
     case "asg:backfill": return defaultWindow(t, data.mode);
     case "metrika": return { from: addDays(t, -1), to: t };
     case "derive": return { from: addDays(t, -4), to: addDays(t, -1) };
@@ -57,20 +58,21 @@ export function windowFor(name: JobName, ctx: JobContext, data: JobData): { from
 
 export async function runJob(name: JobName, ctx: JobContext, data: JobData = {}): Promise<{ status: string; error?: string; skipped?: string }> {
   const { db, cfg, raw } = ctx;
-  const w = windowFor(name, ctx, data);
+  const plan = name.startsWith("asg:") ? await readPlan(db) : DEFAULT_PLAN;
+  const w = windowFor(name, ctx, data, plan);
   if (name.startsWith("asg:")) {
     if (!cfg.asg.configured) return { status: "skipped", skipped: "ASG_AUTH_EMAIL / ASG_AUTH_TOKEN не заданы" };
     const pause = await asgPause(db);
     if (pause) return { status: "skipped", skipped: `AdSpyglass на паузе до ${pause.until}: ${pause.reason}` };
     const client = asgClient(ctx);
-    if (name === "asg:backfill") return runBackfill(ctx, client, w, data);
+    if (name === "asg:backfill") return runBackfill(ctx, client, w, data, plan);
     return withIngestRun(db, { source: "adspyglass", job: name, ...w }, async (runId) => {
       const deps = { db, client, raw, runId };
       if (name === "asg:totals") {
         const r = await ingestSiteTotals(deps, days(w.from, w.to));
         return { rows: r.rows, requests: client.requests };
       }
-      const g = await ingestSiteGeo(deps, days(w.from, w.to), data.siteId);
+      const g = await ingestSiteGeo(deps, days(w.from, w.to), data.siteId, plan);
       const z = await ingestSiteZones(deps, days(w.from, w.to), data.siteId);
       const c = await revshareCosts(db, w.from, w.to, data.siteId); // traffic source revenue → cost
       return { rows: g.rows + z.rows + c, requests: client.requests, partial: [...g.failed, ...(g.skipped ? [g.skipped] : []), ...z.failed] };
@@ -115,14 +117,17 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
  * whole window (costs, deal forecast, alerts). The window is set from the UI (startBackfill) or
  * passed as data for a manual run.
  */
-async function runBackfill(ctx: JobContext, client: AsgClient, w: { from: string; to: string }, data: JobData) {
+async function runBackfill(ctx: JobContext, client: AsgClient, w: { from: string; to: string }, data: JobData, plan: AsgPlan) {
   const { db, cfg, raw } = ctx;
   let state = await readBackfill(db);
   if (data.from && data.to && (!state || state.cancelled || state.from !== data.from || state.to !== data.to)) state = await startBackfill(db, { ...w, siteId: data.siteId, mode: data.mode });
   if (!state || state.cancelled || !state.pending.length) return { status: "skipped", skipped: "бэкфилл: нечего догружать" };
   const mode: BackfillMode = state.mode ?? "full";
   const sites = await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(state.siteId ? { id: state.siteId } : {}) } });
-  const perDay = requestsPerDay(sites, mode);
+  const perDay = requestsPerDay(sites, mode, plan);
+  // The reserve is what the plan itself needs today (nightly restate + hourly totals + a margin), computed over all sites.
+  const allSites = state.siteId ? await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null } } }) : sites;
+  const reserve = planCost(plan, allSites, cfg.asg.dailyBudget).reserve;
   const first = state.pending[0];
   return withIngestRun(db, { source: "adspyglass", job: "asg:backfill", from: first, to: first }, async (runId) => {
     const deps = { db, client, raw, runId };
@@ -130,12 +135,12 @@ async function runBackfill(ctx: JobContext, client: AsgClient, w: { from: string
     let rows = 0, stop: string | null = null, lo = first, hi = first;
     for (const day of [...state!.pending]) {
       const used = await asgRequestsToday(db); // same UTC-day key the budget counter uses
-      if (daysThatFit(used, cfg.asg.dailyBudget, cfg.asg.backfillReserve, perDay) < 1) { stop = `бюджет: использовано ${used} из ${cfg.asg.dailyBudget}, резерв ${cfg.asg.backfillReserve}`; break; }
+      if (daysThatFit(used, cfg.asg.dailyBudget, reserve, perDay) < 1) { stop = `бюджет: использовано ${used} из ${cfg.asg.dailyBudget}, резерв плана ${reserve}`; break; }
       try {
         if (mode === "totals") {
           rows += (await ingestSiteTotals(deps, [day])).rows; // site totals only; days that already have countries are left alone
         } else {
-          const g = await ingestSiteGeo(deps, [day], state!.siteId);
+          const g = await ingestSiteGeo(deps, [day], state!.siteId, plan);
           const z = await ingestSiteZones(deps, [day], state!.siteId);
           rows += g.rows + z.rows + await revshareCosts(db, day, day, state!.siteId);
           partial.push(...g.failed, ...z.failed);
@@ -162,7 +167,7 @@ async function runBackfill(ctx: JobContext, client: AsgClient, w: { from: string
   });
 }
 
-/** Repeatable schedules (UTC). ASG hourly job is ONE account-level request per day in the window. */
+/** Repeatable schedules (UTC). The ASG hourly job is ONE account-level request per day in its window (today, or yesterday + today by the plan). */
 export const SCHEDULES: { name: JobName; pattern: string; queue: "asg" | "main" }[] = [
   { name: "asg:totals", pattern: "5 * * * *", queue: "asg" },
   { name: "asg:sites", pattern: "0 4 * * *", queue: "asg" },

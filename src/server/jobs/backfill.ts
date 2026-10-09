@@ -2,10 +2,11 @@
 // request budget, continued on the next UTC day. docs/architecture/08-backend.md#jobs.
 import type { PrismaClient } from "@/generated/prisma/client";
 import { addDays } from "@/lib/period";
+import { DEFAULT_PLAN, perDayRequests, type AsgPlan } from "@/server/ingest/adspyglass/plan";
 
 export const BACKFILL_KEY = "asg_backfill";
 
-/** full — every per-site cut, zones and cost (2 + 4 × sites requests a day); totals — site totals only (1 request a day). */
+/** full — the planned per-site cuts, zones and cost (plan.ts: 2 + cuts × sites requests a day); totals — site totals only (1 request a day). */
 export type BackfillMode = "full" | "totals";
 
 export interface BackfillState {
@@ -20,8 +21,8 @@ export const daysBetween = (from: string, to: string): string[] => {
   return out;
 };
 
-/** Requests one day costs: website + spot for the account, four cuts per site; totals mode is one website request. */
-export const requestsPerDay = (sites: number, mode: BackfillMode = "full") => (mode === "totals" ? 1 : 2 + 4 * sites);
+/** Requests one day costs: website + spot for the account plus the plan's cuts per site; totals mode is one website request. */
+export const requestsPerDay = (sites: number, mode: BackfillMode = "full", plan: AsgPlan = DEFAULT_PLAN) => (mode === "totals" ? 1 : perDayRequests(plan, sites));
 
 /** How many whole days still fit today once the nightly reserve is kept. */
 export const daysThatFit = (used: number, budget: number, reserve: number, perDay: number) => Math.max(0, Math.floor((budget - reserve - used) / perDay));

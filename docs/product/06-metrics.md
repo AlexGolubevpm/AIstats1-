@@ -29,7 +29,8 @@
 | CPM | `revenue / imps_own × 1000` | cpm | Только внутри одного формата |
 | Viewable CPM | `revenue / views × 1000` | cpm | BANNER, NATIVE |
 | View rate | `views / imps_own` | percent | BANNER, NATIVE. < 15% — проблема вёрстки |
-| Fill rate | `imps_own / page_loads` | percent | Сколько запросов закрылось |
+| Fill rate | `imps_own / page_loads` | percent | Сколько запросов закрылось (наш расчёт); рядом «Fill ADOK» — `fill_rate` самого ADOK из разреза `ad_type`, расхождение — повод свериться |
+| CTR | `clicks / imps_own` | percent | Клики на показ; клики ADOK отдаёт в каждом разрезе, поэтому CTR есть у зон, форматов, сеток и девайсов |
 | Дискрепанси | `(imps_own − imps_network) / imps_own` | percent | Отрицательная — рекламодатель насчитал больше |
 | Множитель дила | `imps_reported / imps_own` | ×1.00 | Фикс-дилы, > 1.5× — предупреждение |
 | Cost / unique | `cost / uniques_bought` | cpm (4 знака) | Цена входа |

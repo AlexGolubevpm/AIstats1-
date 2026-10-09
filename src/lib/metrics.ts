@@ -21,6 +21,8 @@ export const viewableCpm = (revenue: number, views: number): Num => ratio(revenu
 export const viewRate = (views: number, impsOwn: number): Num => ratio(views, impsOwn);
 /** Filled share of page loads, 0..1. */
 export const fillRate = (impsOwn: number, pageLoads: number): Num => ratio(impsOwn, pageLoads);
+/** CTR — clicks per impression (ours). ADOK counts clicks per row, so it exists wherever impressions do. */
+export const ctr = (clicks: number, impsOwn: number): Num => ratio(clicks, impsOwn);
 /** (own − network) / own, 0..1; negative means the advertiser counts more. */
 export const discrepancy = (impsOwn: number, impsNetwork: number): Num => ratio(impsOwn - impsNetwork, impsOwn);
 /** Advertiser impressions per own impression (fixed deals). */
