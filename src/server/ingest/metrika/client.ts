@@ -2,6 +2,7 @@
 // (ym:s:pageviews instead of ym:pv:*), so users and pageviews come from the same table.
 // accuracy=full disables sampling. Up to 5 counters in parallel (docs/architecture/08-backend.md).
 
+export interface MetrikaCounter { id: string; name: string; site: string; status: string; mirrors: string[]; permission: string | null; ownerLogin: string | null }
 export interface MetrikaRow { date: string; countryName: string; countryIso: string | null; device: string; users: number; visits: number; pageviews: number; bounceRate: number; pageDepth: number }
 
 export class MetrikaError extends Error {
@@ -32,7 +33,7 @@ export class MetrikaClient {
     }
     if (!res.ok) {
       const text = (await res.text()).slice(0, 300);
-      throw new MetrikaError(res.status === 403 ? `Нет доступа к счётчику ${counterId} (403). Проверьте METRIKA_TOKEN и права.` : `Метрика вернула ${res.status}: ${text}`, res.status);
+      throw new MetrikaError(res.status === 403 ? `Нет доступа к счётчику ${counterId} (403). Проверьте подключение Метрики и права токена.` : `Метрика вернула ${res.status}: ${text}`, res.status);
     }
     const raw = (await res.json()) as { data?: { dimensions: { name?: string; iso_name?: string; id?: string }[]; metrics: number[] }[] };
     const rows = (raw.data ?? []).map((r) => ({
@@ -44,5 +45,28 @@ export class MetrikaClient {
       bounceRate: r.metrics[3] ?? 0, pageDepth: r.metrics[4] ?? 0,
     }));
     return { rows, raw };
+  }
+
+  /** Management API: every counter the token can see (own and trusted), with mirrors for domain matching. */
+  async listCounters(): Promise<{ counters: MetrikaCounter[]; raw: unknown }> {
+    const url = new URL(`${this.o.baseUrl ?? "https://api-metrika.yandex.net"}/management/v1/counters`);
+    url.searchParams.set("per_page", "1000");
+    url.searchParams.set("field", "mirrors");
+    let res: Response;
+    try {
+      res = await (this.o.fetchImpl ?? fetch)(url, { headers: { Authorization: `OAuth ${this.o.token}` }, signal: AbortSignal.timeout(60_000) });
+    } catch (e) {
+      throw new MetrikaError(`Метрика недоступна: ${(e as Error).message}`);
+    }
+    if (!res.ok) {
+      const text = (await res.text()).slice(0, 300);
+      throw new MetrikaError(res.status === 401 || res.status === 403 ? `Метрика не пустила (${res.status}): токен недействителен или без права читать счётчики` : `Метрика вернула ${res.status}: ${text}`, res.status);
+    }
+    const raw = (await res.json()) as { counters?: { id: number | string; name?: string; site?: string; status?: string; mirrors?: string[]; permission?: string; owner_login?: string }[] };
+    const counters = (raw.counters ?? []).map((c) => ({
+      id: String(c.id), name: String(c.name ?? ""), site: String(c.site ?? ""), status: String(c.status ?? ""),
+      mirrors: Array.isArray(c.mirrors) ? c.mirrors.map(String) : [], permission: c.permission ?? null, ownerLogin: c.owner_login ?? null,
+    }));
+    return { counters, raw };
   }
 }

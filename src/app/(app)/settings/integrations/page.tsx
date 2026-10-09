@@ -9,7 +9,9 @@ import { asgPause, asgRequestsToday } from "@/server/ingest/run";
 import { SCHEDULES } from "@/server/jobs/handlers";
 import { daysBetween, defaultWindow, readBackfill, requestsPerDay } from "@/server/jobs/backfill";
 import { isDemo } from "@/server/seed/demo";
-import { AliasRow, BackfillBlock, DemoButtons, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
+import { authorizeUrl } from "@/server/ingest/metrika/oauth";
+import { metrikaStatus } from "@/server/services/metrika-connection";
+import { AliasRow, BackfillBlock, DemoButtons, MetrikaBlock, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
 
 const JOB_LABEL: Record<string, string> = {
   "asg:sites": "AdSpyglass: все разрезы по сайтам — страны, сетки, устройства, источники трафика, зоны + расход (ночной, ~4 запроса на сайт в день)",
@@ -33,6 +35,11 @@ export default async function Integrations() {
     db.site.findMany({ where: { status: { not: "ARCHIVED" } }, orderBy: { domain: "asc" } }),
     isDemo(db), db.site.count().then((n) => n > 0),
   ]);
+  const metrika = await metrikaStatus(db, cfg);
+  const metrikaDetail = metrika.kind === "oauth" ? `подключена по OAuth${metrika.expiresAt ? ` · токен до ${fmtDate(metrika.expiresAt)}` : ""} · приложение …${metrika.clientId.slice(-4)}`
+    : metrika.kind === "app" ? `приложение …${metrika.clientId.slice(-4)} сохранено, токена ещё нет — получите код ниже`
+    : metrika.kind === "env" ? `токен из .env: ${tail(cfg.metrika.token)}`
+    : metrika.kind === "broken" ? metrika.error : "не подключена — блок «Яндекс Метрика» ниже";
   const backfill = await readBackfill(db);
   const today = new Date().toISOString().slice(0, 10);
   const asgSites = sites.filter((s) => s.status === "ACTIVE" && s.adsgSiteId).length;
@@ -46,12 +53,12 @@ export default async function Integrations() {
   const dur = (a: Date, b: Date | null) => (b ? `${Math.max(1, Math.round((b.getTime() - a.getTime()) / 1000))} с` : "идёт");
   const conn = [
     { name: "AdSpyglass (ADOK)", ok: cfg.asg.configured, detail: `email: ${cfg.asg.email ? "задан" : "не задан"} · токен: ${tail(cfg.asg.token)}`, action: cfg.asg.configured ? <TestAsg /> : null },
-    { name: "Яндекс Метрика", ok: cfg.metrika.configured, detail: `OAuth-токен: ${tail(cfg.metrika.token)}`, action: null },
+    { name: "Яндекс Метрика", ok: metrika.kind === "oauth" || metrika.kind === "env", detail: metrikaDetail, action: <a href="#metrika" className="text-sm text-accent hover:underline">Настроить</a> },
     { name: "S3 для сырья", ok: cfg.s3Configured, detail: cfg.s3Configured ? "S3" : `локальная папка ${process.env.RAW_DIR ?? "/data/raw"}`, action: null },
   ];
   return (
     <>
-      <Section title="Подключения" sub="Значения хранятся в .env на сервере; здесь только статус. Менять через UI нельзя — секреты не лежат в базе">
+      <Section title="Подключения" sub="AdSpyglass и S3 — из .env на сервере, здесь только статус. Метрика подключается ниже: её секреты лежат в базе зашифрованными ключом сервера (ADR 0018)">
         <ul className="-mx-5 divide-y divide-border">{conn.map((c) => (
           <li key={c.name} className="flex flex-wrap items-center gap-3 px-5 py-3">
             <span className={`size-2 rounded-full ${c.ok ? "bg-positive" : "bg-border-strong"}`} />
@@ -60,6 +67,14 @@ export default async function Integrations() {
           </li>
         ))}</ul>
       </Section>
+
+      <div id="metrika" className="scroll-mt-20">
+      <Section title="Яндекс Метрика" sub="Приложение из oauth.yandex.ru (доступ «Метрика: получение статистики, чтение параметров счётчиков», Redirect URI — «подставить URL для разработки»). Код подтверждения Яндекс показывает на своей странице — вставьте его сюда. Счётчики подбираются по доменам наших сайтов; чужие не заводятся">
+        <MetrikaBlock status={metrika.kind === "oauth" ? { kind: "oauth", expiresAt: metrika.expiresAt?.toISOString() ?? null, connectedAt: metrika.connectedAt?.toISOString() ?? null }
+          : metrika.kind === "broken" ? { kind: "broken", error: metrika.error } : { kind: metrika.kind }}
+          authorizeHref={metrika.kind === "app" || metrika.kind === "oauth" ? authorizeUrl(metrika.clientId) : null} />
+      </Section>
+      </div>
 
       <Section title="Лимиты AdSpyglass" sub="ADOK блокирует частые запросы: один запрос за раз, пауза между запросами, дневной бюджет">
         <div className="num grid gap-4 text-sm sm:grid-cols-3">

@@ -22,7 +22,7 @@ function SiteForm({ site, onDone }: { site?: SiteRow; onDone: () => void }) {
       <FormField name="title" label="Название"><Input name="title" defaultValue={site?.title} /></FormField>
       <div className="grid gap-4 sm:grid-cols-2">
         <FormField name="adsgSiteId" label="AdSpyglass ID"><Input name="adsgSiteId" inputMode="numeric" defaultValue={site?.adsgSiteId ?? ""} className="num" /></FormField>
-        <FormField name="metrikaId" label="Счётчик Метрики"><Input name="metrikaId" inputMode="numeric" defaultValue={site?.metrikaId ?? ""} className="num" /></FormField>
+        <FormField name="metrikaId" label="Счётчик Метрики" hint="Подбирается по домену на Интеграциях → Яндекс Метрика; руками — при нескольких счётчиках на домен"><Input name="metrikaId" inputMode="numeric" defaultValue={site?.metrikaId ?? ""} className="num" /></FormField>
         <FormField name="status" label="Статус">
           <Select name="status" defaultValue={site?.status ?? "ACTIVE"}><option value="ACTIVE">Активен</option><option value="PAUSED">Пауза — не тянется</option><option value="ARCHIVED">Архив — скрыт</option></Select>
         </FormField>

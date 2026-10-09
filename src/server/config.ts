@@ -13,9 +13,12 @@ export function config(env: Record<string, string | undefined> = process.env) {
       get configured() { return Boolean(this.email && this.token); },
     },
     metrika: {
+      // A token from .env is the fallback; the usual path is the OAuth connection made in the UI (ADR 0018).
       token: (env.METRIKA_TOKEN ?? "").trim(),
       get configured() { return Boolean(this.token); },
     },
+    /** Key for secrets stored in the database (src/server/crypto.ts); the deploy generates it once. */
+    appSecret: (env.APP_SECRET ?? "").trim(),
     redisUrl: env.REDIS_URL ?? "redis://127.0.0.1:6379",
     appLogin: (env.APP_LOGIN ?? "Admin").trim() || "Admin",
     appPassword: env.APP_PASSWORD ?? "",

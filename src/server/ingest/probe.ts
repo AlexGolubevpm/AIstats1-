@@ -5,6 +5,7 @@ import type { Config } from "@/server/config";
 import { AsgClient, AsgError, type AsgRow } from "./adspyglass/client";
 import { MetrikaClient } from "./metrika/client";
 import { asgPause, pauseAsg, takeAsgBudget } from "./run";
+import { metrikaToken } from "@/server/services/metrika-connection";
 
 export type ProbeResult<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -34,11 +35,12 @@ export async function checkSite(db: PrismaClient, cfg: Config, siteId: string, d
     }, fetchImpl)
     : { ok: false, error: "ID AdSpyglass не задан" };
   let metrika: ProbeResult<{ uniques: number }>;
+  const token = site.metrikaId ? await metrikaToken(db, cfg) : null;
   if (!site.metrikaId) metrika = { ok: false, error: "Счётчик не задан" };
-  else if (!cfg.metrika.configured) metrika = { ok: false, error: "METRIKA_TOKEN не задан" };
+  else if (!token) metrika = { ok: false, error: "Метрика не подключена" };
   else {
     try {
-      const r = await new MetrikaClient({ token: cfg.metrika.token, fetchImpl }).fetchCounter(site.metrikaId, day, day);
+      const r = await new MetrikaClient({ token, fetchImpl }).fetchCounter(site.metrikaId, day, day);
       metrika = { ok: true, value: { uniques: r.rows.reduce((a, x) => a + x.users, 0) } };
     } catch (e) { metrika = { ok: false, error: (e as Error).message }; }
   }

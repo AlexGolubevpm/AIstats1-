@@ -5,7 +5,10 @@ import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { Confirm } from "@/components/ui/sheet";
 import { useToast } from "@/components/ui/toast";
-import { cancelBackfillAction, demoAction, mapAliasAction, resumeAsgAction, runJobAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
+import { applyMetrikaCountersAction, cancelBackfillAction, connectMetrikaAction, demoAction, disconnectMetrikaAction, mapAliasAction, metrikaCountersAction, resumeAsgAction, runJobAction,
+  saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
+import { DECISION_LABEL, type MatchRow } from "@/server/domain/metrika-match";
+import { fmtDate } from "@/lib/format";
 
 function useRun() {
   const [pending, start] = useTransition();
@@ -119,3 +122,67 @@ export function BackfillBlock({ state, sites, defaults, perNight }: { state: Bac
     </div>
   );
 }
+
+export type MetrikaView = { kind: "none" | "env" | "app" } | { kind: "oauth"; expiresAt: string | null; connectedAt: string | null } | { kind: "broken"; error: string };
+
+/** «Яндекс Метрика»: the OAuth app → the confirmation code → the counters matched to our sites → apply. */
+export function MetrikaBlock({ status, authorizeHref }: { status: MetrikaView; authorizeHref: string | null }) {
+  const { pending, run } = useRun();
+  const [rows, setRows] = useState<MatchRow[] | null>(null);
+  const [editApp, setEditApp] = useState(status.kind === "none" || status.kind === "env" || status.kind === "broken");
+  const [confirm, setConfirm] = useState(false);
+  const matched = rows?.filter((r) => r.decision === "matched") ?? [];
+  const takeRows = (r: { data?: Record<string, unknown> }) => { if (Array.isArray(r.data?.rows)) setRows(r.data!.rows as MatchRow[]); };
+  return (
+    <div className="flex flex-col gap-4" data-testid="metrika-block">
+      {status.kind === "broken" && <p className="rounded-md bg-negative-soft px-3 py-2 text-sm text-negative">{status.error}</p>}
+      {status.kind === "env" && <p className="text-sm text-muted">Сейчас работает токен из `.env` (METRIKA_TOKEN). Подключение через приложение заменит его и позволит подтягивать счётчики.</p>}
+      {(editApp || status.kind === "none") ? (
+        <ActionForm action={saveMetrikaAppAction} submit="Сохранить приложение" submitSize="sm" onDone={() => setEditApp(false)} className="grid items-end gap-3 sm:grid-cols-2 [&>div:last-child]:col-span-full"
+          cancel={status.kind === "app" || status.kind === "oauth" ? () => setEditApp(false) : undefined}>
+          <FormField name="clientId" label="ID приложения" hint="ClientID со страницы приложения в oauth.yandex.ru"><Input name="clientId" autoComplete="off" className="font-mono" /></FormField>
+          <FormField name="clientSecret" label="Секрет приложения" hint="Client secret; хранится зашифрованным, в интерфейсе не показывается"><Input name="clientSecret" type="password" autoComplete="new-password" className="font-mono" /></FormField>
+        </ActionForm>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3 text-sm">
+          {status.kind === "oauth" ? <span>Подключена{status.connectedAt ? ` ${fmtDate(status.connectedAt)}` : ""}{status.expiresAt ? ` · токен действует до ${fmtDate(status.expiresAt)}` : ""}</span> : <span className="text-muted">Приложение сохранено, токена ещё нет.</span>}
+          <Button size="sm" variant="ghost" onClick={() => setEditApp(true)}>Сменить приложение</Button>
+          {status.kind === "oauth" && <Button size="sm" variant="ghost" onClick={() => setConfirm(true)}>Отключить</Button>}
+        </div>
+      )}
+      {!editApp && authorizeHref && (
+        <div className="rounded-lg border border-border p-3">
+          <p className="text-sm">{status.kind === "oauth" ? "Переподключить: " : "Шаг 2. "}<a href={authorizeHref} target="_blank" rel="noreferrer" className="text-accent hover:underline">Получить код в Яндексе ↗</a> — войти под аккаунтом, где лежат счётчики, разрешить доступ и скопировать код.</p>
+          <ActionForm action={connectMetrikaAction} submit={status.kind === "oauth" ? "Переподключить" : "Подключить"} submitSize="sm" onDone={takeRows} className="mt-2 grid items-end gap-3 sm:grid-cols-[1fr_auto] [&>div:last-child]:col-span-full">
+            <FormField name="code" label="Код подтверждения"><Input name="code" inputMode="numeric" autoComplete="one-time-code" className="num" /></FormField>
+          </ActionForm>
+        </div>
+      )}
+      {status.kind === "oauth" && (
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" disabled={pending} onClick={() => run(async () => { const r = await metrikaCountersAction(); takeRows(r); return r; })}>{pending ? "Читаем…" : "Подтянуть счётчики"}</Button>
+          {matched.length > 0 && <Button size="sm" variant="primary" disabled={pending} onClick={() => run(async () => { const r = await applyMetrikaCountersAction(matched.map((m) => ({ siteId: m.siteId, counterId: m.counterId! }))); if (r.ok) setRows(null); return r; })}>Применить {matched.length}</Button>}
+        </div>
+      )}
+      {rows && (
+        <div className="-mx-5 overflow-x-auto">
+          <table className="tbl w-full text-sm" data-testid="metrika-matches">
+            <thead><tr className="text-left text-xs text-muted"><th className="px-5 py-1.5 font-medium">Сайт</th><th className="px-3 py-1.5 font-medium">Сейчас</th><th className="px-3 py-1.5 font-medium">Счётчик в Метрике</th><th className="px-3 py-1.5 font-medium">Решение</th></tr></thead>
+            <tbody>{[...rows].sort((a, b) => order(a) - order(b)).map((r) => (
+              <tr key={r.siteId} className="border-t border-border/60" data-decision={r.decision}>
+                <td className="px-5 py-1.5 font-mono">{r.domain}</td>
+                <td className="num px-3 py-1.5">{r.metrikaId ?? <span className="text-faint">—</span>}</td>
+                <td className="num px-3 py-1.5">{r.counters.length ? r.counters.map((c) => `${c.id} · ${c.name}`).join("; ") : <span className="text-faint">—</span>}</td>
+                <td className={`px-3 py-1.5 ${r.decision === "matched" ? "text-positive" : r.decision === "conflict" || r.decision === "ambiguous" ? "text-warning" : "text-muted"}`}>{DECISION_LABEL[r.decision]}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+      <Confirm open={confirm} onOpenChange={setConfirm} title="Отключить Метрику?" destructive confirmLabel="Отключить"
+        body="Токен и приложение будут забыты; счётчики у сайтов останутся, но трафик перестанет загружаться, пока Метрику не подключат снова." onConfirm={() => run(disconnectMetrikaAction)} />
+    </div>
+  );
+}
+const ORDER: Record<MatchRow["decision"], number> = { matched: 0, ambiguous: 1, conflict: 2, same: 3, none: 4 };
+const order = (r: MatchRow) => ORDER[r.decision];
