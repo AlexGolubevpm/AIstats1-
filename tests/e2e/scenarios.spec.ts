@@ -262,6 +262,28 @@ test("hypotheses: system proposals on demo data, scope chips, an own hypothesis 
   await expect(page.getByText(/в работе с/).first()).toBeVisible();
 });
 
+test("hypotheses: evidence line, «По сайтам» groups the list by domain, «Топ-10 сайтов» narrows it; a site page shows its alerts with an action and its hypotheses", async ({ page }) => {
+  await login(page, "/hypotheses?tab=proposed");
+  await expect(page.locator("li[data-scope]").first()).toBeVisible();
+  await expect(page.locator("[data-evidence]").first()).toBeVisible(); // rules keep their numbers; the card shows them
+  await page.locator("a[data-chip=group]").click();
+  await expect(page).toHaveURL(/group=site/);
+  await expect(page.locator("h3[data-group]").first()).toBeVisible();
+  await page.locator("a[data-chip=top]").click();
+  await expect(page).toHaveURL(/top=10/);
+  await expect(page.getByText("Ошибка")).toHaveCount(0);
+  // From an alert to its site: the site page repeats the alert with its action and the «Принято к сведению» button.
+  await page.goto("/alerts");
+  const link = page.locator("a[href^='/sites/']").first();
+  await expect(link).toBeVisible();
+  await link.click();
+  await expect(page).toHaveURL(/\/sites\//);
+  await expect(page.getByTestId("site-alerts")).toBeVisible();
+  await expect(page.getByTestId("site-alerts").getByRole("button", { name: "Принято к сведению" }).first()).toBeVisible();
+  await expect(page.getByTestId("site-hypotheses")).toBeVisible();
+  await expect(page.getByRole("link", { name: "Все гипотезы сайта →" })).toBeVisible();
+});
+
 test("integrations: the backfill block shows the window, queues the job and reports progress", async ({ page }) => {
   await login(page, "/settings/integrations");
   await expect(page.getByRole("heading", { name: "Бэкфилл AdSpyglass" })).toBeVisible();

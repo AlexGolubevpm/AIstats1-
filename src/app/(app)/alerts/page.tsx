@@ -27,6 +27,8 @@ export default async function Alerts({ searchParams }: { searchParams: Promise<R
     },
     orderBy: [{ moneyAtRisk: "desc" }, { lastSeenAt: "desc" }],
   });
+  // Ingest down has no price but blocks every other number: it goes first inside its level.
+  alerts.sort((a, b) => Number(b.rule === "ingest_down") - Number(a.rule === "ingest_down"));
   const bundles = await db.bundle.findMany({ orderBy: { title: "asc" } });
   // Alerts that already live on /hypotheses (the nightly run creates them; the button is for "now").
   const inHypotheses = new Set((await db.hypothesis.findMany({ where: { status: { in: ["PROPOSED", "ACCEPTED"] }, ruleKey: { in: [...new Set(alerts.map((a) => a.rule))] } }, select: { ruleKey: true, objectKey: true } }))
@@ -60,7 +62,7 @@ export default async function Alerts({ searchParams }: { searchParams: Promise<R
                     <div className="min-w-0 flex-1">
                       <AlertBadge level={a.level} title={a.title} message={a.message} link={a.link}
                         meta={<>с {fmtDate(a.firstSeenAt)} · {days(a.firstSeenAt, a.lastSeenAt)} дн. подряд
-                          {Number(a.moneyAtRisk) > 0 && <> · под риском {fmtMoney(Number(a.moneyAtRisk))}</>}{snoozed && <> · скрыт до {fmtDate(a.snoozedUntil)}</>}</>} />
+                          {Number(a.moneyAtRisk) > 0 && <> · под риском {fmtMoney(Number(a.moneyAtRisk))}{Boolean((a.payload as Record<string, unknown> | null)?.estimate) && " (оценка)"}</>}{snoozed && <> · скрыт до {fmtDate(a.snoozedUntil)}</>}</>} />
                     </div>
                     <div className="flex shrink-0 items-center gap-1 pl-12 pb-1 sm:pl-0 sm:pt-2.5 sm:pb-0"><ToHypothesisButton alertId={a.id} exists={inHypotheses.has(`${a.rule}|${a.entityKey}`)} /><SnoozeButton id={a.id} snoozed={snoozed} /></div>
                   </li>

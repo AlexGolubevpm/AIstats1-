@@ -19,6 +19,7 @@ const int = (v: number) => v.toLocaleString("ru-RU");
 const where = (cc: string, domain: string) => (cc === "ZZ" ? `на ${domain}` : `в ${cc} на ${domain}`);
 const FORMAT_WORD: Record<string, string> = { POPUNDER: "Popunder", BANNER: "баннеров", NATIVE: "нативки", SLIDER: "слайдера", OUTSTREAM: "Outstream", INVIDEO: "In-video", INPAGEPUSH: "In-page push", OTHER: "прочих форматов" };
 const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
+const cpm = (v: number) => `$${v.toFixed(4)}`;
 const day = (s: string) => new Date(`${s}T00:00:00Z`);
 
 export interface RuleContext { db: PrismaClient; asOf: string; configuredSources: string[] }
@@ -52,7 +53,7 @@ async function lossGeo({ db, asOf }: RuleContext): Promise<Candidate[]> {
 
 /** 2. Waterfall inversion: a network ranked below 3rd by price holds > 30% of volume. */
 async function waterfallInversion({ db, asOf }: RuleContext): Promise<Candidate[]> {
-  const rows = await db.$queryRaw<{ site_id: string; domain: string; country_code: string; network_title: string; loads: unknown; vol_share: unknown; price_rank: unknown; rev_per_k: unknown; best: string }[]>`
+  const rows = await db.$queryRaw<{ site_id: string; domain: string; country_code: string; network_title: string; loads: unknown; vol_share: unknown; price_rank: unknown; rev_per_k: unknown; best: string; best_rev_per_k: unknown }[]>`
     WITH a AS (
       SELECT g.site_id, g.country_code, g.network_id, g.network_title,
              SUM(g.revenue) / NULLIF(SUM(g.page_loads), 0) * 1000 AS rev_per_k,
@@ -66,42 +67,52 @@ async function waterfallInversion({ db, asOf }: RuleContext): Promise<Candidate[
       SELECT a.*, RANK() OVER (PARTITION BY site_id, country_code ORDER BY rev_per_k DESC NULLS LAST) AS price_rank FROM a WHERE vol_share >= 0.05
     )
     SELECT r.*, s.domain,
-           (SELECT b.network_title FROM r b WHERE b.site_id = r.site_id AND b.country_code = r.country_code ORDER BY b.price_rank LIMIT 1) AS best
+           (SELECT b.network_title FROM r b WHERE b.site_id = r.site_id AND b.country_code = r.country_code ORDER BY b.price_rank LIMIT 1) AS best,
+           (SELECT b.rev_per_k FROM r b WHERE b.site_id = r.site_id AND b.country_code = r.country_code ORDER BY b.price_rank LIMIT 1) AS best_rev_per_k
     FROM r JOIN "Site" s ON s.id = r.site_id
     WHERE r.price_rank > 3 AND r.vol_share > 0.30 AND r.loads > 10000 AND s.status <> 'ARCHIVED'`;
-  return rows.map((r) => ({
-    rule: "waterfall_inversion", entityKey: `site:${r.site_id}|country:${r.country_code}|net:${r.network_title}`, level: "WARNING",
-    title: `Инверсия waterfall: ${r.network_title} ${where(r.country_code, r.domain)}`,
-    message: `${r.network_title} — ${n(r.price_rank)}-я по цене, но держит ${pct(n(r.vol_share))} объёма.`,
-    action: `Переставить ниже в waterfall, объём отдать ${r.best}.`,
-    link: `/sites/${r.domain}?by=networks&preset=7d`, siteId: r.site_id, moneyAtRisk: 0,
-    payload: { network: r.network_title, country: r.country_code, volShare: n(r.vol_share), rank: n(r.price_rank) },
-  }));
+  return rows.map((r) => {
+    // What the same loads would have earned at the best network's price: the cost of the inversion over the window.
+    const revPerK = n(r.rev_per_k), bestPerK = n(r.best_rev_per_k), loads = n(r.loads);
+    const risk = Math.max(0, ((bestPerK - revPerK) * loads) / 1000);
+    return {
+      rule: "waterfall_inversion", entityKey: `site:${r.site_id}|country:${r.country_code}|net:${r.network_title}`, level: "WARNING",
+      title: `Инверсия waterfall: ${r.network_title} ${where(r.country_code, r.domain)}`,
+      message: `${r.network_title} — ${n(r.price_rank)}-я по цене (${cpm(revPerK)} за 1000 loads против ${cpm(bestPerK)} у ${r.best}), но держит ${pct(n(r.vol_share))} объёма. По цене ${r.best} эти ${int(loads)} loads за 7 дней дали бы на ${money(risk)} больше.`,
+      action: `Переставить ниже в waterfall, объём отдать ${r.best}.`,
+      link: `/sites/${r.domain}?by=networks&preset=7d`, siteId: r.site_id, moneyAtRisk: risk,
+      payload: { network: r.network_title, country: r.country_code, volShare: n(r.vol_share), rank: n(r.price_rank), revPerK, bestRevPerK: bestPerK, best: r.best, loads, days: 7 },
+    };
+  });
 }
 
 /** 3. Discrepancy > 25% two days in a row with > 5000 impressions; negative & ×2 → critical. */
 async function discrepancyRule({ db, asOf }: RuleContext): Promise<Candidate[]> {
-  const rows = await db.$queryRaw<{ site_id: string; domain: string; network_title: string; country_code: string; own: unknown; network: unknown; days: unknown }[]>`
+  const rows = await db.$queryRaw<{ site_id: string; domain: string; network_title: string; country_code: string; own: unknown; network: unknown; revenue: unknown; days: unknown }[]>`
     WITH d AS (
-      SELECT g.date, g.site_id, g.network_title, g.country_code, SUM(g.imps_own) own, SUM(g.imps_network) network
+      SELECT g.date, g.site_id, g.network_title, g.country_code, SUM(g.imps_own) own, SUM(g.imps_network) network, SUM(g.revenue) revenue
       FROM v_network_geo g JOIN "Network" nw ON nw.id = g.network_id
       WHERE g.date >= ${day(addDays(asOf, -2))} AND g.date < ${day(asOf)} AND NOT nw."isSystem"
       GROUP BY 1, 2, 3, 4
       HAVING SUM(imps_own) > 5000 AND ABS(SUM(imps_own) - SUM(imps_network))::numeric / SUM(imps_own) > 0.25
     )
-    SELECT d.site_id, s.domain, d.network_title, d.country_code, SUM(d.own) own, SUM(d.network) network, COUNT(*) days
+    SELECT d.site_id, s.domain, d.network_title, d.country_code, SUM(d.own) own, SUM(d.network) network, SUM(d.revenue) revenue, COUNT(*) days
     FROM d JOIN "Site" s ON s.id = d.site_id WHERE s.status <> 'ARCHIVED' GROUP BY 1, 2, 3, 4 HAVING COUNT(*) = 2`;
   return rows.map((r) => {
     const own = n(r.own), net = n(r.network), disc = (own - net) / own, mult = net / own;
     const critical = disc < 0 && mult > 2;
+    // The impressions in dispute, priced at what the network paid per 1000 of the ones it counted: an estimate of
+    // the money the two counters disagree about over the two days.
+    const netCpm = net > 0 ? (n(r.revenue) / net) * 1000 : 0;
+    const risk = (Math.abs(own - net) * netCpm) / 1000;
     return {
       rule: "discrepancy", entityKey: `site:${r.site_id}|country:${r.country_code}|net:${r.network_title}`,
       level: critical ? "CRITICAL" : "WARNING",
       title: `Дискрепанси ${pct(disc)}: ${r.network_title} ${where(r.country_code, r.domain)}`,
-      message: `2 дня подряд: наши показы ${int(own)}, у сетки ${int(net)} (×${mult.toFixed(2)}).`,
+      message: `2 дня подряд: наши показы ${int(own)}, у сетки ${int(net)} (×${mult.toFixed(2)}). Разница ${int(Math.abs(own - net))} показов по CPM сетки ${cpm(netCpm)} — ≈${money(risk)} (оценка).`,
       action: critical ? "Перевести дил на оплату за загрузку." : "Сверить счётчики.",
-      link: `/sites/${r.domain}?by=networks&preset=7d`, siteId: r.site_id, moneyAtRisk: 0,
-      payload: { own, network: net, discrepancy: disc, multiplier: mult },
+      link: `/sites/${r.domain}?by=networks&preset=7d`, siteId: r.site_id, moneyAtRisk: risk,
+      payload: { own, network: net, discrepancy: disc, multiplier: mult, networkCpm: netCpm, estimate: true, days: 2 },
     };
   });
 }
@@ -180,19 +191,25 @@ async function deadZone({ db, asOf }: RuleContext): Promise<Candidate[]> {
 
 /** 6. Low fill: format fill rate < 25% with > 100 000 page loads in 7 days. */
 async function lowFill({ db, asOf }: RuleContext): Promise<Candidate[]> {
-  const rows = await db.$queryRaw<{ site_id: string; domain: string; format: string; loads: unknown; imps: unknown }[]>`
-    SELECT f.site_id, s.domain, f.format, SUM(f.page_loads) loads, SUM(f.imps_own) imps
+  const rows = await db.$queryRaw<{ site_id: string; domain: string; format: string; loads: unknown; imps: unknown; revenue: unknown }[]>`
+    SELECT f.site_id, s.domain, f.format, SUM(f.page_loads) loads, SUM(f.imps_own) imps, SUM(f.revenue) revenue
     FROM v_format_daily f JOIN "Site" s ON s.id = f.site_id
     WHERE f.date >= ${day(addDays(asOf, -7))} AND f.date < ${day(asOf)} AND s.status <> 'ARCHIVED'
     GROUP BY 1, 2, 3 HAVING SUM(f.page_loads) > 100000 AND SUM(f.imps_own)::numeric / SUM(f.page_loads) < 0.25`;
-  return rows.map((r) => ({
-    rule: "low_fill", entityKey: `site:${r.site_id}|format:${r.format}`, level: "WARNING",
-    title: `Низкий фил ${FORMAT_WORD[r.format] ?? r.format} на ${r.domain}`,
-    message: `Fill rate ${pct(n(r.imps) / n(r.loads))} на ${int(n(r.loads))} запросах за 7 дней.`,
-    action: "Подключить бэкфилл-сетку на формат.",
-    link: `/sites/${r.domain}?by=formats&preset=7d`, siteId: r.site_id, moneyAtRisk: 0,
-    payload: { fillRate: n(r.imps) / n(r.loads), loads: n(r.loads) },
-  }));
+  return rows.map((r) => {
+    // A backfill network fills the empty requests at a worse price: a quarter of the format's own CPM is the
+    // conservative estimate of what the unfilled loads could bring.
+    const loads = n(r.loads), imps = n(r.imps), fmtCpm = imps > 0 ? (n(r.revenue) / imps) * 1000 : 0;
+    const risk = ((loads - imps) * fmtCpm * 0.25) / 1000;
+    return {
+      rule: "low_fill", entityKey: `site:${r.site_id}|format:${r.format}`, level: "WARNING",
+      title: `Низкий фил ${FORMAT_WORD[r.format] ?? r.format} на ${r.domain}`,
+      message: `Fill rate ${pct(imps / loads)} на ${int(loads)} запросах за 7 дней. ${int(loads - imps)} незаполненных запросов по четверти CPM формата (${cpm(fmtCpm)}) — ≈${money(risk)} (оценка).`,
+      action: "Подключить бэкфилл-сетку на формат.",
+      link: `/sites/${r.domain}?by=formats&preset=7d`, siteId: r.site_id, moneyAtRisk: risk,
+      payload: { fillRate: imps / loads, loads, formatCpm: fmtCpm, estimate: true, days: 7 },
+    };
+  });
 }
 
 /** 7. Deal period closed more than 7 days ago without advertiser numbers. */
@@ -369,8 +386,13 @@ export async function evaluateAlerts(ctx: RuleContext): Promise<{ active: number
   return { active: seen.size, resolved: stale.length };
 }
 
-/** "Принято к сведению": hides an alert for 30 days, remembering money at risk at that moment. */
-export async function snoozeAlert(db: PrismaClient, id: string, days = 30): Promise<void> {
+/** How long "Принято к сведению" hides an alert: a month when money is at risk (growth ×2 wakes it earlier); a week when nothing is priced (ingest, a deal without numbers) — such an alert has no number that could wake it. */
+export const SNOOZE_DAYS = { priced: 30, unpriced: 7 } as const;
+export const snoozeDays = (moneyAtRisk: number) => (moneyAtRisk > 0 ? SNOOZE_DAYS.priced : SNOOZE_DAYS.unpriced);
+
+/** "Принято к сведению": hides an alert, remembering money at risk at that moment. */
+export async function snoozeAlert(db: PrismaClient, id: string, days?: number): Promise<void> {
   const a = await db.alert.findUniqueOrThrow({ where: { id } });
-  await db.alert.update({ where: { id }, data: { snoozedUntil: new Date(Date.now() + days * 86_400_000), snoozedRisk: a.moneyAtRisk } });
+  const d = days ?? snoozeDays(Number(a.moneyAtRisk));
+  await db.alert.update({ where: { id }, data: { snoozedUntil: new Date(Date.now() + d * 86_400_000), snoozedRisk: a.moneyAtRisk } });
 }

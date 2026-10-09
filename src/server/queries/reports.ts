@@ -153,18 +153,32 @@ export async function networksTable(p: Period, s: Scope = {}, countryCode?: stri
     inverted: i + 1 > 3 && (x.volShare ?? 0) > 0.3 })).map(({ excluded: _e, ...x }) => ({ ...x, floor }));
 }
 
+/** Thresholds of alert №5 «мёртвая зона» (src/server/domain/alerts/rules.ts): the badge on the site page uses the same ones. */
+export const DEAD_ZONE = { minImps: 50_000, maxRevShare: 0.01, minImpShare: 0.05 } as const;
+
 export async function zonesTable(p: Period, siteId: string) {
   const rows = await db.$queryRaw<Raw[]>`
     SELECT z.zone_id id, z.zone_name name, z.format, z.position, SUM(z.imps_own)::float8 imps, SUM(z.views)::float8 views, SUM(z.revenue)::float8 revenue
     FROM v_zone_daily z WHERE z.site_id = ${siteId} AND z.date BETWEEN ${D(p.from)} AND ${D(p.to)}
     GROUP BY 1, 2, 3, 4 ORDER BY revenue DESC`;
   const total = rows.reduce((a, r) => a + n(r.revenue), 0);
+  // Per format: CPM is only comparable within a format (docs 06), so «кандидат на снос» is judged against the site's
+  // zones of the same format with the thresholds of alert №5 — under 1% of their revenue while holding over 5% of
+  // their impressions, ≥ 50 000 impressions, more than one zone of the format.
+  const byFormat = new Map<string, { revenue: number; imps: number; zones: number }>();
+  for (const r of rows) {
+    const f = byFormat.get(String(r.format)) ?? { revenue: 0, imps: 0, zones: 0 };
+    f.revenue += n(r.revenue); f.imps += n(r.imps); f.zones += 1; byFormat.set(String(r.format), f);
+  }
   return rows.map((r) => {
     const imps = n(r.imps), views = n(r.views), revenue = n(r.revenue), banner = r.format === "BANNER" || r.format === "NATIVE";
     const viewRate = banner ? m.viewRate(views, imps) : null, share = m.share(revenue, total);
+    const fmt = byFormat.get(String(r.format))!;
+    const formatShare = m.share(revenue, fmt.revenue), formatImpShare = m.share(imps, fmt.imps);
+    const candidateRemove = fmt.zones > 1 && imps >= DEAD_ZONE.minImps && formatShare != null && formatShare < DEAD_ZONE.maxRevShare && formatImpShare != null && formatImpShare > DEAD_ZONE.minImpShare;
     return { id: String(r.id), zone: String(r.name), format: String(r.format), position: r.position ? String(r.position) : null, imps, views: banner ? views : null,
-      viewRate, cpm: m.cpm(revenue, imps), viewableCpm: banner ? m.viewableCpm(revenue, views) : null, revenue, share,
-      candidateRemove: share != null && share < 0.01, invisible: viewRate != null && viewRate < 0.15 };
+      viewRate, cpm: m.cpm(revenue, imps), viewableCpm: banner ? m.viewableCpm(revenue, views) : null, revenue, share, formatShare,
+      candidateRemove, invisible: viewRate != null && viewRate < 0.15 };
   });
 }
 

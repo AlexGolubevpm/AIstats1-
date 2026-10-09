@@ -66,7 +66,7 @@ export async function createMcpServer(): Promise<McpServer> {
     inputSchema: { site: z.string(), date_from: date, date_to: date, country: z.string().length(2).optional() }, annotations: ro,
   }, wrap("get_network_matrix", getNetworkMatrix));
   server.registerTool("get_zones", {
-    description: "Зоны сайта: view rate, viewable CPM, доля выручки, флаги «не видна» (<15% view rate) и «кандидат на снос» (<1% выручки).",
+    description: "Зоны сайта: view rate, viewable CPM, доля выручки, флаги «не видна» (<15% view rate) и «кандидат на снос» (порог алерта «мёртвая зона» внутри формата: <1% выручки зон формата при >5% их показов, ≥50 000 показов).",
     inputSchema: { site: z.string(), date_from: date, date_to: date }, annotations: ro,
   }, wrap("get_zones", getZones));
   server.registerTool("get_alerts", {

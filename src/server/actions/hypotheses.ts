@@ -5,7 +5,7 @@ import { requireSession } from "@/server/session";
 import { createHypothesis, hypothesisFromAlert, setHypothesisStatus, type HypothesisTransition } from "@/server/services/hypotheses";
 import { guarded, money, opt, str, type ActionResult } from "./result";
 
-const touched = () => { revalidatePath("/hypotheses"); revalidatePath("/alerts"); revalidatePath("/"); };
+const touched = () => { revalidatePath("/hypotheses"); revalidatePath("/alerts"); revalidatePath("/"); revalidatePath("/sites/[domain]", "page"); };
 
 export async function createHypothesisAction(_: ActionResult, f: FormData): Promise<ActionResult> {
   await requireSession();
