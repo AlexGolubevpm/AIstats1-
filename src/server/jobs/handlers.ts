@@ -73,7 +73,7 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
         return { rows: r.rows, requests: client.requests };
       }
       const g = await ingestSiteGeo(deps, days(w.from, w.to), data.siteId, plan);
-      const z = await ingestSiteZones(deps, days(w.from, w.to), data.siteId);
+      const z = await ingestSiteZones(deps, days(w.from, w.to), data.siteId, plan);
       const c = await revshareCosts(db, w.from, w.to, data.siteId); // traffic source revenue → cost
       return { rows: g.rows + z.rows + c, requests: client.requests, partial: [...g.failed, ...(g.skipped ? [g.skipped] : []), ...z.failed] };
     });
@@ -141,7 +141,7 @@ async function runBackfill(ctx: JobContext, client: AsgClient, w: { from: string
           rows += (await ingestSiteTotals(deps, [day])).rows; // site totals only; days that already have countries are left alone
         } else {
           const g = await ingestSiteGeo(deps, [day], state!.siteId, plan);
-          const z = await ingestSiteZones(deps, [day], state!.siteId);
+          const z = await ingestSiteZones(deps, [day], state!.siteId, plan);
           rows += g.rows + z.rows + await revshareCosts(db, day, day, state!.siteId);
           partial.push(...g.failed, ...z.failed);
           if (g.skipped) { partial.push(g.skipped); state!.failed.push(day); state!.pending = state!.pending.filter((d) => d !== day); await saveBackfill(db, state!); continue; }

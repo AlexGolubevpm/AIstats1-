@@ -312,3 +312,29 @@ export async function dataExists(): Promise<boolean> {
   const [r] = await db.$queryRaw<{ c: boolean }[]>`SELECT EXISTS (SELECT 1 FROM "FactRevenueGeo") OR EXISTS (SELECT 1 FROM "FactTraffic") c`;
   return r.c;
 }
+
+/** Profile of the day: the site's loads, impressions and revenue by hour over the period (ADR 0016). Hours are UTC as ADOK reports them. */
+export async function hoursTable(p: Period, siteId: string) {
+  const rows = await db.$queryRaw<Raw[]>`
+    SELECT hour, SUM("pageLoads")::float8 loads, SUM("impsOwn")::float8 imps, SUM(clicks)::float8 clicks, SUM("revenueReported")::float8 revenue, COUNT(DISTINCT date)::int days
+    FROM "FactRevenueHour" WHERE "siteId" = ${siteId} AND date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY hour ORDER BY hour`;
+  const total = rows.reduce((a, r) => a + n(r.revenue), 0), totalLoads = rows.reduce((a, r) => a + n(r.loads), 0);
+  return rows.map((r) => {
+    const loads = n(r.loads), imps = n(r.imps), revenue = n(r.revenue), days = Math.max(1, n(r.days));
+    return { hour: n(r.hour), label: `${String(n(r.hour)).padStart(2, "0")}:00`, pageLoads: loads, loadsPerDay: loads / days, imps, fillRate: m.fillRate(imps, loads), ctr: m.ctr(n(r.clicks), imps),
+      revPer1k: m.revPer1kLoads(revenue, loads), revenue, revenuePerDay: revenue / days, share: m.share(revenue, total), loadsShare: m.share(loads, totalLoads), days };
+  });
+}
+
+/** Platforms (OS) or browsers of a site over the period (ADR 0016). */
+export async function techTable(p: Period, siteId: string, kind: "PLATFORM" | "BROWSER") {
+  const rows = await db.$queryRaw<Raw[]>`
+    SELECT name, SUM("pageLoads")::float8 loads, SUM("impsOwn")::float8 imps, SUM(clicks)::float8 clicks, SUM("revenueReported")::float8 revenue
+    FROM "FactRevenueTech" WHERE "siteId" = ${siteId} AND kind = ${kind}::"TechKind" AND date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY name ORDER BY revenue DESC`;
+  const total = rows.reduce((a, r) => a + n(r.revenue), 0), totalLoads = rows.reduce((a, r) => a + n(r.loads), 0);
+  return rows.map((r) => {
+    const loads = n(r.loads), imps = n(r.imps), revenue = n(r.revenue);
+    return { name: String(r.name), pageLoads: loads, loadsShare: m.share(loads, totalLoads), imps, fillRate: m.fillRate(imps, loads), ctr: m.ctr(n(r.clicks), imps),
+      revPer1k: m.revPer1kLoads(revenue, loads), cpm: m.cpm(revenue, imps), revenue, share: m.share(revenue, total) };
+  });
+}

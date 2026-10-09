@@ -18,12 +18,23 @@ import { db } from "@/server/db";
 import { D, costCoverage, dailyTotals, kpis } from "@/server/queries/common";
 import { SCOPE_LABEL, SOURCE_LABEL, STATUS_LABEL, type HypScope } from "@/server/domain/hypotheses";
 import { siteHypotheses } from "@/server/queries/hypotheses";
-import { devicesTable, formatsTable, networksTable, siteGeoWithNetworks, sourcesTable, zonesTable } from "@/server/queries/reports";
+import { devicesTable, formatsTable, hoursTable, networksTable, siteGeoWithNetworks, sourcesTable, techTable, zonesTable } from "@/server/queries/reports";
 import { SnoozeButton } from "../../alerts/snooze";
 import { HypothesisActions, ToHypothesisButton } from "../../hypotheses/client";
 
 type Props = { params: Promise<{ domain: string }>; searchParams: Promise<Record<string, string | undefined>> };
-const TABS = [{ id: "zones", label: "Зоны" }, { id: "formats", label: "Форматы" }, { id: "networks", label: "Сетки" }, { id: "geo", label: "Гео" }, { id: "devices", label: "Девайсы" }, { id: "sources", label: "Источники" }];
+const TABS = [{ id: "zones", label: "Зоны" }, { id: "formats", label: "Форматы" }, { id: "networks", label: "Сетки" }, { id: "geo", label: "Гео" }, { id: "devices", label: "Девайсы" },
+  { id: "platforms", label: "Платформы" }, { id: "hours", label: "Часы" }, { id: "sources", label: "Источники" }];
+const TECH_COLS: Column[] = [
+  { id: "name", header: "Платформа", kind: "text" }, { id: "pageLoads", header: "Page loads", kind: "int" }, { id: "loadsShare", header: "Доля трафика", kind: "share" },
+  { id: "imps", header: "Показы", kind: "int" }, { id: "fillRate", header: "Fill rate", kind: "percent" }, { id: "ctr", header: "CTR", kind: "percent", tooltip: "Клики / показы" },
+  { id: "revPer1k", header: "Rev/1000 loads", kind: "cpm" }, { id: "cpm", header: "CPM", kind: "cpm" }, { id: "revenue", header: "Выручка", kind: "money" }, { id: "share", header: "Доля", kind: "share" },
+];
+const HOUR_COLS: Column[] = [
+  { id: "label", header: "Час (UTC)", kind: "text" }, { id: "loadsPerDay", header: "Page loads / день", kind: "int" }, { id: "loadsShare", header: "Доля трафика", kind: "share" },
+  { id: "fillRate", header: "Fill rate", kind: "percent" }, { id: "ctr", header: "CTR", kind: "percent", tooltip: "Клики / показы" }, { id: "revPer1k", header: "Rev/1000 loads", kind: "cpm" },
+  { id: "revenuePerDay", header: "Выручка / день", kind: "money" }, { id: "share", header: "Доля выручки", kind: "share" },
+];
 
 const ZONE_COLS: Column[] = [
   { id: "zone", header: "Зона", kind: "text" }, { id: "format", header: "Формат", kind: "text" }, { id: "position", header: "Позиция", kind: "text" },
@@ -96,6 +107,23 @@ export default async function SitePage({ params, searchParams }: Props) {
     const g = await siteGeoWithNetworks(p, site.id);
     table = <DataTable id="g" exportName={`${site.domain}-geo`} defaultSort={{ id: "pageLoads", dir: "desc" }} columns={GEO_COLS} nestedColumns={NESTED_NET}
       rows={geoRows(g).map((r) => ({ ...r, _children: r.children }))} filters={[{ id: "loss", label: "Только убыточные", column: "margin", op: "lt", value: 0 }]} />;
+  } else if (by === "platforms") {
+    const [os, browsers] = await Promise.all([techTable(p, site.id, "PLATFORM"), techTable(p, site.id, "BROWSER")]);
+    table = (
+      <div className="flex flex-col gap-4">
+        {os.length === 0 && browsers.length === 0 && <p className="px-5 py-6 text-center text-sm text-muted">Разрезы по платформам и браузерам ещё не загружены — они включаются в плане «Разрезы ADOK» на Интеграциях и приходят ночью</p>}
+        {os.length > 0 && <DataTable id="os" exportName={`${site.domain}-platforms`} defaultSort={{ id: "revenue", dir: "desc" }} columns={TECH_COLS} rows={os.map((r) => ({ ...r, _key: r.name }))} />}
+        {browsers.length > 0 && <DataTable id="br" exportName={`${site.domain}-browsers`} defaultSort={{ id: "revenue", dir: "desc" }} columns={[{ ...TECH_COLS[0], header: "Браузер" }, ...TECH_COLS.slice(1)]} rows={browsers.map((r) => ({ ...r, _key: r.name }))} />}
+      </div>
+    );
+  } else if (by === "hours") {
+    const h = await hoursTable(p, site.id);
+    table = h.length === 0 ? <p className="px-5 py-6 text-center text-sm text-muted">Разрез по часам ещё не загружен — он включается в плане «Разрезы ADOK» на Интеграциях и приходит ночью</p> : (
+      <div className="flex flex-col gap-4">
+        <div className="px-5"><TrendChart xKey="label" height={200} kind="money" data={h.map((r) => ({ label: r.label, revenue: Math.round(r.revenuePerDay * 100) / 100 }))} series={[{ key: "revenue", label: "Выручка в среднем за день", color: "var(--accent)", type: "bar" }]} /></div>
+        <DataTable id="h" exportName={`${site.domain}-hours`} defaultSort={{ id: "hour", dir: "asc" }} columns={HOUR_COLS} rows={h.map((r) => ({ ...r, _key: String(r.hour) }))} />
+      </div>
+    );
   } else if (by === "sources") {
     const src = await sourcesTable(p, site.id);
     table = <DataTable id="s" exportName={`${site.domain}-sources`} defaultSort={{ id: "loads", dir: "desc" }} columns={SOURCE_COLS}

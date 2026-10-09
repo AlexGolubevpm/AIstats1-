@@ -37,6 +37,8 @@ model Site {
   revenueDev FactRevenueDevice[]
   trafficSrc FactTrafficSource[]
   revenueFmt FactRevenueFormat[]
+  revenueHr  FactRevenueHour[]
+  revenueTch FactRevenueTech[]
   placements SitePlacement[]
   dealPlaces DealPlace[]
   traffic    FactTraffic[]
@@ -295,6 +297,52 @@ model FactRevenueFormat {
   site            Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
 
   @@id([date, siteId, format])
+  @@index([date])
+}
+
+// AdSpyglass hour cut per site (group_by=hour, platforms_ids[]): the day's profile (ADR 0016).
+model FactRevenueHour {
+  date            DateTime @db.Date
+  siteId          String
+  hour            Int
+  requests        Int?
+  pageLoads       Int      @default(0)
+  impsOwn         Int      @default(0)
+  impsNetwork     Int      @default(0)
+  clicks          Int      @default(0)
+  brokerClicks    Int?
+  fillRateAsg     Decimal? @db.Decimal(7, 4)
+  revenueReported Decimal  @default(0) @db.Decimal(12, 4)
+  predictedIncome Decimal? @db.Decimal(12, 4)
+  site            Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@id([date, siteId, hour])
+  @@index([date])
+}
+
+enum TechKind {
+  PLATFORM
+  BROWSER
+}
+
+// AdSpyglass platform (OS) and browser cuts per site (group_by=platform|browser, platforms_ids[]), ADR 0016.
+model FactRevenueTech {
+  date            DateTime @db.Date
+  siteId          String
+  kind            TechKind
+  name            String
+  requests        Int?
+  pageLoads       Int      @default(0)
+  impsOwn         Int      @default(0)
+  impsNetwork     Int      @default(0)
+  clicks          Int      @default(0)
+  brokerClicks    Int?
+  fillRateAsg     Decimal? @db.Decimal(7, 4)
+  revenueReported Decimal  @default(0) @db.Decimal(12, 4)
+  predictedIncome Decimal? @db.Decimal(12, 4)
+  site            Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@id([date, siteId, kind, name])
   @@index([date])
 }
 

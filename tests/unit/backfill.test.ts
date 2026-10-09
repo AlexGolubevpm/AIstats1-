@@ -4,8 +4,8 @@ import { DEFAULT_PLAN } from "@/server/ingest/adspyglass/plan";
 
 describe("backfill arithmetic", () => {
   it("requests per day follow the plan; days that fit; default window", () => {
-    expect(requestsPerDay(27)).toBe(2 + 5 * 27); // the default plan: five per-site cuts
-    expect(requestsPerDay(27, "full", { ...DEFAULT_PLAN, cuts: { ...DEFAULT_PLAN.cuts, ad_type: false, device: false } })).toBe(2 + 3 * 27);
+    expect(requestsPerDay(27)).toBe(1 + 8 * 27); // the default plan: eight per-site cuts, zones per site (no account spot request)
+    expect(requestsPerDay(27, "full", { ...DEFAULT_PLAN, cuts: { ...DEFAULT_PLAN.cuts, ad_type: false, device: false, spot_site: false } })).toBe(2 + 5 * 27);
     expect(requestsPerDay(27, "totals")).toBe(1);
     expect(daysThatFit(270, 800, 300, 110)).toBe(2); // (800 − 300 − 270) / 110
     expect(daysThatFit(600, 800, 300, 110)).toBe(0);

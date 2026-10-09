@@ -1,8 +1,9 @@
 // AdSpyglass ingest. Request plan is built for ADOK's limits and set on /settings/integrations (plan.ts, ADR 0016):
 //  - hourly: ONE account-level request per day in the window (group_by=website) → site totals (country ZZ);
-//  - nightly: ONE account-level spot cut per day (the spot name carries the domain) → zones,
+//  - nightly: zones from the spot cut — per site with platforms_ids[] when the plan says so (the
+//    domain in the spot name is then only a check), otherwise ONE account-level request per day —
 //    and per site the enabled cuts: country (always), network (adnetwork_squashed), device, traffic
-//    source, ad_type (format).
+//    source, ad_type (format), hour, platform (OS), browser.
 // In the per-site country and device cuts ADOK scopes only the site's own fields; the ad network
 // side (broker_income, broker_hits) is not per site there, so the site total from the website cut
 // is spread over the cells instead (map.ts allocateBroker). The network cut is per site as is.
@@ -21,7 +22,8 @@ import { matchZonesToPlacements } from "@/server/services/inventory";
 import { CountryResolver } from "@/server/ingest/normalize";
 import { rawKey, type RawStore } from "@/server/ingest/raw-store";
 import { AsgClient, AsgError } from "./client";
-import { allocateBroker, mapCountryRows, mapDeviceRows, mapFormatRows, mapNetworkRows, mapSpotRows, mapTrafficSourceRows, mapWebsiteRows, optionalFields, type DeviceCell, type FormatCell, type GeoCell, type Measures, type NetworkCell, type TrafficSourceCell } from "./map";
+import { allocateBroker, mapCountryRows, mapDeviceRows, mapFormatRows, mapHourRows, mapNetworkRows, mapSpotRows, mapTechRows, mapTrafficSourceRows, mapWebsiteRows, optionalFields,
+  type DeviceCell, type FormatCell, type GeoCell, type HourCell, type Measures, type NetworkCell, type TechCell, type TrafficSourceCell } from "./map";
 import { DEFAULT_PLAN, type AsgPlan } from "./plan";
 
 export interface AsgIngestDeps { db: PrismaClient; client: AsgClient; raw: RawStore; runId: string }
@@ -181,6 +183,24 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
             rows += await writeFormats(db, date, s.id, fmts);
           } else failed.push(`${s.domain} ${date}: форматы не по сайту — пропущены`);
         }
+        if (on.hour) {
+          const hourBody = await client.report({ from: date, to: date, groupBy: "hour", websiteId: s.adsgSiteId! });
+          const hours = allocateBroker(mapHourRows(hourBody), siteTotal.get(s.adsgSiteId!));
+          if (scopedToSite(hours.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
+            await raw.put(rawKey("adspyglass", `hour/${s.adsgSiteId}`, date, runId), hourBody);
+            rows += await writeHours(db, date, s.id, hours);
+          } else failed.push(`${s.domain} ${date}: часы не по сайту — пропущены`);
+        }
+        for (const kind of ["PLATFORM", "BROWSER"] as const) {
+          if (!(kind === "PLATFORM" ? on.platform : on.browser)) continue;
+          const groupBy = kind === "PLATFORM" ? "platform" : "browser";
+          const techBody = await client.report({ from: date, to: date, groupBy, websiteId: s.adsgSiteId! });
+          const tech = allocateBroker(mapTechRows(techBody), siteTotal.get(s.adsgSiteId!));
+          if (scopedToSite(tech.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
+            await raw.put(rawKey("adspyglass", `${groupBy}/${s.adsgSiteId}`, date, runId), techBody);
+            rows += await writeTech(db, date, s.id, kind, tech);
+          } else failed.push(`${s.domain} ${date}: ${kind === "PLATFORM" ? "платформы" : "браузеры"} не по сайту — пропущены`);
+        }
         const gap = reconcile(rawCells.reduce((a, c) => a + c.m.predicted, 0), siteTotal.get(s.adsgSiteId!)?.predicted);
         if (gap != null) failed.push(`${s.domain} ${date}: сверка с итогом ADOK — выручка по странам расходится на ${(gap * 100).toFixed(1)}%`);
     } catch (e) {
@@ -215,6 +235,26 @@ export async function writeDevices(db: PrismaClient, date: string, siteId: strin
     db.factRevenueDevice.deleteMany({ where: { date: d(date), siteId } }),
     db.factRevenueDevice.createMany({ data }),
   ]);
+  return data.length;
+}
+
+/** Replaces the hour rows of (date, site): the day's profile (ADR 0016). */
+export async function writeHours(db: PrismaClient, date: string, siteId: string, cells: HourCell[]): Promise<number> {
+  const data = cells.filter((c) => c.m.pageLoads || c.m.impsOwn || c.m.revenue).map((c) => ({
+    date: d(date), siteId, hour: c.hour, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork,
+    clicks: c.m.clicks, revenueReported: dec(c.m.revenue), ...optionalFields(c.m),
+  }));
+  await db.$transaction([db.factRevenueHour.deleteMany({ where: { date: d(date), siteId } }), db.factRevenueHour.createMany({ data })]);
+  return data.length;
+}
+
+/** Replaces the platform (OS) or browser rows of (date, site). */
+export async function writeTech(db: PrismaClient, date: string, siteId: string, kind: "PLATFORM" | "BROWSER", cells: TechCell[]): Promise<number> {
+  const data = cells.filter((c) => c.m.pageLoads || c.m.impsOwn || c.m.revenue).map((c) => ({
+    date: d(date), siteId, kind, name: c.name, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork,
+    clicks: c.m.clicks, revenueReported: dec(c.m.revenue), ...optionalFields(c.m),
+  }));
+  await db.$transaction([db.factRevenueTech.deleteMany({ where: { date: d(date), siteId, kind } }), db.factRevenueTech.createMany({ data })]);
   return data.length;
 }
 
@@ -290,10 +330,13 @@ export async function writeNetworks(db: PrismaClient, date: string, siteId: stri
 }
 
 /**
- * Nightly: zones from ONE account-level spot cut per day. "491410. Name (domain.com)": the
- * domain assigns the zone to a site; spots of unknown domains are skipped.
+ * Nightly: zones from the spot cut. With `plan.cuts.spot_site` one request per site with
+ * platforms_ids[] (zones belong to the filtered site; a response naming other domains means the
+ * filter was ignored — that day falls back to the account request). Otherwise ONE account-level
+ * request per day: "491410. Name (domain.com)" — the domain assigns the zone to a site; spots of
+ * unknown domains are skipped.
  */
-export async function ingestSiteZones(deps: AsgIngestDeps, dates: string[], siteFilter?: string): Promise<{ rows: number; failed: string[] }> {
+export async function ingestSiteZones(deps: AsgIngestDeps, dates: string[], siteFilter?: string, plan: AsgPlan = DEFAULT_PLAN): Promise<{ rows: number; failed: string[] }> {
   const { db, client, raw, runId } = deps;
   const sites = await db.site.findMany({ where: { status: "ACTIVE", ...(siteFilter ? { id: siteFilter } : {}) } });
   const byDomain = new Map(sites.map((s) => [s.domain, s]));
@@ -302,13 +345,30 @@ export async function ingestSiteZones(deps: AsgIngestDeps, dates: string[], site
   const failed: string[] = [];
   for (const date of dates) {
     try {
-      const body = await client.report({ from: date, to: date, groupBy: "spot" });
-      await raw.put(rawKey("adspyglass", "spot", date, runId), body);
       const bySite = new Map<string, ReturnType<typeof mapSpotRows>>();
-      for (const c of mapSpotRows(body)) {
-        const site = c.domain ? byDomain.get(c.domain) : undefined;
-        if (!site) continue;
-        bySite.set(site.id, [...(bySite.get(site.id) ?? []), c]);
+      let perSiteOk = false;
+      if (plan.cuts.spot_site) {
+        perSiteOk = true;
+        for (const s of sites.filter((x) => x.adsgSiteId != null)) {
+          const body = await client.report({ from: date, to: date, groupBy: "spot", websiteId: s.adsgSiteId! });
+          const cells = mapSpotRows(body);
+          const foreign = cells.filter((c) => c.domain && c.domain !== s.domain).length;
+          if (foreign > 0 && foreign >= cells.length / 2) { // the account came back: the filter was ignored
+            failed.push(`${s.domain} ${date}: зоны не по сайту — взят общий запрос`);
+            perSiteOk = false; bySite.clear(); break;
+          }
+          await raw.put(rawKey("adspyglass", `spot/${s.adsgSiteId}`, date, runId), body);
+          bySite.set(s.id, cells);
+        }
+      }
+      if (!perSiteOk) {
+        const body = await client.report({ from: date, to: date, groupBy: "spot" });
+        await raw.put(rawKey("adspyglass", "spot", date, runId), body);
+        for (const c of mapSpotRows(body)) {
+          const site = c.domain ? byDomain.get(c.domain) : undefined;
+          if (!site) continue;
+          bySite.set(site.id, [...(bySite.get(site.id) ?? []), c]);
+        }
       }
       for (const [siteId, cells] of bySite) {
         await db.$transaction(async (tx) => {

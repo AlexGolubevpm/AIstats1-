@@ -90,8 +90,8 @@ describe("job handlers", () => {
 });
 
 describe("asg:backfill", () => {
-  // Factory sites s1..s3 have adsgSiteId 1..3; one day = 2 + 5 × 3 = 17 requests (the default plan: five per-site cuts).
-  // The backfill keeps the plan's own reserve: 3 nights × 17 + 24 hourly + 30 margin = 105.
+  // Factory sites s1..s3 have adsgSiteId 1..3; one day = 1 + 8 × 3 = 25 requests (the default plan: eight per-site cuts, zones per site).
+  // The backfill keeps the plan's own reserve: 3 nights × 25 + 24 hourly + 30 margin = 129.
   const fakeApi = (() => {
     const fetchImpl = (async (u: URL | string) => {
       const url = new URL(String(u)), g = url.searchParams.get("group_by"), site = url.searchParams.get("platforms_ids[]");
@@ -101,16 +101,18 @@ describe("asg:backfill", () => {
       if (g === "device") return new Response(JSON.stringify([{ name: "Desktop", hits: 1000, impressions: 500, broker_income: 10, predicted_income: 10 }]));
       if (g === "traffic_source") return new Response(JSON.stringify([{ name: "TubeCrown", hits: 1000, broker_income: 4 }, { name: "Direct", hits: 0, broker_income: 6 }]));
       if (g === "ad_type") return new Response(JSON.stringify([{ name: "Popunder", hits: 1000, impressions: 500, requests: 900, fill_rate: 50, broker_income: 10, predicted_income: 10 }]));
-      if (g === "spot") return new Response(JSON.stringify([{ name: `49${site ?? "1"}. Footer (one.test)`, hits: 100, broker_income: 1 }]));
+      if (g === "spot") return new Response(JSON.stringify([{ name: `49${site ?? "1"}. Footer (${["one", "two", "three"][Number(site ?? 1) - 1]}.test)`, hits: 100, broker_income: 1 }]));
+      if (g === "hour") return new Response(JSON.stringify([{ name: "13:00", hits: 600, broker_income: 6 }, { name: "14:00", hits: 400, broker_income: 4 }]));
+      if (g === "platform") return new Response(JSON.stringify([{ name: "Android", hits: 700, broker_income: 7 }, { name: "Windows", hits: 300, broker_income: 3 }]));
       return new Response("[]");
     }) as typeof fetch;
     return fetchImpl;
   })();
   const cfg = (budget: number) => config({ ASG_AUTH_EMAIL: "e", ASG_AUTH_TOKEN: "t", ASG_MIN_INTERVAL_MS: "0", ASG_DAILY_BUDGET: String(budget) });
-  const RESERVE = 3 * 17 + 24 + 30;
+  const RESERVE = 3 * 25 + 24 + 30;
 
   it("ingests the newest pending days that fit the budget minus the reserve, stops, continues next day and finishes with derive", async () => {
-    const ctx = { db, cfg: cfg(RESERVE + 17 * 2 + 1), raw, today, fetchImpl: fakeApi };
+    const ctx = { db, cfg: cfg(RESERVE + 25 * 2 + 1), raw, today, fetchImpl: fakeApi };
     expect((await runJob("asg:backfill", ctx, {})).skipped).toContain("нечего"); // no window set: the half-hourly tick is a no-op
     const r1 = await runJob("asg:backfill", ctx, { from: "2026-09-01", to: "2026-09-03" });
     expect(r1.status).toBe("partial"); // stopped on the budget with one day left
@@ -122,9 +124,12 @@ describe("asg:backfill", () => {
     expect((await runJob("asg:backfill", ctx, {})).status).toBe("partial"); // same day: nothing fits, stops at once without requests
     expect((await db.ingestRun.findFirstOrThrow({ where: { job: "asg:backfill" }, orderBy: { startedAt: "desc" } })).requests).toBe(0);
     const run = await db.ingestRun.findFirstOrThrow({ where: { job: "asg:backfill" }, orderBy: { startedAt: "asc" } });
-    expect([run.dateFrom.toISOString().slice(0, 10), run.dateTo.toISOString().slice(0, 10), run.requests]).toEqual(["2026-09-02", "2026-09-03", 34]);
+    expect([run.dateFrom.toISOString().slice(0, 10), run.dateTo.toISOString().slice(0, 10), run.requests]).toEqual(["2026-09-02", "2026-09-03", 50]);
     expect(await db.factRevenueGeo.count({ where: { date: new Date("2026-09-03T00:00:00Z"), countryCode: "JP" } })).toBe(3);
     expect(await db.factRevenueFormat.count({ where: { date: new Date("2026-09-03T00:00:00Z"), format: "POPUNDER", requests: 900 } })).toBe(3); // the ad_type cut per site
+    expect(await db.factRevenueHour.count({ where: { date: new Date("2026-09-03T00:00:00Z"), hour: 13 } })).toBe(3);
+    expect(await db.factRevenueTech.count({ where: { date: new Date("2026-09-03T00:00:00Z"), kind: "PLATFORM", name: "Android" } })).toBe(3);
+    expect(await db.factRevenueZone.count({ where: { date: new Date("2026-09-03T00:00:00Z") } })).toBe(3); // zones per site: one per site
     expect(await db.factCost.count({ where: { date: new Date("2026-09-03T00:00:00Z"), origin: "ASG" } })).toBe(3); // TubeCrown cost per site
     // Next UTC day: the budget counter is fresh, the last day lands and derive runs over the window.
     await db.appSetting.deleteMany({ where: { key: { startsWith: "asg_requests:" } } });
@@ -173,7 +178,7 @@ describe("asg:backfill — только итоги", () => {
       urls.push(String(u));
       return new Response(JSON.stringify([1, 2, 3].map((i) => ({ name: `${i}. ${["one", "two", "three"][i - 1]}.test`, hits: 500, broker_income: 7 }))));
     }) as typeof fetch;
-    const cfg = config({ ASG_AUTH_EMAIL: "e", ASG_AUTH_TOKEN: "t", ASG_MIN_INTERVAL_MS: "0", ASG_DAILY_BUDGET: "200" }); // the plan's reserve on 3 sites is 105
+    const cfg = config({ ASG_AUTH_EMAIL: "e", ASG_AUTH_TOKEN: "t", ASG_MIN_INTERVAL_MS: "0", ASG_DAILY_BUDGET: "200" }); // the plan's reserve on 3 sites is 129
     const ctx = { db, cfg, raw, today, fetchImpl };
     // 2026-09-20 already has JP/US rows from the factory; 09-18 and 09-19 are empty.
     const r = await runJob("asg:backfill", ctx, { from: "2026-09-18", to: "2026-09-20", mode: "totals" });
