@@ -7,11 +7,21 @@ import { Section } from "@/components/ui/card";
 import { fmtPercent } from "@/lib/format";
 import { periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
-import { geoMatrix, geoTable } from "@/server/queries/reports";
+import { geoByTier, geoMatrix, geoTable } from "@/server/queries/reports";
+import { TierChips } from "@/components/pages/tier-chips";
+import type { Column } from "@/components/data/format-cell";
+
+const TIER_COLS: Column[] = [
+  { id: "label", header: "Тир", kind: "text" }, { id: "countries", header: "Стран", kind: "int" }, { id: "uniques", header: "Уники", kind: "int" }, { id: "pageLoads", header: "Page loads", kind: "int" },
+  { id: "revenue", header: "Выручка", kind: "money" }, { id: "share", header: "Доля", kind: "share" }, { id: "cost", header: "Расход", kind: "money" },
+  { id: "margin", header: "Маржа", kind: "money", heat: "sign" }, { id: "romi", header: "ROMI", kind: "romi" }, { id: "revPer1k", header: "Rev/1000 loads", kind: "cpm" },
+];
 
 export default async function Geo({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
-  const p = periodFromParams(await searchParams, "7d");
-  const [rows, matrix, unresolved] = await Promise.all([geoTable(p, {}, 0), geoMatrix(p), db.unresolvedAlias.aggregate({ _sum: { rows: true } })]);
+  const sp = await searchParams;
+  const p = periodFromParams(sp, "7d");
+  const tier = /^[1-5]$/.test(sp.tier ?? "") ? Number(sp.tier) : null;
+  const [rows, matrix, unresolved, tiers] = await Promise.all([geoTable(p, {}, 0, tier), geoMatrix(p), db.unresolvedAlias.aggregate({ _sum: { rows: true } }), geoByTier(p)]);
   const withCost = rows.filter((r) => r.cost > 0);
   const losing = withCost.filter((r) => r.margin < 0);
   const cost = withCost.reduce((a, r) => a + r.cost, 0), rev = withCost.reduce((a, r) => a + r.revenue, 0);
@@ -30,7 +40,11 @@ export default async function Geo({ searchParams }: { searchParams: Promise<Reco
         <KpiCard label="Расход в убыточных гео" value={losing.reduce((a, r) => a + r.cost, 0)} format="money" color="#E11D48" sub="оценка" />
         <KpiCard label="ROMI гео с расходом" value={cost ? ((rev - cost) / cost) * 100 : null} format="percent" color="#16A34A" sub="оценка" />
       </div>
-      <Section title="Страны">
+      <Section title="По тирам" sub="Куда уходят деньги и расход по тирам стран (Настройки → Гео и тиры); «Без страны» не учитывается">
+        {tiers.length === 0 ? <p className="text-sm text-muted">Нет данных по странам за период</p> :
+          <DataTable id="tiers" exportName="geo-tiers" defaultSort={{ id: "tier", dir: "asc" }} columns={TIER_COLS} rows={tiers.map((r) => ({ ...r, _key: String(r.tier), _href: `/geo?tier=${r.tier}` }))} />}
+      </Section>
+      <Section title={tier ? `Страны · T${tier}` : "Страны"} actions={<TierChips active={tier} params={sp} />}>
         <DataTable id="geo" exportName="geo" defaultSort={{ id: "cost", dir: "desc" }}
           columns={[...GEO_COLS.slice(0, 2), { id: "sites", header: "Сайтов", kind: "int" }, ...GEO_COLS.slice(2, 4), { id: "costPerUnique", header: "Cost/unique", kind: "cpm" }, ...GEO_COLS.slice(4)]}
           rows={geoRows(rows)}

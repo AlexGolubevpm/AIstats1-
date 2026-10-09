@@ -3,7 +3,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/cn";
 
-const ITEMS = [["sites", "Сайты"], ["bundles", "Бандлы"], ["costs", "Закупка"], ["networks", "Сетки"], ["integrations", "Интеграции"], ["access", "Доступ"]];
+const ITEMS = [["sites", "Сайты"], ["bundles", "Бандлы"], ["costs", "Закупка"], ["networks", "Сетки"], ["geo", "Гео и тиры"], ["integrations", "Интеграции"], ["access", "Доступ"]];
 
 export function SettingsNav() {
   const path = usePathname();

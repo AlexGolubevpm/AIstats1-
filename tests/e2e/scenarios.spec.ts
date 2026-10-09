@@ -344,3 +344,20 @@ test("site page: KPI cards compare with the bundle and the network, «Динам
   await expect(page).toHaveURL(/by=formats/);
   await expect(page.getByText("Fill rate форматов по дням")).toBeVisible();
 });
+
+test("tiers: the settings page changes a country's tier with an audit line, the geo page filters by tier, the deal form offers T1–T5", async ({ page }) => {
+  await login(page, "/settings/geo");
+  await expect(page.getByTestId("tiers-table")).toBeVisible();
+  await page.locator("input[name=bulk]").fill("T2: JP");
+  await page.getByRole("button", { name: "Применить" }).click();
+  await expect(page.getByText(/Изменено стран: 1/)).toBeVisible();
+  await expect(page.getByText(/JP: T1 → T2/)).toBeVisible();
+  await page.goto("/geo?preset=30d&tier=2");
+  await expect(page.getByTestId("tier-chips")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Страны · T2" })).toBeVisible();
+  await expect(page.locator("section", { hasText: "Страны · T2" }).locator("table tbody").first()).toContainText("JP");
+  await page.goto("/deals");
+  await page.getByRole("button", { name: /Новый дил|Новый фикс-дил/ }).first().click();
+  await expect(page.getByTestId("deal-tiers")).toBeVisible();
+  await expect(page.getByTestId("deal-tiers").locator("input[name=geoTiers]")).toHaveCount(5);
+});

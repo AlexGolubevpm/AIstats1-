@@ -20,13 +20,17 @@ export async function dealCounters(db: PrismaClient, dealId: string, from: strin
   const deal = await db.deal.findUniqueOrThrow({ where: { id: dealId }, include: { sites: true, places: true } });
   const out: Counter[] = [];
   const range = { gte: d(from), lte: d(to) };
+  // Tiers are resolved at counting time, so a tier edit on /settings/geo reaches every deal at the next forecast (ADR 0017).
+  const tiers = deal.geoTiers.length ? new Map((await db.country.findMany({ select: { code: true, tier: true } })).map((c) => [c.code, c.tier])) : null;
+  const tierOf = (code: string) => tiers?.get(code);
+  const scoped = deal.geoScope.length > 0 || deal.geoTiers.length > 0;
   for (const ds of deal.sites) {
     // Zones that stand on the deal's places on this site: the deal's own counter when no zone was chosen explicitly.
     // Only for CPM deals (impressions are per zone and add up) without a geo scope (zones carry no country). A deal
     // per 1000 loads keeps the site's loads: one page load is one unit however many zones fire on it.
     const placeSlugs = deal.places.filter((p) => p.siteId === ds.siteId).map((p) => p.placementSlug);
     const cpm = deal.paymentBasis === "CPM_OWN" || deal.paymentBasis === "CPM_ADVERTISER";
-    const placeZones = deal.counterSource === "ASG_ZONE" && !ds.zoneId && placeSlugs.length && cpm && !deal.geoScope.length
+    const placeZones = deal.counterSource === "ASG_ZONE" && !ds.zoneId && placeSlugs.length && cpm && !scoped
       ? await db.zone.findMany({ where: { siteId: ds.siteId, placementSlug: { in: placeSlugs } }, select: { id: true } }) : [];
     if (deal.counterSource === "ASG_ZONE" && ds.zoneId) {
       const rows = await db.factRevenueZone.findMany({ where: { zoneId: ds.zoneId, date: range } });
@@ -40,11 +44,11 @@ export async function dealCounters(db: PrismaClient, dealId: string, from: strin
       // A day with only the ZZ site total (no country cut yet) keeps it whatever the geo scope: otherwise a scoped deal gets no counters at all.
       const onlyZZ = new Set(rows.filter((r) => r.countryCode === "ZZ").map((r) => isoOf(r.date)));
       for (const r of rows) if (r.countryCode !== "ZZ") onlyZZ.delete(isoOf(r.date));
-      out.push(...rows.filter((r) => onlyZZ.has(isoOf(r.date)) || inGeoScope(deal, r.countryCode)).map((r) => ({ date: isoOf(r.date), siteId: ds.siteId, countryCode: r.countryCode,
+      out.push(...rows.filter((r) => onlyZZ.has(isoOf(r.date)) || inGeoScope(deal, r.countryCode, tierOf)).map((r) => ({ date: isoOf(r.date), siteId: ds.siteId, countryCode: r.countryCode,
         pageLoads: r._sum.pageLoads ?? 0, impsOwn: r._sum.impsOwn ?? 0 })));
     } else if (deal.counterSource === "METRIKA") {
       const rows = await db.factTraffic.groupBy({ by: ["date", "countryCode"], _sum: { pageviews: true }, where: { siteId: ds.siteId, date: range } });
-      out.push(...rows.filter((r) => inGeoScope(deal, r.countryCode)).map((r) => ({ date: isoOf(r.date), siteId: ds.siteId, countryCode: r.countryCode,
+      out.push(...rows.filter((r) => inGeoScope(deal, r.countryCode, tierOf)).map((r) => ({ date: isoOf(r.date), siteId: ds.siteId, countryCode: r.countryCode,
         pageLoads: r._sum.pageviews ?? 0, impsOwn: r._sum.pageviews ?? 0 })));
     }
   }
@@ -286,7 +290,7 @@ export async function correctPeriod(db: PrismaClient, periodId: string, input: E
 
 // ---------- deal terms ----------
 
-const TERM_FIELDS = ["title", "format", "paymentBasis", "price", "geoScope", "geoExclude", "startsAt", "endsAt", "billingPeriod",
+const TERM_FIELDS = ["title", "format", "paymentBasis", "price", "geoScope", "geoTiers", "geoExclude", "startsAt", "endsAt", "billingPeriod",
   "paymentTermsDays", "counterSource", "billedVia", "notes"] as const;
 
 /**
@@ -313,7 +317,7 @@ export async function saveDeal(db: PrismaClient, raw: DealInput, id?: string, re
   const before = id ? await db.deal.findUniqueOrThrow({ where: { id } }) : null;
   const format = await formatOf(db, places, i.format ?? before?.format);
   const data = {
-    title: i.title, advertiserId: advertiser.id, format: format as never, paymentBasis: i.paymentBasis, price: i.price, geoScope: i.geoScope,
+    title: i.title, advertiserId: advertiser.id, format: format as never, paymentBasis: i.paymentBasis, price: i.price, geoScope: i.geoScope, geoTiers: i.geoTiers ?? [],
     geoExclude: i.geoExclude, startsAt: d(i.startsAt), endsAt: i.endsAt ? d(i.endsAt) : null, billingPeriod: i.billingPeriod,
     paymentTermsDays: i.paymentTermsDays, counterSource: i.counterSource, billedVia: i.billedVia, notes: i.notes || null,
   };

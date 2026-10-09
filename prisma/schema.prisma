@@ -75,7 +75,7 @@ model Country {
   code    String         @id // ISO-3166 alpha-2; XX = unrecognised, ZZ = aggregate (zone cut)
   nameEn  String
   nameRu  String
-  tier    Int // 1 | 2 | 3; 0 for XX/ZZ
+  tier    Int // 1–5 (ADR 0017); 0 for XX/ZZ
   aliases CountryAlias[]
 
   @@index([tier])
@@ -493,6 +493,7 @@ model Deal {
   paymentBasis     PaymentBasis  @default(PER_1000_LOADS)
   price            Decimal       @db.Decimal(12, 5)
   geoScope         String[] // ISO codes; empty = all
+  geoTiers         Int[]         @default([]) // tiers 1–5 (ADR 0017): a country of these tiers is in scope; together with geoScope
   geoExclude       Boolean       @default(false) // true = "all except geoScope"
   startsAt         DateTime      @db.Date
   endsAt           DateTime?     @db.Date

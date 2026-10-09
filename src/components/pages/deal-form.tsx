@@ -10,7 +10,7 @@ import { saveDealAction } from "@/server/actions/deals";
 export interface DealFormSite { id: string; domain: string; zones: { id: string; name: string }[] }
 export interface DealFormValues {
   id?: string; title?: string; advertiser?: string; paymentBasis?: string; price?: string; siteIds?: string[]; zoneBySite?: Record<string, string | null>;
-  geoScope?: string; geoExclude?: boolean; startsAt?: string; endsAt?: string | null; billingPeriod?: string; paymentTermsDays?: number;
+  geoScope?: string; geoTiers?: number[]; geoExclude?: boolean; startsAt?: string; endsAt?: string | null; billingPeriod?: string; paymentTermsDays?: number;
   counterSource?: string; billedVia?: string; notes?: string | null; hasPeriods?: boolean;
   /** Zones (ad places) the deal occupies on every one of its sites. */
   placeSlugs?: string[];
@@ -85,9 +85,14 @@ export function DealFormButton({ sites, advertisers, placements = [], values = {
             </FormField>
           </div>
 
-          <div className="grid gap-4 sm:grid-cols-[1fr_auto]">
-            <FormField name="geoScope" label="Гео-скоуп" hint="Коды ISO через запятую или T1/T2/T3; пусто — все страны">
-              <Input name="geoScope" defaultValue={values.geoScope} placeholder="JP, KR или T1" className="font-mono" />
+          <div className="grid gap-4 sm:grid-cols-[auto_1fr_auto]">
+            <FormField name="geoTiers" label="Тиры" hint="Тир — страны этого тира из Настройки → Гео и тиры; следит за правками тиров">
+              <div className="flex h-9 items-center gap-3" data-testid="deal-tiers">{[1, 2, 3, 4, 5].map((t) => (
+                <label key={t} className="flex items-center gap-1 text-sm"><input type="checkbox" name="geoTiers" value={t} defaultChecked={values.geoTiers?.includes(t)} /> T{t}</label>
+              ))}</div>
+            </FormField>
+            <FormField name="geoScope" label="Страны" hint="Коды ISO через запятую в дополнение к тирам; пусто и без тиров — все страны">
+              <Input name="geoScope" defaultValue={values.geoScope} placeholder="JP, KR" className="font-mono" />
             </FormField>
             <label className="flex items-center gap-2 self-center pt-4 text-sm"><input type="checkbox" name="geoExclude" value="1" defaultChecked={values.geoExclude} /> все, кроме</label>
           </div>

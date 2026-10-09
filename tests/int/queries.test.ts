@@ -314,3 +314,18 @@ describe("site page: peers, dynamics, data quality, source ROMI (PR C)", () => {
     expect(src.revPer1k).toBeCloseTo(12);
   });
 });
+
+describe("geo by tier (ADR 0017)", () => {
+  it("the tier filter narrows the geo table; the tier summary sums the countries of each tier and skips «Без страны»", async () => {
+    const { geoByTier } = await import("@/server/queries/reports");
+    expect((await geoTable(P, {}, 0, 1)).map((r) => r.country).sort()).toEqual(["JP", "US"]); // both tier 1 in the factory
+    expect(await geoTable(P, {}, 0, 3)).toEqual([]);
+    await db.country.update({ where: { code: "US" }, data: { tier: 3 } });
+    expect((await geoTable(P, {}, 0, 3)).map((r) => r.country)).toEqual(["US"]);
+    expect((await siteGeoWithNetworks(P, "s1", 1)).map((r) => r.country)).toEqual(["JP"]);
+    const byTier = await geoByTier(P);
+    expect(byTier.map((r) => [r.label, r.countries])).toEqual([["T1", 1], ["T3", 1]]);
+    expect(byTier.reduce((a, r) => a + r.revenue, 0)).toBeCloseTo((await geoTable(P, {}, 0)).filter((r) => r.country !== "ZZ").reduce((a, r) => a + r.revenue, 0), 6);
+    expect((byTier[0].share ?? 0) + (byTier[1].share ?? 0)).toBeCloseTo(1, 6);
+  });
+});

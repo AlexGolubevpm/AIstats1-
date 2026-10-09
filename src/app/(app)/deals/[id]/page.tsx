@@ -9,7 +9,7 @@ import { Badge } from "@/components/ui/badge";
 import { Section } from "@/components/ui/card";
 import { cn } from "@/lib/cn";
 import { fmtDate, fmtInt, fmtMoney, fmtPercent } from "@/lib/format";
-import { closedPeriods, type BillingPeriod } from "@/server/domain/deals";
+import { closedPeriods, type BillingPeriod, geoScopeLabel } from "@/server/domain/deals";
 import { iso } from "@/server/queries/common";
 import { dealFormOptions } from "@/server/queries/deal-form";
 import { BASIS_LABEL, dealDetail } from "@/server/queries/deals";
@@ -17,7 +17,7 @@ import { DealStatusButtons } from "./status";
 
 const FIELD_LABEL: Record<string, string> = {
   created: "создан", status: "статус", payment: "оплата", correction: "исправление", title: "название", format: "формат", paymentBasis: "модель оплаты",
-  price: "цена", geoScope: "гео", geoExclude: "гео: кроме", startsAt: "начало", endsAt: "конец", billingPeriod: "период счёта", paymentTermsDays: "срок оплаты",
+  price: "цена", geoScope: "гео", geoTiers: "тиры", geoExclude: "гео: кроме", startsAt: "начало", endsAt: "конец", billingPeriod: "период счёта", paymentTermsDays: "срок оплаты",
   counterSource: "счётчик", billedVia: "биллинг", notes: "заметки", places: "места на сайтах",
 };
 
@@ -34,7 +34,7 @@ export default async function DealPage({ params }: { params: Promise<{ id: strin
   const hasReported = x.daily.some((d) => d.reported);
   const values = {
     id: deal.id, title: deal.title, advertiser: deal.advertiser.name, paymentBasis: deal.paymentBasis, price: deal.price.toString(),
-    siteIds: deal.sites.map((s) => s.siteId), zoneBySite: Object.fromEntries(deal.sites.map((s) => [s.siteId, s.zoneId])), geoScope: deal.geoScope.join(", "),
+    siteIds: deal.sites.map((s) => s.siteId), zoneBySite: Object.fromEntries(deal.sites.map((s) => [s.siteId, s.zoneId])), geoScope: deal.geoScope.join(", "), geoTiers: deal.geoTiers,
     geoExclude: deal.geoExclude, startsAt: iso(deal.startsAt), endsAt: deal.endsAt ? iso(deal.endsAt) : null, billingPeriod: deal.billingPeriod,
     paymentTermsDays: deal.paymentTermsDays, counterSource: deal.counterSource, billedVia: deal.billedVia, notes: deal.notes, hasPeriods: entered.length > 0,
     placeSlugs: [...new Set(deal.places.map((p) => p.placementSlug))],
@@ -43,7 +43,7 @@ export default async function DealPage({ params }: { params: Promise<{ id: strin
     <>
       <PageHeader crumbs={[{ href: "/deals", label: "Фикс-дилы" }]} title={`${deal.advertiser.name} · ${deal.title}`}
         badges={<><StatusBadge status={deal.status} />{deal.billedVia === "VIA_ASG" && <Badge>через AdSpyglass</Badge>}</>}
-        sub={`${[...new Set(deal.places.map((p) => p.placement.title))].sort().join(", ") || "без места"} · ${BASIS_LABEL[deal.paymentBasis]} · $${deal.price} · ${deal.sites.map((s) => s.site.domain).join(", ")}${deal.geoScope.length ? ` · ${deal.geoExclude ? "кроме " : ""}${deal.geoScope.slice(0, 8).join(", ")}${deal.geoScope.length > 8 ? "…" : ""}` : ""}`}
+        sub={`${[...new Set(deal.places.map((p) => p.placement.title))].sort().join(", ") || "без места"} · ${BASIS_LABEL[deal.paymentBasis]} · $${deal.price} · ${deal.sites.map((s) => s.site.domain).join(", ")}${deal.geoScope.length || deal.geoTiers.length ? ` · ${geoScopeLabel(deal)}` : ""}`}
         actions={<><DealFormButton sites={opts.sites} advertisers={opts.advertisers} placements={opts.placements} values={values} label="Редактировать условия" variant="secondary" />
           <DealStatusButtons id={deal.id} status={deal.status} title={deal.title} /></>} />
 

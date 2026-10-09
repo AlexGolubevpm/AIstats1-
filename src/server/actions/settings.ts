@@ -15,7 +15,7 @@ import { loadDemo } from "@/server/seed/load-demo";
 import { applyCostImport, previewCostImport, revertCostImport, type ImportPreview } from "@/server/services/costs";
 import {
   addCostRate, addCostSource, addSitesToBundle, setSourceShare, deleteBundle, mapAlias, missingAsgSites, removeSitesFromBundle, saveBundle, saveNetwork, saveSite,
-  setBundleSites, setSitesStatus, type RateInput,
+  setBundleSites, setCountryTiers, setSitesStatus, type RateInput,
 } from "@/server/services/settings";
 import { applyMetrikaCounters, connectMetrika, disconnectMetrika, metrikaCounters, saveMetrikaApp } from "@/server/services/metrika-connection";
 import { requireSession } from "@/server/session";
@@ -345,5 +345,30 @@ export async function saveAsgPlanAction(_: ActionResult, f: FormData): Promise<A
     const cost = planCost(plan, Math.max(1, sites), config().asg.dailyBudget);
     revalidatePath("/settings/integrations");
     return { ok: true, message: cost.over ? `План сохранён, но не влезает в бюджет: ${cost.total} запросов в сутки` : `План сохранён: ${cost.total} запросов в сутки, бэкфиллу остаётся ${cost.backfill}` };
+  });
+}
+
+// ---------- country tiers (ADR 0017) ----------
+
+export async function setCountryTierAction(code: string, tier: number): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const n = await setCountryTiers(db, { [code]: tier });
+    revalidatePath("/settings/geo");
+    return { ok: true, message: n ? `${code.toUpperCase()} → T${tier}` : "Без изменений" };
+  });
+}
+
+/** Bulk paste «T2: IT, ES; T3 BR MX». */
+export async function bulkTiersAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const { parseTierBulk } = await import("@/server/domain/tiers");
+    const { tiers, bad } = parseTierBulk(str(f, "bulk"));
+    if (bad.length) throw new RuleError("bulk", `Не понял: ${bad.slice(0, 5).join(", ")}${bad.length > 5 ? "…" : ""} — формат «T2: IT, ES; T3: BR»`, "bulk");
+    if (!Object.keys(tiers).length) throw new RuleError("bulk", "Ни одной страны не указано", "bulk");
+    const n = await setCountryTiers(db, tiers, opt(f, "reason"));
+    revalidatePath("/settings/geo");
+    return { ok: true, message: n ? `Изменено стран: ${n}` : "Все указанные страны уже в этих тирах" };
   });
 }

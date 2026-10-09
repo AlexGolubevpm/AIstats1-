@@ -217,25 +217,40 @@ export function siteBelowBundle(rows: BundleSiteRow[], days: number, minLoads = 
   return out;
 }
 
-export interface GeoRow { siteId: string; domain: string; countryCode: string; revenue: number; pageLoads: number }
-/** A country that pays well across the network but poorly on one site: the floor or the network for that geo is off. */
+export interface GeoRow { siteId: string; domain: string; countryCode: string; revenue: number; pageLoads: number; tier?: number | null }
+/**
+ * A country that pays well across the network but poorly on one site: the floor or the network for that geo is off.
+ * The benchmark is the same country on the other sites (≥ 3 sites); a country too thin for that is compared with the
+ * median of its tier across all site × country rows of the tier (ADR 0017), marked `benchmark: "tier"`.
+ */
 export function geoBelowNetwork(rows: GeoRow[], days: number, minLoads = 10_000): HypothesisCandidate[] {
   const out: HypothesisCandidate[] = [];
   const byCountry = new Map<string, GeoRow[]>();
-  for (const r of rows) if (r.countryCode !== "ZZ" && r.countryCode !== "XX" && r.pageLoads >= minLoads) byCountry.set(r.countryCode, [...(byCountry.get(r.countryCode) ?? []), r]);
+  const byTier = new Map<number, number[]>();
+  for (const r of rows) {
+    if (r.countryCode === "ZZ" || r.countryCode === "XX" || r.pageLoads < minLoads) continue;
+    byCountry.set(r.countryCode, [...(byCountry.get(r.countryCode) ?? []), r]);
+    if (r.tier) byTier.set(r.tier, [...(byTier.get(r.tier) ?? []), per1k(r.revenue, r.pageLoads)!]);
+  }
   for (const [cc, sites] of byCountry) {
-    if (sites.length < 3) continue;
-    const med = median(sites.map((s) => per1k(s.revenue, s.pageLoads)!))!;
+    const tier = sites[0].tier ?? null;
+    const tierRows = tier ? byTier.get(tier) ?? [] : [];
+    const byCountryOk = sites.length >= 3;
+    if (!byCountryOk && tierRows.length < 3) continue;
+    const med = byCountryOk ? median(sites.map((s) => per1k(s.revenue, s.pageLoads)!))! : median(tierRows)!;
     if (med <= 0) continue;
+    const against = byCountryOk ? "по сети" : `по тиру T${tier}`;
     for (const s of sites) {
       const cur = per1k(s.revenue, s.pageLoads)!;
       if (cur >= med * 0.7) continue;
       const impact = perMonth(((med - cur) * s.pageLoads) / 1000, days);
       out.push({
         ruleKey: "geo_below_network", objectKey: `site:${s.siteId}|country:${cc}`, scope: "geo", siteId: s.siteId, countryCode: cc,
-        title: `${cc} на ${s.domain} платит ${cpm(cur)} против ${cpm(med)} по сети`,
-        hypothesis: `Если поднять флор или сменить сетку для ${cc} на этом сайте, rev/1000 loads страны дойдёт до медианы сети: ${sites.length} сайтов с трафиком из ${cc} за ${days} дн., здесь ${pct(1 - cur / med)} ниже.`,
-        evidence: { days, revPer1k: round(cur), networkMedian: round(med), pageLoads: s.pageLoads, sites: sites.length },
+        title: `${cc} на ${s.domain} платит ${cpm(cur)} против ${cpm(med)} ${against}`,
+        hypothesis: byCountryOk
+          ? `Если поднять флор или сменить сетку для ${cc} на этом сайте, rev/1000 loads страны дойдёт до медианы сети: ${sites.length} сайтов с трафиком из ${cc} за ${days} дн., здесь ${pct(1 - cur / med)} ниже.`
+          : `Если поднять флор или сменить сетку для ${cc} на этом сайте, rev/1000 loads дойдёт до медианы тира T${tier}: страна есть лишь на ${sites.length} ${sites.length === 1 ? "сайте" : "сайтах"}, поэтому сравнение — с ${tierRows.length} парами сайт × страна того же тира за ${days} дн.; здесь ${pct(1 - cur / med)} ниже.`,
+        evidence: { days, revPer1k: round(cur), networkMedian: round(med), pageLoads: s.pageLoads, sites: byCountryOk ? sites.length : tierRows.length, benchmark: byCountryOk ? "country" : "tier", tier },
         impactMonth: round(impact, 2), link: `/sites/${s.domain}?by=geo&preset=7d`, metric: "rev_per_1k", level: levelOf(impact), source: "AUTO",
       });
     }
@@ -420,8 +435,9 @@ export function evidenceLine(ruleKey: string, evidence: unknown): string | null 
       return parts.join(" · ") + over;
     }
     case "geo_below_network": {
-      const parts = [`у вас ${cpm(ev(e, "revPer1k") ?? 0)}`, `медиана сети ${cpm(ev(e, "networkMedian") ?? 0)}`];
-      if (ev(e, "sites")) parts.push(sitesWord(ev(e, "sites")!));
+      const tierBench = evs(e, "benchmark") === "tier";
+      const parts = [`у вас ${cpm(ev(e, "revPer1k") ?? 0)}`, `${tierBench ? `медиана тира T${ev(e, "tier") ?? "?"}` : "медиана сети"} ${cpm(ev(e, "networkMedian") ?? 0)}`];
+      if (ev(e, "sites")) parts.push(tierBench ? `${ev(e, "sites")} пар сайт × страна` : sitesWord(ev(e, "sites")!));
       return parts.join(" · ") + over;
     }
     case "format_missing":

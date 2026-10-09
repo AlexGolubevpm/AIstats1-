@@ -103,7 +103,8 @@ export interface GeoRow {
  * Countries over the scope. No-country money is spread **per site** (a site's source cost lands on
  * that site's countries, not on another site's), then the countries are rolled up.
  */
-export async function geoTable(p: Period, s: Scope = {}, top = 20): Promise<GeoRow[]> {
+export async function geoTable(p: Period, s: Scope = {}, top = 20, tier: number | null = null): Promise<GeoRow[]> {
+  const tf = tier != null ? Prisma.sql`AND c.tier = ${tier}` : Prisma.empty;
   // v_site_geo_alloc_daily already carries the no-country cost on the countries (per site and day); ZZ stays
   // only with the money of days that have no country cut and is shown as «Без страны» without ROMI.
   const rows = await db.$queryRaw<Raw[]>`
@@ -111,7 +112,7 @@ export async function geoTable(p: Period, s: Scope = {}, top = 20): Promise<GeoR
       SUM(g.uniques)::float8 uniques, SUM(g.page_loads)::float8 loads, SUM(g.revenue)::float8 revenue, SUM(g.cost)::float8 cost, SUM(g.cost_own)::float8 raw_cost,
       SUM(g.uniques_bought)::float8 bought, BOOL_OR(g.estimated) estimated
     FROM v_site_geo_alloc_daily g LEFT JOIN "Country" c ON c.code = g.country_code
-    WHERE g.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`g.site_id`, s)}
+    WHERE g.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`g.site_id`, s)} ${tf}
     GROUP BY 1, 2, 3`;
   const mapped: GeoRow[] = rows
     .map((r) => {
@@ -237,8 +238,8 @@ export async function sourcesTable(p: Period, siteId: string) {
  * network × country cut (real network rows sit in ZZ), so the nested table is the site's
  * networks when the country itself has none — the page says so.
  */
-export async function siteGeoWithNetworks(p: Period, siteId: string) {
-  const geo = await geoTable(p, { siteIds: [siteId] }, 0);
+export async function siteGeoWithNetworks(p: Period, siteId: string, tier: number | null = null) {
+  const geo = await geoTable(p, { siteIds: [siteId] }, 0, tier);
   const nets = await db.$queryRaw<Raw[]>`
     SELECT country_code cc, network_title title, SUM(page_loads)::float8 loads, SUM(imps_own)::float8 imps, SUM(imps_network)::float8 imps_net, SUM(revenue)::float8 revenue
     FROM v_network_geo WHERE site_id = ${siteId} AND date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY 1, 2`;
@@ -424,4 +425,19 @@ export async function siteDataQuality(p: Period, site: { id: string; domain: str
   items.push({ key: "cost", ok: coverage.missing === 0, text: coverage.missing === 0 ? `Расход загружен за все ${coverage.days} дн. с выручкой` : `Расход не загружен за ${coverage.missing} из ${coverage.days} дн. с выручкой — маржа и ROMI завышены`, href: "/settings/costs" });
   if (ignored && ignored.updatedAt.getTime() > Date.now() - 7 * 86_400_000) items.push({ key: "filter", ok: false, text: `ADOK игнорирует фильтр по сайту: ${ignored.value}`, href: "/settings/integrations" });
   return items;
+}
+
+/** The geo totals by tier (ADR 0017): where the money and the cost sit across T1–T5; ZZ/XX (tier 0) are left out. */
+export async function geoByTier(p: Period, s: Scope = {}) {
+  const rows = await db.$queryRaw<Raw[]>`
+    SELECT c.tier, COUNT(DISTINCT g.country_code)::int countries, SUM(g.uniques)::float8 uniques, SUM(g.page_loads)::float8 loads, SUM(g.revenue)::float8 revenue, SUM(g.cost)::float8 cost
+    FROM v_site_geo_alloc_daily g JOIN "Country" c ON c.code = g.country_code AND c.tier > 0
+    WHERE g.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`g.site_id`, s)}
+    GROUP BY c.tier ORDER BY c.tier`;
+  const total = rows.reduce((a, r) => a + n(r.revenue), 0);
+  return rows.map((r) => {
+    const revenue = n(r.revenue), cost = n(r.cost), loads = n(r.loads);
+    return { tier: n(r.tier), label: `T${n(r.tier)}`, countries: n(r.countries), uniques: n(r.uniques), pageLoads: loads, revenue, cost, margin: revenue - cost,
+      romi: m.romi(revenue, cost), revPer1k: m.revPer1kLoads(revenue, loads), share: m.share(revenue, total) };
+  });
 }

@@ -83,3 +83,20 @@ describe("geo aliases", () => {
     void D1;
   });
 });
+
+describe("country tiers (ADR 0017)", () => {
+  it("sets tiers with an audit row each; refuses tier 0, out-of-range tiers, unknown and service codes; re-seeding keeps the edit", async () => {
+    const { setCountryTiers } = await import("@/server/services/settings");
+    const { seedReference } = await import("@/server/seed/reference");
+    expect((await db.country.findUniqueOrThrow({ where: { code: "JP" } })).tier).toBe(1);
+    expect(await setCountryTiers(db, { jp: 2, US: 1 }, "ADOK")).toBe(1); // US already T1: no change, no audit row
+    expect((await db.country.findUniqueOrThrow({ where: { code: "JP" } })).tier).toBe(2);
+    expect(await db.auditLog.findMany({ where: { entity: "Country", field: "tier" } })).toMatchObject([{ entityId: "JP", before: "1", after: "2", reason: "ADOK" }]);
+    await expect(setCountryTiers(db, { JP: 0 })).rejects.toMatchObject({ field: "tier" });
+    await expect(setCountryTiers(db, { JP: 6 })).rejects.toMatchObject({ field: "tier" });
+    await expect(setCountryTiers(db, { QQ: 1 })).rejects.toMatchObject({ field: "codes" });
+    await expect(setCountryTiers(db, { ZZ: 1 })).rejects.toMatchObject({ field: "codes" });
+    await seedReference(db);
+    expect((await db.country.findUniqueOrThrow({ where: { code: "JP" } })).tier).toBe(2); // the seed never rewrites a tier
+  });
+});

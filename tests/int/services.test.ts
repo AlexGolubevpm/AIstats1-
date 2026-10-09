@@ -2,7 +2,7 @@ import Decimal from "decimal.js";
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildNetwork, D1, D2 } from "@tests/factories/network";
 import { applyCostImport, previewCostImport, recalcCosts, revertCostImport, revshareCosts } from "@/server/services/costs";
-import { setSourceShare } from "@/server/services/settings";
+import { setSourceShare, setCountryTiers } from "@/server/services/settings";
 import { RuleError } from "@/server/domain/errors";
 import { correctPeriod, enterPeriod, forecastDeals, markDisputed, recordPayment } from "@/server/services/deals";
 import { resetDb, testDb } from "./helpers";
@@ -406,5 +406,25 @@ describe("reforecastAll", () => {
     expect(Number(oct1.revenue)).toBe(10); // 310 / 31
     expect(Number((await db.factFixDeal.findUniqueOrThrow({ where: { date_dealId_siteId_countryCode: { date: D("2026-06-10"), dealId: a.id, siteId: "s1", countryCode: "ZZ" } } })).revenue)).toBe(9.99);
     expect(await db.factFixDeal.count({ where: { dealId: b.id } })).toBe(3);
+  });
+});
+
+describe("deal geo scope by tier (ADR 0017)", () => {
+  it("a deal on T1 counts JP and US (both tier 1); on T2 nothing but the ZZ fallback; a tier edit reaches the deal at the next forecast", async () => {
+    const mk = (geoTiers: number[], title: string) => db.deal.create({ data: { title, advertiserId: net.direct.advertiserId, format: "BANNER", price: "1", paymentBasis: "CPM_OWN", startsAt: D1,
+      billedVia: "DIRECT", counterSource: "ASG_ZONE", geoTiers, sites: { create: [{ siteId: "s1" }] } } });
+    const t1 = await mk([1], "T1 deal");
+    await forecastDeals(db, "2026-09-20", "2026-09-21", t1.id);
+    expect([...new Set((await db.factFixDeal.findMany({ where: { dealId: t1.id } })).map((r) => r.countryCode))].sort()).toEqual(["JP", "US"]);
+    const t2 = await mk([2], "T2 deal");
+    await forecastDeals(db, "2026-09-20", "2026-09-21", t2.id);
+    expect(await db.factFixDeal.count({ where: { dealId: t2.id } })).toBe(0); // no tier-2 traffic on s1, and the days have a country cut (no ZZ fallback)
+    // JP moves to tier 2 by hand: the T2 deal picks it up on the next forecast, the T1 deal loses it.
+    await setCountryTiers(db, { JP: 2 }, "тест");
+    await forecastDeals(db, "2026-09-20", "2026-09-21", t2.id);
+    await forecastDeals(db, "2026-09-20", "2026-09-21", t1.id);
+    expect([...new Set((await db.factFixDeal.findMany({ where: { dealId: t2.id } })).map((r) => r.countryCode))]).toEqual(["JP"]);
+    expect([...new Set((await db.factFixDeal.findMany({ where: { dealId: t1.id } })).map((r) => r.countryCode))]).toEqual(["US"]);
+    expect(await db.auditLog.count({ where: { entity: "Country", entityId: "JP", field: "tier" } })).toBe(1);
   });
 });

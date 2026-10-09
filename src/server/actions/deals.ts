@@ -1,7 +1,7 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { parseGeoList, type BillingPeriod, type DealInput, type PaymentBasis } from "@/server/domain/deals";
+import { parseGeoInput, type BillingPeriod, type DealInput, type PaymentBasis } from "@/server/domain/deals";
 import { db } from "@/server/db";
 import { requireSession } from "@/server/session";
 import {
@@ -9,19 +9,17 @@ import {
 } from "@/server/services/deals";
 import { guarded, int, money, opt, str, type ActionResult } from "./result";
 
-const TIERS: Record<string, number> = { T1: 1, T2: 2, T3: 3 };
-
 async function dealInput(f: FormData): Promise<DealInput> {
-  // "T1" in the geo field expands to all tier-1 countries.
-  const codes = parseGeoList(str(f, "geoScope"));
-  const tiers = codes.filter((c) => c in TIERS).map((c) => TIERS[c]);
-  const tierCodes = tiers.length ? (await db.country.findMany({ where: { tier: { in: tiers } } })).map((c) => c.code) : [];
+  // Tiers come from the T1–T5 checkboxes (or «T1» tokens typed into the geo field); they are stored as tiers, not expanded
+  // into countries, so a tier edit on /settings/geo reaches the deal (ADR 0017).
+  const geo = parseGeoInput(str(f, "geoScope"));
+  const geoTiers = [...new Set([...geo.tiers, ...f.getAll("geoTiers").map(Number).filter((t) => Number.isInteger(t) && t >= 1 && t <= 5)])].sort();
   const siteIds = [...new Set(f.getAll("siteIds").map(String).filter(Boolean))];
   const slugs = [...new Set(f.getAll("placeSlugs").map(String).filter(Boolean))];
   const places = siteIds.flatMap((siteId) => slugs.map((placementSlug) => ({ siteId, placementSlug }))); // every chosen zone on every chosen site
   return {
     title: str(f, "title"), advertiser: str(f, "advertiser"), paymentBasis: (str(f, "paymentBasis") || "PER_1000_LOADS") as PaymentBasis,
-    price: money(f, "price"), siteIds, geoScope: [...new Set([...codes.filter((c) => !(c in TIERS)), ...tierCodes])], geoExclude: str(f, "geoExclude") === "1",
+    price: money(f, "price"), siteIds, geoScope: geo.codes, geoTiers, geoExclude: str(f, "geoExclude") === "1",
     startsAt: str(f, "startsAt"), endsAt: opt(f, "endsAt"), billingPeriod: (str(f, "billingPeriod") || "MONTH") as BillingPeriod,
     paymentTermsDays: int(f, "paymentTermsDays") ?? 30, counterSource: (str(f, "counterSource") || "ASG_ZONE") as DealInput["counterSource"],
     billedVia: (str(f, "billedVia") || "DIRECT") as DealInput["billedVia"], notes: opt(f, "notes"),
