@@ -18,6 +18,8 @@ export interface KpiProps {
   sub?: string;
   warn?: string;
   negativeFrame?: boolean;
+  /** A second line under the delta: how the value stands against peers («медиана бандла $X · сети $Y»), with its own tone. */
+  compare?: { text: string; tone?: "positive" | "negative" | "neutral" } | null;
 }
 
 function fmt(v: number | null, f: KpiProps["format"]) {
@@ -32,7 +34,7 @@ function fmt(v: number | null, f: KpiProps["format"]) {
   }
 }
 
-export function KpiCard({ label, value, format, delta, deltaMode = "percent", spark, tone = "auto", icon: Icon, color = "var(--accent)", emphasis, sub, warn, negativeFrame }: KpiProps) {
+export function KpiCard({ label, value, format, delta, deltaMode = "percent", spark, tone = "auto", icon: Icon, color = "var(--accent)", emphasis, sub, warn, negativeFrame, compare }: KpiProps) {
   const good = delta == null ? null : tone === "inverse" ? delta < 0 : delta > 0;
   const deltaCls = tone === "neutral" || delta == null || delta === 0 ? "text-muted" : good ? "text-positive" : "text-negative";
   return (
@@ -49,6 +51,7 @@ export function KpiCard({ label, value, format, delta, deltaMode = "percent", sp
             {delta != null && <span className={cn("num font-medium", deltaCls)}>{delta > 0 ? "↑" : delta < 0 ? "↓" : ""} {fmtDelta(delta, deltaMode).replace(/^[+−]/, "")}</span>}
             {sub && <span className="truncate text-muted">{sub}</span>}
           </div>
+          {compare && <div className={cn("num mt-1 truncate text-[11px]", compare.tone === "positive" ? "text-positive" : compare.tone === "negative" ? "text-negative" : "text-faint")} title={compare.text} data-compare>{compare.text}</div>}
         </div>
         {spark && <Sparkline values={spark} color={color} />}
       </div>

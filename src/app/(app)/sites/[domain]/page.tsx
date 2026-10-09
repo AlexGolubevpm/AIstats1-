@@ -18,7 +18,11 @@ import { db } from "@/server/db";
 import { D, costCoverage, dailyTotals, kpis } from "@/server/queries/common";
 import { SCOPE_LABEL, SOURCE_LABEL, STATUS_LABEL, type HypScope } from "@/server/domain/hypotheses";
 import { siteHypotheses } from "@/server/queries/hypotheses";
-import { devicesTable, formatsTable, hoursTable, networksTable, siteGeoWithNetworks, sourcesTable, techTable, zonesTable } from "@/server/queries/reports";
+import { costSplitDaily, devicesTable, formatFillDaily, formatsTable, hoursTable, networksTable, peerMedians, revenueSplitDaily, siteDataQuality, siteGeoWithNetworks, sourcesTable, techTable, zonesTable, type SplitBy } from "@/server/queries/reports";
+import { colorFor, pivot } from "@/lib/charts";
+import { eachDay } from "@/lib/period";
+import { fmtPercent } from "@/lib/format";
+import type { KpiCompare } from "@/components/data/kpi-row";
 import { SnoozeButton } from "../../alerts/snooze";
 import { HypothesisActions, ToHypothesisButton } from "../../hypotheses/client";
 
@@ -48,7 +52,10 @@ const SOURCE_COLS: Column[] = [
   { id: "reported", header: "Сумма в ADOK", kind: "money", tooltip: "Поле, которое ADOK называет «выручкой» источника — по словам владельца, это сколько заплачено источнику" },
   { id: "revShare", header: "В расход", kind: "share", tooltip: "Доля суммы ADOK, идущая в расход: Настройки → Расход. 0% — бесплатный трафик (Direct, Organic SE, No source)" },
   { id: "cost", header: "Расход", kind: "money", tooltip: "Сумма в ADOK × доля" },
-  { id: "costPer1k", header: "Цена 1000 loads", kind: "cpm" }, { id: "share", header: "Доля расхода", kind: "share" },
+  { id: "costPer1k", header: "Цена 1000 loads", kind: "cpm" }, { id: "revPer1k", header: "Rev/1000 loads", kind: "cpm", tooltip: "Сколько трафик источника принёс на 1000 загрузок (сумма ADOK / загрузки)" },
+  { id: "romi", header: "ROMI", kind: "romi", tooltip: "(сумма ADOK − расход) / расход. У revshare-источника с долей 100% всегда 0 — считать есть смысл у источников со ставкой за уника или за 1000 loads" },
+  { id: "uniquesBought", header: "Куплено уников", kind: "int", tooltip: "Из счетов за трафик (ставка за уника); у revshare-источников нет" },
+  { id: "share", header: "Доля расхода", kind: "share" },
 ];
 const NESTED_NET: Column[] = [
   { id: "network", header: "Сетка", kind: "text", tooltip: "ADOK не даёт сетку × страну: показаны сетки сайта за период" }, { id: "pageLoads", header: "Page loads", kind: "int" }, { id: "volShare", header: "Доля объёма", kind: "share" },
@@ -65,14 +72,31 @@ export default async function SitePage({ params, searchParams }: Props) {
   const by = TABS.some((t) => t.id === sp.by) ? sp.by! : "zones";
   const scope = { siteIds: [site.id] };
   const now = new Date();
-  const [k, daily, allAlerts, coverage, dealFacts, hyps] = await Promise.all([
+  const trend = sp.trend === "1";
+  const [k, daily, allAlerts, coverage, dealFacts, hyps, peers, quality] = await Promise.all([
     kpis(p, scope), dailyTotals(p, scope),
     db.alert.findMany({ where: { siteId: site.id, resolvedAt: null }, orderBy: [{ level: "desc" }, { moneyAtRisk: "desc" }] }),
     costCoverage(p, scope),
     db.factFixDeal.groupBy({ by: ["dealId", "revenueState"], where: { siteId: site.id, date: { gte: D(p.from), lte: D(p.to) } },
       _sum: { revenue: true, impsOwn: true, impsReported: true } }),
     siteHypotheses(site.id),
+    peerMedians(p, site.id),
+    siteDataQuality(p, site),
   ]);
+  // Peers line under the comparable KPIs: green when ≥ the bundle median, red when more than 20% under it (docs 06 «Пороги подсветки»).
+  const cmp = (own: number | null, b: number | null, nw: number | null, f: (v: number) => string, higherBetter = true): KpiCompare[keyof KpiCompare] => {
+    if (b == null && nw == null) return null;
+    const ref = b ?? nw;
+    const tone = own == null || ref == null || ref === 0 ? "neutral" : (higherBetter ? own >= ref : own <= ref) ? "positive" : Math.abs(own - ref) / Math.abs(ref) > 0.2 ? "negative" : "neutral";
+    const parts = [b != null ? `медиана бандла ${f(b)}` : null, nw != null ? `сети ${f(nw)} (${peers.network.sites} ${peers.network.sites === 1 ? "сайт" : peers.network.sites < 5 ? "сайта" : "сайтов"})` : null].filter(Boolean);
+    return { text: parts.join(" · "), tone };
+  };
+  const compare: KpiCompare = {
+    revPer1k: cmp(k.cur.revPer1k, peers.bundle.revPer1k, peers.network.revPer1k, (v) => fmtMoney(v)),
+    rpm: cmp(k.cur.rpm, peers.bundle.rpm, peers.network.rpm, (v) => fmtMoney(v)),
+    romi: cmp(k.cur.romi, peers.bundle.romi, peers.network.romi, (v) => fmtPercent(v, true)),
+    depth: cmp(k.cur.depth, peers.bundle.depth, peers.network.depth, (v) => v.toFixed(2)),
+  };
   // «Принято к сведению» hides an alert here as on /alerts; the header says how many are hidden.
   const alerts = allAlerts.filter((a) => !(a.snoozedUntil && a.snoozedUntil > now));
   const hiddenAlerts = allAlerts.length - alerts.length;
@@ -136,6 +160,24 @@ export default async function SitePage({ params, searchParams }: Props) {
       rows={d.map((r) => ({ ...r, device: DEVICE_LABEL[r.device] ?? r.device, _key: r.device }))} />;
   }
   const tabHref = (id: string) => { const q = new URLSearchParams(sp as Record<string, string>); q.set("by", id); return `?${q}`; };
+  const trendHref = (() => { const q = new URLSearchParams(sp as Record<string, string>); if (trend) q.delete("trend"); else q.set("trend", "1"); return `?${q}`; })();
+  // «Динамика»: the chosen cut by day — stacked revenue (cost for sources), plus the fill rate lines for formats.
+  let trendChart: React.ReactNode = null;
+  if (trend && by !== "hours") {
+    const days = eachDay(p);
+    const splitBy: SplitBy | null = by === "sources" ? null : (by as SplitBy);
+    const rows = splitBy ? await revenueSplitDaily(p, scope, splitBy) : await costSplitDaily(p, scope);
+    const { data, series } = pivot(rows.map((r) => ({ ...r, key: by === "formats" ? FORMAT_LABEL[r.key] ?? r.key : by === "devices" ? DEVICE_LABEL[r.key] ?? r.key : r.key })), days);
+    const fill = by === "formats" ? pivot((await formatFillDaily(p, scope)).map((r) => ({ ...r, key: FORMAT_LABEL[r.key] ?? r.key })), days, 8) : null;
+    trendChart = (
+      <div className="mb-4 flex flex-col gap-3" data-testid="trend-chart">
+        <p className="text-xs text-muted">{by === "sources" ? "Расход по источникам по дням" : "Выручка по дням, столбцы — разрез вкладки"}{series.length === 0 && " — данных за период нет"}</p>
+        {series.length > 0 && <TrendChart height={220} data={data} series={series.map((s, i) => ({ key: s, label: s, color: colorFor(s, i), type: "bar" as const, stack: "v" }))} />}
+        {fill && fill.series.length > 0 && <><p className="text-xs text-muted">Fill rate форматов по дням</p>
+          <TrendChart height={180} kind="percent" data={fill.data} series={fill.series.map((s, i) => ({ key: s, label: s, color: colorFor(s, i), type: "line" as const }))} /></>}
+      </div>
+    );
+  }
 
   return (
     <>
@@ -149,13 +191,14 @@ export default async function SitePage({ params, searchParams }: Props) {
           <a className="inline-flex items-center gap-1 hover:text-accent" href={`https://${site.domain}`} target="_blank" rel="noreferrer">Открыть сайт <ExternalLink className="size-3" /></a>
           {site.adsgSiteId && <span>AdSpyglass ID {site.adsgSiteId}</span>}
         </span>} />
-      <KpiRow k={k} keys={["revenue", "cost", "margin", "romi", "uniques", "rpm", "depth"]} partial={coverage.warn} />
+      <KpiRow k={k} keys={["revenue", "cost", "margin", "romi", "revPer1k", "uniques", "rpm", "depth"]} partial={coverage.warn} compare={compare} />
       <Section title="Выручка и расход" sub="Красная линия выше синей — дни, когда сайт работал в минус">
         <TrendChart data={daily.map((d) => ({ date: d.date, revenue: Number.isNaN(d.revenue) ? null : d.revenue, cost: Number.isNaN(d.revenue) ? null : d.cost }))}
           series={[{ key: "revenue", label: "Выручка", color: "#3B82F6", type: "area" }, { key: "cost", label: "Расход на трафик", color: "#F43F5E", type: "line" }]} />
       </Section>
-      <Section title="Разрезы">
+      <Section title="Разрезы" actions={by !== "hours" && <Link href={trendHref} scroll={false} className={cn("rounded-md border px-2.5 py-1 text-xs", trend ? "border-accent bg-accent-soft text-accent" : "border-border text-muted hover:text-text")} data-testid="trend-toggle">Динамика</Link>}>
         <div className="-mx-5 -mt-2 mb-3 px-5"><BreakdownTabs tabs={TABS} active={by} hrefFor={tabHref} /></div>
+        {trendChart}
         {table}
       </Section>
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -201,6 +244,14 @@ export default async function SitePage({ params, searchParams }: Props) {
             ))}</ul>
           </Section>
         )}
+        <Section title="Качество данных" sub="На чём стоят цифры страницы: разрезы, зоны, свежесть источников, расход">
+          <ul className="flex flex-col gap-1.5 text-sm" data-testid="data-quality">{quality.map((q) => (
+            <li key={q.key} className="flex items-start gap-2">
+              <span className={cn("mt-1.5 size-2 shrink-0 rounded-full", q.ok ? "bg-positive" : "bg-warning")} />
+              {q.href ? <Link href={q.href} className={cn("hover:text-accent", q.ok ? "text-muted" : "")}>{q.text}</Link> : <span className={q.ok ? "text-muted" : ""}>{q.text}</span>}
+            </li>
+          ))}</ul>
+        </Section>
         {deals.length > 0 && (
           <Section title="Фикс-дилы на сайте">
             <ul className="divide-y divide-border">

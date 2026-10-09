@@ -4,7 +4,10 @@ import { db } from "@/server/db";
 import type { Period } from "@/lib/period";
 import * as m from "@/lib/metrics";
 import { previousPeriod } from "@/lib/period";
-import { D, iso, type Scope } from "./common";
+import { D, costCoverage, iso, type Scope } from "./common";
+import { addDays } from "@/lib/period";
+import { median } from "@/server/domain/hypotheses";
+import { FILTER_IGNORED_KEY } from "@/server/ingest/adspyglass/ingest";
 
 type Raw = Record<string, unknown>;
 const n = (v: unknown) => (v == null ? 0 : Number(v));
@@ -214,15 +217,18 @@ export async function devicesTable(p: Period, siteId: string) {
 export async function sourcesTable(p: Period, siteId: string) {
   const rows = await db.$queryRaw<Raw[]>`
     SELECT s.title source, s."revShare"::float8 share_paid, SUM(f."pageLoads")::float8 loads, SUM(f."impsOwn")::float8 imps, SUM(f."revenueReported")::float8 revenue,
-           COALESCE((SELECT SUM(c.cost) FROM "FactCost" c WHERE c."siteId" = f."siteId" AND c."sourceSlug" = f."sourceSlug" AND c.date BETWEEN ${D(p.from)} AND ${D(p.to)}), 0)::float8 cost
+           COALESCE((SELECT SUM(c.cost) FROM "FactCost" c WHERE c."siteId" = f."siteId" AND c."sourceSlug" = f."sourceSlug" AND c.date BETWEEN ${D(p.from)} AND ${D(p.to)}), 0)::float8 cost,
+           COALESCE((SELECT SUM(c."uniquesBought") FROM "FactCost" c WHERE c."siteId" = f."siteId" AND c."sourceSlug" = f."sourceSlug" AND c.date BETWEEN ${D(p.from)} AND ${D(p.to)}), 0)::float8 bought
     FROM "FactTrafficSource" f JOIN "CostSource" s ON s.slug = f."sourceSlug"
     WHERE f."siteId" = ${siteId} AND f.date BETWEEN ${D(p.from)} AND ${D(p.to)}
     GROUP BY f."siteId", f."sourceSlug", s.title, s."revShare"`;
   const costTotal = rows.reduce((a, r) => a + n(r.cost), 0), loadsTotal = rows.reduce((a, r) => a + n(r.loads), 0);
   return rows.map((r) => {
-    const reported = n(r.revenue), cost = n(r.cost), loads = n(r.loads);
-    return { source: String(r.source), loads, loadsShare: m.share(loads, loadsTotal), reported, cost,
-      costPer1k: m.revPer1kLoads(cost, loads), revShare: n(r.share_paid), share: m.share(cost, costTotal) };
+    const reported = n(r.revenue), cost = n(r.cost), loads = n(r.loads), bought = n(r.bought);
+    // ROMI of the source's traffic: what it earned (ADOK's "revenue" of the source) against what it cost. A revshare
+    // source paid 100% is 0 by construction; a rate-paid one (per unique / per 1000 loads) is the real question.
+    return { source: String(r.source), loads, loadsShare: m.share(loads, loadsTotal), reported, cost, romi: cost > 0 ? ((reported - cost) / cost) * 100 : null,
+      revPer1k: m.revPer1kLoads(reported, loads), costPer1k: m.revPer1kLoads(cost, loads), uniquesBought: bought > 0 ? bought : null, revShare: n(r.share_paid), share: m.share(cost, costTotal) };
   }).sort((a, b) => b.loads - a.loads);
 }
 
@@ -250,12 +256,24 @@ export async function siteGeoWithNetworks(p: Period, siteId: string) {
 
 // ---------- series ----------
 
-export type SplitBy = "formats" | "sites" | "networks";
+export type SplitBy = "formats" | "sites" | "networks" | "geo" | "zones" | "devices" | "platforms";
 
-/** Stacked daily revenue split by formats (zone cut), sites or networks (geo cut). */
+/** Stacked daily revenue split by formats (format cut / zones), sites, networks, countries, zones, devices or platforms. */
 export async function revenueSplitDaily(p: Period, s: Scope, by: SplitBy) {
   let rows: Raw[];
-  if (by === "formats") {
+  if (by === "geo") {
+    rows = await db.$queryRaw<Raw[]>`SELECT date, country_code k, SUM(revenue)::float8 v FROM v_site_geo_daily
+      WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`site_id`, s)} GROUP BY 1, 2`;
+  } else if (by === "zones") {
+    rows = await db.$queryRaw<Raw[]>`SELECT date, zone_name k, SUM(revenue)::float8 v FROM v_zone_daily
+      WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`site_id`, s)} GROUP BY 1, 2`;
+  } else if (by === "devices") {
+    rows = await db.$queryRaw<Raw[]>`SELECT date, device::text k, SUM("revenueReported")::float8 v FROM "FactRevenueDevice"
+      WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`"siteId"`, s)} GROUP BY 1, 2`;
+  } else if (by === "platforms") {
+    rows = await db.$queryRaw<Raw[]>`SELECT date, name k, SUM("revenueReported")::float8 v FROM "FactRevenueTech"
+      WHERE kind = 'PLATFORM' AND date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`"siteId"`, s)} GROUP BY 1, 2`;
+  } else if (by === "formats") {
     // The zone cut has no direct deals: add them as their own series so the chart shows all the revenue cost is compared with.
     rows = await db.$queryRaw<Raw[]>`SELECT date, format k, SUM(revenue)::float8 v FROM v_format_daily
       WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`site_id`, s)} GROUP BY 1, 2
@@ -274,6 +292,13 @@ export async function revenueSplitDaily(p: Period, s: Scope, by: SplitBy) {
       WHERE billed_via = 'DIRECT' AND date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`site_id`, s)} GROUP BY 1, 2`;
   }
   return rows.map((r) => ({ date: iso(r.date as Date), key: String(r.k), value: n(r.v) }));
+}
+
+/** Fill rate of each format by day (lines, percent): the site's formats over the period. */
+export async function formatFillDaily(p: Period, s: Scope) {
+  const rows = await db.$queryRaw<Raw[]>`SELECT date, format k, CASE WHEN SUM(page_loads) > 0 THEN SUM(imps_own)::float8 / SUM(page_loads) END v FROM v_format_daily
+    WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`site_id`, s)} GROUP BY 1, 2`;
+  return rows.filter((r) => r.v != null).map((r) => ({ date: iso(r.date as Date), key: String(r.k), value: n(r.v) }));
 }
 
 /** Stacked daily cost: traffic cost by source (FactCost) plus operating expenses by day (v_opex_daily). */
@@ -337,4 +362,66 @@ export async function techTable(p: Period, siteId: string, kind: "PLATFORM" | "B
     return { name: String(r.name), pageLoads: loads, loadsShare: m.share(loads, totalLoads), imps, fillRate: m.fillRate(imps, loads), ctr: m.ctr(n(r.clicks), imps),
       revPer1k: m.revPer1kLoads(revenue, loads), cpm: m.cpm(revenue, imps), revenue, share: m.share(revenue, total) };
   });
+}
+
+// ---------- site page: peers and data quality ----------
+
+export interface PeerMedians { revPer1k: number | null; rpm: number | null; romi: number | null; depth: number | null; sites: number }
+/**
+ * Medians over the site's peers for the same period: the sites that share a bundle with it, and every live site of the
+ * network — without the site itself, only sites with traffic in the period. Ratios are per site (ratio of sums), the
+ * median is over sites; RPM and depth only over sites with Metrika uniques.
+ */
+export async function peerMedians(p: Period, siteId: string): Promise<{ bundle: PeerMedians; network: PeerMedians }> {
+  const rows = await db.$queryRaw<Raw[]>`
+    SELECT g.site_id, SUM(g.revenue)::float8 revenue, SUM(g.cost)::float8 cost, SUM(g.page_loads)::float8 loads, SUM(g.uniques)::float8 uniques, SUM(g.pageviews)::float8 pageviews,
+           SUM(g.revenue) FILTER (WHERE g.uniques > 0)::float8 revenue_tracked,
+           EXISTS (SELECT 1 FROM "BundleSite" a JOIN "BundleSite" b ON b."bundleId" = a."bundleId" WHERE a."siteId" = g.site_id AND b."siteId" = ${siteId}) peer
+    FROM v_site_geo_daily g JOIN "Site" s ON s.id = g.site_id AND s.status <> 'ARCHIVED'
+    WHERE g.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND g.site_id <> ${siteId}
+    GROUP BY g.site_id`;
+  const stats = (rs: Raw[]): PeerMedians => {
+    const live = rs.filter((r) => n(r.loads) > 0);
+    const tracked = live.filter((r) => n(r.uniques) > 0);
+    return {
+      revPer1k: median(live.map((r) => (n(r.revenue) / n(r.loads)) * 1000)),
+      rpm: median(tracked.map((r) => n(r.revenue_tracked) / n(r.uniques))),
+      romi: median(live.filter((r) => n(r.cost) > 0).map((r) => ((n(r.revenue) - n(r.cost)) / n(r.cost)) * 100)),
+      depth: median(tracked.map((r) => n(r.pageviews) / n(r.uniques))),
+      sites: live.length,
+    };
+  };
+  return { bundle: stats(rows.filter((r) => Boolean(r.peer))), network: stats(rows) };
+}
+
+export interface QualityItem { key: string; ok: boolean; text: string; href?: string }
+/** What the numbers on the site page stand on: missing cuts, unmapped zones, freshness, cost coverage, the ADOK site filter. */
+export async function siteDataQuality(p: Period, site: { id: string; domain: string; metrikaId: string | null; adsgSiteId: number | null }, today = iso(new Date())): Promise<QualityItem[]> {
+  const [days, zones, lastAsg, lastMetrika, coverage, ignored] = await Promise.all([
+    db.$queryRaw<Raw[]>`
+      SELECT COUNT(*)::int days, COUNT(*) FILTER (WHERE NOT has_cut)::int without_cut FROM (
+        SELECT date, bool_or("countryCode" NOT IN ('ZZ', 'XX')) has_cut FROM "FactRevenueGeo"
+        WHERE "siteId" = ${site.id} AND date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY date) d`,
+    db.$queryRaw<Raw[]>`SELECT COUNT(*) FILTER (WHERE "placementSlug" IS NULL)::int unmapped, COUNT(*) FILTER (WHERE format = 'OTHER')::int other, COUNT(*)::int total
+      FROM "Zone" WHERE "siteId" = ${site.id} AND "isActive"`,
+    db.factRevenueGeo.aggregate({ where: { siteId: site.id }, _max: { date: true } }),
+    site.metrikaId ? db.factTraffic.aggregate({ where: { siteId: site.id }, _max: { date: true } }) : null,
+    costCoverage(p, { siteIds: [site.id] }),
+    db.appSetting.findUnique({ where: { key: FILTER_IGNORED_KEY } }),
+  ]);
+  const yesterday = addDays(today, -1);
+  const d0 = days[0] ?? { days: 0, without_cut: 0 }, z0 = zones[0] ?? { unmapped: 0, other: 0, total: 0 };
+  const asgDate = lastAsg._max.date ? iso(lastAsg._max.date) : null, mkDate = lastMetrika?._max.date ? iso(lastMetrika._max.date) : null;
+  const items: QualityItem[] = [];
+  items.push(n(d0.days) === 0
+    ? { key: "cut", ok: false, text: "За период нет данных ADOK по сайту" }
+    : { key: "cut", ok: n(d0.without_cut) === 0, text: n(d0.without_cut) === 0 ? `Разрез по странам есть за все ${n(d0.days)} дн. периода` : `${n(d0.without_cut)} из ${n(d0.days)} дн. без разреза по странам — гео и расход по странам за них оценочные`, href: "/settings/integrations" });
+  items.push({ key: "zones", ok: n(z0.unmapped) === 0 && n(z0.other) === 0,
+    text: n(z0.total) === 0 ? "Зон ADOK у сайта нет" : `Зоны: ${n(z0.total)}${n(z0.unmapped) ? ` · ${n(z0.unmapped)} без места` : ""}${n(z0.other) ? ` · ${n(z0.other)} с форматом «Другое»` : ""}${n(z0.unmapped) === 0 && n(z0.other) === 0 ? " · все привязаны" : ""}`, href: "/inventory" });
+  items.push({ key: "asg", ok: asgDate != null && asgDate >= yesterday, text: asgDate ? `ADOK: данные по ${asgDate}${asgDate < yesterday ? " — отстают" : ""}` : "ADOK: данных ещё нет", href: "/settings/integrations" });
+  items.push({ key: "metrika", ok: Boolean(site.metrikaId) && mkDate != null && mkDate >= yesterday,
+    text: !site.metrikaId ? "Метрика: счётчик не задан — нет уников, RPM и глубины" : mkDate ? `Метрика: данные по ${mkDate}${mkDate < yesterday ? " — отстают" : ""}` : "Метрика: счётчик задан, данных ещё нет", href: site.metrikaId ? "/settings/integrations" : "/settings/sites" });
+  items.push({ key: "cost", ok: coverage.missing === 0, text: coverage.missing === 0 ? `Расход загружен за все ${coverage.days} дн. с выручкой` : `Расход не загружен за ${coverage.missing} из ${coverage.days} дн. с выручкой — маржа и ROMI завышены`, href: "/settings/costs" });
+  if (ignored && ignored.updatedAt.getTime() > Date.now() - 7 * 86_400_000) items.push({ key: "filter", ok: false, text: `ADOK игнорирует фильтр по сайту: ${ignored.value}`, href: "/settings/integrations" });
+  return items;
 }

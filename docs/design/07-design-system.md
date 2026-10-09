@@ -135,6 +135,7 @@ Button (primary / secondary / ghost / destructive; размеры sm / md) · In
 Правила: ноль рисуется как `—` в `--text-faint`; заголовок `sticky`; строка «Итого» закреплена снизу с `border-top: 1px solid var(--border-strong)`; сортировка кликом по заголовку; больше 25 строк — пагинация; состояние сортировки и страницы — в URL.
 
 ### `<KpiCard>`
+- `compare` — вторая строка под дельтой (`text-[11px]`): положение против пиров («медиана бандла $X · сети $Y»), тон positive / negative / neutral; обрезается с троеточием, полный текст в `title`.
 
 ```tsx
 <KpiCard label="ROMI" value={142.7} format="percent"
