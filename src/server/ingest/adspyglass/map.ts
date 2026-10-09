@@ -15,14 +15,33 @@ export function measures(r: AsgRow) {
     revenue: num(r.broker_income),
     // ADOK's own revenue estimate. Unlike broker_* it is scoped to the site in every per-site cut.
     predicted: num(r.predicted_income),
+    // Fields kept since ADR 0016: ad requests, the network's click count, ADOK's fill rate (fraction or percent).
+    requests: r.requests == null ? null : Math.round(num(r.requests)),
+    brokerClicks: r.broker_clicks == null ? null : Math.round(num(r.broker_clicks)),
+    fillRateAsg: r.fill_rate == null ? null : rate(num(r.fill_rate)),
   };
 }
-export type Measures = ReturnType<typeof measures>;
+/** Core measures are always present; the ADR 0016 fields are optional so older callers and fixtures keep working. */
+export type Measures = { pageLoads: number; impsOwn: number; impsNetwork: number; clicks: number; revenue: number; predicted: number;
+  requests?: number | null; brokerClicks?: number | null; fillRateAsg?: number | null };
+/** A rate ADOK may send as a fraction (0.42) or a percentage (42). */
+const rate = (v: number) => Math.min(1, Math.max(0, v > 1 ? v / 100 : v));
+const addOpt = (a: number | null, b: number | null) => (a == null && b == null ? null : (a ?? 0) + (b ?? 0));
 
 export function addMeasures(a: Measures, b: Measures): Measures {
-  return { pageLoads: a.pageLoads + b.pageLoads, impsOwn: a.impsOwn + b.impsOwn, impsNetwork: a.impsNetwork + b.impsNetwork,
-    clicks: a.clicks + b.clicks, revenue: a.revenue + b.revenue, predicted: a.predicted + b.predicted };
+  const loads = a.pageLoads + b.pageLoads;
+  return { pageLoads: loads, impsOwn: a.impsOwn + b.impsOwn, impsNetwork: a.impsNetwork + b.impsNetwork,
+    clicks: a.clicks + b.clicks, revenue: a.revenue + b.revenue, predicted: a.predicted + b.predicted,
+    requests: addOpt(a.requests ?? null, b.requests ?? null), brokerClicks: addOpt(a.brokerClicks ?? null, b.brokerClicks ?? null),
+    // the fill rate of a merged row is weighted by loads (a ratio of sums, not a mean of means)
+    fillRateAsg: a.fillRateAsg == null && b.fillRateAsg == null ? null : loads > 0 ? ((a.fillRateAsg ?? 0) * a.pageLoads + (b.fillRateAsg ?? 0) * b.pageLoads) / loads : null };
 }
+
+/** The optional ADOK fields as fact columns (Decimal strings for Prisma). */
+export const optionalFields = (m: Measures) => ({
+  requests: m.requests ?? null, brokerClicks: m.brokerClicks ?? null,
+  fillRateAsg: m.fillRateAsg == null ? null : m.fillRateAsg.toFixed(4), predictedIncome: m.predicted ? m.predicted.toFixed(4) : null,
+});
 
 /** Splits an integer total over weights (largest remainder): the parts always add up exactly. */
 export function apportion(total: number, weights: number[]): number[] {
@@ -59,12 +78,12 @@ export function viewRate(r: AsgRow): number {
   return v > 1 ? v / 100 : v;
 }
 
-export interface SiteTotal { adsgSiteId: number | null; domain: string; m: ReturnType<typeof measures> }
+export interface SiteTotal { adsgSiteId: number | null; domain: string; m: Measures }
 export function mapWebsiteRows(rows: AsgRow[]): SiteTotal[] {
   return rows.map((r) => { const w = parseWebsiteName(String(r.name)); return { adsgSiteId: w.id, domain: w.domain, m: measures(r) }; });
 }
 
-export interface GeoCell { countryCode: string; m: ReturnType<typeof measures> }
+export interface GeoCell { countryCode: string; m: Measures }
 /**
  * group_by=country rows; several raw names may map to the same code (and to XX) — summed.
  * ADOK sends an `iso` field next to the name: a known code wins, the name is the fallback.
@@ -80,7 +99,7 @@ export function mapCountryRows(rows: AsgRow[], resolver: CountryResolver): GeoCe
   return [...acc].map(([countryCode, m]) => ({ countryCode, m }));
 }
 
-export interface ZoneCell { adsgZoneId: number; name: string; domain: string | null; format: FormatCode; position: string | null; views: number; m: ReturnType<typeof measures> }
+export interface ZoneCell { adsgZoneId: number; name: string; domain: string | null; format: FormatCode; position: string | null; views: number; m: Measures }
 /** group_by=spot rows. Views only for BANNER / NATIVE, from banner_view_rate × impressions. */
 export function mapSpotRows(rows: AsgRow[]): ZoneCell[] {
   const out: ZoneCell[] = [];
@@ -95,7 +114,7 @@ export function mapSpotRows(rows: AsgRow[]): ZoneCell[] {
   return out;
 }
 
-export interface NetworkCell { slug: string; title: string; m: ReturnType<typeof measures> }
+export interface NetworkCell { slug: string; title: string; m: Measures }
 /** "AdPulsar.io" → slug "adpulsar" (matches seeded networks), title as sent. Duplicates summed. */
 export function networkSlug(name: string): string {
   return name.trim().toLowerCase().replace(/^https?:\/\//, "").replace(/\.[a-z]{2,}$/, "").replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "unknown";
@@ -111,7 +130,7 @@ export function mapNetworkRows(rows: AsgRow[]): NetworkCell[] {
   return [...acc.values()];
 }
 
-export interface DeviceCell { device: ReturnType<typeof normalizeDevice>; m: ReturnType<typeof measures> }
+export interface DeviceCell { device: ReturnType<typeof normalizeDevice>; m: Measures }
 /** group_by=device rows ("Desktop", "Mobile", …); unknown names land in UNKNOWN, duplicates summed. */
 export function mapDeviceRows(rows: AsgRow[]): DeviceCell[] {
   const acc = new Map<string, DeviceCell>();
@@ -133,6 +152,17 @@ export function mapTrafficSourceRows(rows: AsgRow[]): TrafficSourceCell[] {
     const name = String(r.name ?? "").trim() || "unknown";
     const slug = networkSlug(name), m = measures(r), cur = acc.get(slug);
     acc.set(slug, cur ? { ...cur, m: addMeasures(cur.m, m) } : { name, slug, m });
+  }
+  return [...acc.values()];
+}
+
+export interface FormatCell { format: FormatCode; m: Measures }
+/** group_by=ad_type rows ("Popunder", "Banner", "Native", …): the format's own figures, duplicates summed. */
+export function mapFormatRows(rows: AsgRow[]): FormatCell[] {
+  const acc = new Map<FormatCode, FormatCell>();
+  for (const r of rows) {
+    const format = normalizeFormat(String(r.ad_type ?? r.name ?? "")), m = measures(r), cur = acc.get(format);
+    acc.set(format, cur ? { format, m: addMeasures(cur.m, m) } : { format, m });
   }
   return [...acc.values()];
 }

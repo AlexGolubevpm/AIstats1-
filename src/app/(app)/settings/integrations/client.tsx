@@ -6,7 +6,8 @@ import { Input, Select } from "@/components/ui/input";
 import { Confirm } from "@/components/ui/sheet";
 import { useToast } from "@/components/ui/toast";
 import { applyMetrikaCountersAction, cancelBackfillAction, connectMetrikaAction, demoAction, disconnectMetrikaAction, mapAliasAction, metrikaCountersAction, resumeAsgAction, runJobAction,
-  saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
+  saveAsgPlanAction, saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
+import { RESTATE_CHOICES, planCost, type AsgPlan, type CutKey } from "@/server/ingest/adspyglass/plan";
 import { DECISION_LABEL, type MatchRow } from "@/server/domain/metrika-match";
 import { fmtDate } from "@/lib/format";
 
@@ -35,7 +36,7 @@ export function RunJobForm({ jobs, sites }: { jobs: { id: string; label: string 
       <FormField name="to" label="По"><Input type="date" name="to" /></FormField>
       <FormField name="siteId" label="Сайт (опционально)"><Select name="siteId" defaultValue=""><option value="">Все</option>{sites.map((s) => <option key={s.id} value={s.id}>{s.domain}</option>)}</Select></FormField>
       {job === "asg:sites" && (
-        <FormField name="confirm" label="Бэкфилл" className="sm:col-span-2 lg:col-span-4" hint="Каждый сайт × день = 4 запроса к AdSpyglass (страны, сетки, устройства, источники) плюс 2 на день. Для окна длиннее пары дней используйте блок «Бэкфилл AdSpyglass» — он сам делит работу по суткам.">
+        <FormField name="confirm" label="Бэкфилл" className="sm:col-span-2 lg:col-span-4" hint="Каждый день окна стоит столько запросов, сколько задано планом «Разрезы ADOK» (2 на день + разрезы × сайтов). Для окна длиннее пары дней используйте блок «Бэкфилл AdSpyglass» — он сам делит работу по суткам.">
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" name="confirm" value="1" /> Понимаю, сколько запросов уйдёт, и что бэкфилл может занять несколько дней</label>
         </FormField>
       )}
@@ -111,7 +112,7 @@ export function BackfillBlock({ state, sites, defaults, perNight }: { state: Bac
       <ActionForm action={startBackfillAction} submit={running ? "Изменить окно" : "Запустить бэкфилл"} className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <FormField name="mode" label="Что грузить">
           <Select name="mode" value={mode} onChange={(e) => pick(e.target.value as "full" | "totals")}>
-            <option value="full">Все разрезы (2 + 4 × сайтов запросов в день)</option>
+            <option value="full">Все разрезы (по плану «Разрезы ADOK»)</option>
             <option value="totals">Только итоги по сайтам (1 запрос в день)</option>
           </Select>
         </FormField>
@@ -186,3 +187,49 @@ export function MetrikaBlock({ status, authorizeHref }: { status: MetrikaView; a
 }
 const ORDER: Record<MatchRow["decision"], number> = { matched: 0, ambiguous: 1, conflict: 2, same: 3, none: 4 };
 const order = (r: MatchRow) => ORDER[r.decision];
+
+/** «Разрезы ADOK»: toggles per cut with what each buys, the restate window, the hourly mode — and the live cost against the budget. */
+export function CutsPlanner({ plan, cuts, sites, budget }: { plan: AsgPlan; cuts: { key: CutKey; title: string; what: string; required: boolean }[]; sites: number; budget: number }) {
+  const [draft, setDraft] = useState<AsgPlan>(plan);
+  const cost = planCost(draft, sites, budget);
+  const pct = Math.min(100, Math.round((cost.total / budget) * 100));
+  return (
+    <ActionForm action={saveAsgPlanAction} submit="Сохранить план" submitSize="sm" className="flex flex-col gap-4" >
+      <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
+        <ul className="divide-y divide-border rounded-lg border border-border" data-testid="asg-cuts">
+          {cuts.map((c) => (
+            <li key={c.key} className="flex items-start gap-3 px-3 py-2 text-sm">
+              <input type="checkbox" name={`cut:${c.key}`} value="1" id={`cut-${c.key}`} className="mt-1" checked={draft.cuts[c.key]} disabled={c.required}
+                onChange={(e) => setDraft({ ...draft, cuts: { ...draft.cuts, [c.key]: e.target.checked } })} />
+              <label htmlFor={`cut-${c.key}`} className="min-w-0 flex-1">
+                <span className="font-medium">{c.title}</span>{c.required && <span className="ml-2 text-[11px] text-faint">обязателен</span>}
+                <span className="block text-xs text-muted">{c.what}</span>
+              </label>
+              <span className="num shrink-0 text-xs text-muted">{sites} запр./день</span>
+            </li>
+          ))}
+          <li className="flex flex-wrap items-center gap-x-6 gap-y-2 px-3 py-2 text-sm">
+            <label className="flex items-center gap-2">Прошлых дней в ночь
+              <Select name="restateDays" value={String(draft.restateDays)} onChange={(e) => setDraft({ ...draft, restateDays: Number(e.target.value) })} className="w-20">
+                {RESTATE_CHOICES.map((d) => <option key={d} value={d}>{d}</option>)}
+              </Select>
+            </label>
+            <label className="flex items-center gap-2"><input type="checkbox" name="hourlyToday" value="1" checked={draft.hourlyToday} onChange={(e) => setDraft({ ...draft, hourlyToday: e.target.checked })} /> Почасовые итоги — только сегодня <span className="text-xs text-muted">(вчера перечитывает ночной прогон)</span></label>
+          </li>
+        </ul>
+        <div className="num rounded-lg border border-border p-3 text-sm" data-testid="asg-plan-cost">
+          <div className="text-xs text-muted">В сутки по плану</div>
+          <div className={`text-2xl font-semibold ${cost.over ? "text-negative" : ""}`}>{cost.total} <span className="text-sm font-normal text-muted">из {budget}</span></div>
+          <div className="mt-1 h-1.5 rounded-full bg-surface-hover"><div className={`h-full rounded-full ${cost.over ? "bg-negative" : "bg-accent"}`} style={{ width: `${pct}%` }} /></div>
+          <dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-xs">
+            <dt className="text-muted">Ночь: {draft.restateDays} × (2 + {cost.perSite} × {sites})</dt><dd className="text-right">{cost.nightly}</dd>
+            <dt className="text-muted">Почасовые итоги</dt><dd className="text-right">{cost.hourly}</dd>
+            <dt className="text-muted">Запас на повторы и проверки</dt><dd className="text-right">30</dd>
+            <dt className="font-medium">Остаётся бэкфиллу</dt><dd className="text-right font-medium">{cost.backfill}</dd>
+          </dl>
+          {cost.over > 0 && <p className="mt-2 text-xs text-negative">План не влезает в бюджет на {cost.over} запросов: уберите разрез или день.</p>}
+        </div>
+      </div>
+    </ActionForm>
+  );
+}

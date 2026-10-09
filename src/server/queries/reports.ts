@@ -71,14 +71,20 @@ export async function topMovers(p: Period, limit = 5) {
 
 export async function formatsTable(p: Period, s: Scope = {}) {
   const rows = await db.$queryRaw<Raw[]>`
-    SELECT format, SUM(page_loads)::float8 loads, SUM(imps_own)::float8 imps, SUM(views)::float8 views, SUM(revenue)::float8 revenue
+    SELECT format, SUM(page_loads)::float8 loads, SUM(imps_own)::float8 imps, SUM(views)::float8 views, SUM(clicks)::float8 clicks, SUM(revenue)::float8 revenue,
+           SUM(requests)::float8 requests,
+           CASE WHEN SUM(page_loads) FILTER (WHERE fill_rate_asg IS NOT NULL) > 0 THEN SUM(fill_rate_asg * page_loads) / SUM(page_loads) FILTER (WHERE fill_rate_asg IS NOT NULL) END::float8 fill_asg,
+           bool_or(from_format_cut) from_cut
     FROM v_format_daily WHERE date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`site_id`, s)}
     GROUP BY format ORDER BY revenue DESC`;
   const total = rows.reduce((a, r) => a + n(r.revenue), 0);
   return rows.map((r) => {
     const loads = n(r.loads), imps = n(r.imps), views = n(r.views), revenue = n(r.revenue), banner = r.format === "BANNER" || r.format === "NATIVE";
-    return { format: String(r.format), pageLoads: loads, imps, views: banner ? views : null, fillRate: m.fillRate(imps, loads), cpm: m.cpm(revenue, imps),
-      viewRate: banner ? m.viewRate(views, imps) : null, viewableCpm: banner ? m.viewableCpm(revenue, views) : null, revenue, share: m.share(revenue, total) };
+    return { format: String(r.format), requests: r.requests == null ? null : n(r.requests), pageLoads: loads, imps, views: banner ? views : null,
+      fillRate: m.fillRate(imps, loads), fillRateAsg: r.fill_asg == null ? null : n(r.fill_asg), ctr: m.ctr(n(r.clicks), imps), cpm: m.cpm(revenue, imps),
+      viewRate: banner ? m.viewRate(views, imps) : null, viewableCpm: banner ? m.viewableCpm(revenue, views) : null, revenue, share: m.share(revenue, total),
+      /** false — the period has only zone sums for the format (no ad_type cut yet): loads are zone loads, not the format's. */
+      fromFormatCut: Boolean(r.from_cut) };
   });
 }
 
@@ -132,7 +138,7 @@ export async function networksTable(p: Period, s: Scope = {}, countryCode?: stri
   const cf = countryCode ? Prisma.sql`AND country_code = ${countryCode}` : Prisma.empty;
   const rows = await db.$queryRaw<Raw[]>`
     SELECT n.network_slug slug, n.network_title title, nw.color, nw."isSystem" OR nw.kind = 'DIRECT' AS excluded,
-      SUM(n.page_loads)::float8 loads, SUM(n.imps_own)::float8 imps, SUM(n.imps_network)::float8 imps_net, SUM(n.revenue)::float8 revenue
+      SUM(n.page_loads)::float8 loads, SUM(n.imps_own)::float8 imps, SUM(n.imps_network)::float8 imps_net, SUM(n.clicks)::float8 clicks, SUM(n.revenue)::float8 revenue
     FROM v_network_geo n JOIN "Network" nw ON nw.id = n.network_id
     WHERE n.date BETWEEN ${D(p.from)} AND ${D(p.to)} AND ${siteFilter(Prisma.sql`n.site_id`, s)} ${cf}
     GROUP BY 1, 2, 3, 4`;
@@ -140,7 +146,7 @@ export async function networksTable(p: Period, s: Scope = {}, countryCode?: stri
   const withPrice = rows.map((r) => {
     const loads = n(r.loads), imps = n(r.imps), revenue = n(r.revenue);
     return { slug: String(r.slug), network: String(r.title), color: String(r.color), pageLoads: loads, volShare: m.share(loads, totalLoads),
-      fillRate: m.fillRate(imps, loads), revPer1k: m.revPer1kLoads(revenue, loads), discrepancy: m.discrepancy(imps, n(r.imps_net)), revenue,
+      fillRate: m.fillRate(imps, loads), revPer1k: m.revPer1kLoads(revenue, loads), discrepancy: m.discrepancy(imps, n(r.imps_net)), ctr: m.ctr(n(r.clicks), imps), revenue,
       impsOwn: imps, impsNetwork: n(r.imps_net), excluded: Boolean(r.excluded) };
   }).sort((a, b) => (b.revPer1k ?? -1) - (a.revPer1k ?? -1));
   // The floor comes from real mediated networks with a real share (≥ 5% of loads): own deals, the
@@ -158,7 +164,7 @@ export const DEAD_ZONE = { minImps: 50_000, maxRevShare: 0.01, minImpShare: 0.05
 
 export async function zonesTable(p: Period, siteId: string) {
   const rows = await db.$queryRaw<Raw[]>`
-    SELECT z.zone_id id, z.zone_name name, z.format, z.position, SUM(z.imps_own)::float8 imps, SUM(z.views)::float8 views, SUM(z.revenue)::float8 revenue
+    SELECT z.zone_id id, z.zone_name name, z.format, z.position, SUM(z.imps_own)::float8 imps, SUM(z.views)::float8 views, SUM(z.clicks)::float8 clicks, SUM(z.revenue)::float8 revenue
     FROM v_zone_daily z WHERE z.site_id = ${siteId} AND z.date BETWEEN ${D(p.from)} AND ${D(p.to)}
     GROUP BY 1, 2, 3, 4 ORDER BY revenue DESC`;
   const total = rows.reduce((a, r) => a + n(r.revenue), 0);
@@ -177,7 +183,7 @@ export async function zonesTable(p: Period, siteId: string) {
     const formatShare = m.share(revenue, fmt.revenue), formatImpShare = m.share(imps, fmt.imps);
     const candidateRemove = fmt.zones > 1 && imps >= DEAD_ZONE.minImps && formatShare != null && formatShare < DEAD_ZONE.maxRevShare && formatImpShare != null && formatImpShare > DEAD_ZONE.minImpShare;
     return { id: String(r.id), zone: String(r.name), format: String(r.format), position: r.position ? String(r.position) : null, imps, views: banner ? views : null,
-      viewRate, cpm: m.cpm(revenue, imps), viewableCpm: banner ? m.viewableCpm(revenue, views) : null, revenue, share, formatShare,
+      viewRate, ctr: m.ctr(n(r.clicks), imps), cpm: m.cpm(revenue, imps), viewableCpm: banner ? m.viewableCpm(revenue, views) : null, revenue, share, formatShare,
       candidateRemove, invisible: viewRate != null && viewRate < 0.15 };
   });
 }
@@ -186,11 +192,11 @@ export async function devicesTable(p: Period, siteId: string) {
   const [traffic, revenue] = await Promise.all([
     db.$queryRaw<Raw[]>`SELECT device::text device, SUM(uniques)::float8 uniques FROM "FactTraffic" WHERE "siteId" = ${siteId} AND date BETWEEN ${D(p.from)} AND ${D(p.to)} GROUP BY 1`,
     // Device cut where ADOK sent one for the site-day; the geo fact (device UNKNOWN or demo devices) otherwise.
-    db.$queryRaw<Raw[]>`SELECT device, SUM(imps)::float8 imps, SUM(revenue)::float8 revenue FROM (
-        SELECT device::text device, "impsOwn" imps, "revenueReported" revenue FROM "FactRevenueDevice"
+    db.$queryRaw<Raw[]>`SELECT device, SUM(imps)::float8 imps, SUM(clicks)::float8 clicks, SUM(revenue)::float8 revenue FROM (
+        SELECT device::text device, "impsOwn" imps, clicks, "revenueReported" revenue FROM "FactRevenueDevice"
         WHERE "siteId" = ${siteId} AND date BETWEEN ${D(p.from)} AND ${D(p.to)}
         UNION ALL
-        SELECT g.device::text, g."impsOwn", g."revenueReported" FROM "FactRevenueGeo" g
+        SELECT g.device::text, g."impsOwn", g.clicks, g."revenueReported" FROM "FactRevenueGeo" g
         WHERE g."siteId" = ${siteId} AND g.date BETWEEN ${D(p.from)} AND ${D(p.to)}
           AND NOT EXISTS (SELECT 1 FROM "FactRevenueDevice" x WHERE x."siteId" = g."siteId" AND x.date = g.date)
       ) u GROUP BY 1`,
@@ -200,7 +206,7 @@ export async function devicesTable(p: Period, siteId: string) {
   return [...devices].map((d) => {
     const t = traffic.find((r) => r.device === d), rv = revenue.find((r) => r.device === d);
     const imps = n(rv?.imps), rev = n(rv?.revenue);
-    return { device: d, uniques: n(t?.uniques), imps, cpm: m.cpm(rev, imps), revenue: rev, share: m.share(rev, total) };
+    return { device: d, uniques: n(t?.uniques), imps, ctr: m.ctr(n(rv?.clicks), imps), cpm: m.cpm(rev, imps), revenue: rev, share: m.share(rev, total) };
   }).sort((a, b) => b.revenue - a.revenue);
 }
 

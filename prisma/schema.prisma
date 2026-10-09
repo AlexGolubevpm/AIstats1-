@@ -36,6 +36,7 @@ model Site {
   revenueNet FactRevenueNetwork[]
   revenueDev FactRevenueDevice[]
   trafficSrc FactTrafficSource[]
+  revenueFmt FactRevenueFormat[]
   placements SitePlacement[]
   dealPlaces DealPlace[]
   traffic    FactTraffic[]
@@ -168,6 +169,10 @@ model FactRevenueGeo {
   impsNetwork      Int      @default(0)
   clicks           Int      @default(0)
   revenueReported  Decimal  @default(0) @db.Decimal(12, 4)
+  requests         Int?                      // ADOK `requests` (ad calls); null before the cut carried it
+  brokerClicks     Int?                      // clicks the network counted
+  fillRateAsg      Decimal? @db.Decimal(7, 4) // ADOK's own fill rate for the row
+  predictedIncome  Decimal? @db.Decimal(12, 4) // ADOK's revenue estimate, scoped to the site in every per-site cut
   revenueConfirmed Decimal? @db.Decimal(12, 4)
   site             Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
   network          Network  @relation(fields: [networkId], references: [id])
@@ -188,6 +193,10 @@ model FactRevenueNetwork {
   impsNetwork     Int      @default(0)
   clicks          Int      @default(0)
   revenueReported Decimal  @default(0) @db.Decimal(12, 4)
+  requests         Int?                      // ADOK `requests` (ad calls); null before the cut carried it
+  brokerClicks     Int?                      // clicks the network counted
+  fillRateAsg      Decimal? @db.Decimal(7, 4) // ADOK's own fill rate for the row
+  predictedIncome  Decimal? @db.Decimal(12, 4) // ADOK's revenue estimate, scoped to the site in every per-site cut
   site            Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
   network         Network  @relation(fields: [networkId], references: [id])
 
@@ -206,6 +215,10 @@ model FactRevenueDevice {
   impsNetwork     Int      @default(0)
   clicks          Int      @default(0)
   revenueReported Decimal  @default(0) @db.Decimal(12, 4)
+  requests         Int?                      // ADOK `requests` (ad calls); null before the cut carried it
+  brokerClicks     Int?                      // clicks the network counted
+  fillRateAsg      Decimal? @db.Decimal(7, 4) // ADOK's own fill rate for the row
+  predictedIncome  Decimal? @db.Decimal(12, 4) // ADOK's revenue estimate, scoped to the site in every per-site cut
   site            Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
 
   @@id([date, siteId, device])
@@ -223,6 +236,10 @@ model FactRevenueZone {
   views            Int      @default(0) // viewable impressions, BANNER/NATIVE only
   clicks           Int      @default(0)
   revenueReported  Decimal  @default(0) @db.Decimal(12, 4)
+  requests         Int?                      // ADOK `requests` (ad calls); null before the cut carried it
+  brokerClicks     Int?                      // clicks the network counted
+  fillRateAsg      Decimal? @db.Decimal(7, 4) // ADOK's own fill rate for the row
+  predictedIncome  Decimal? @db.Decimal(12, 4) // ADOK's revenue estimate, scoped to the site in every per-site cut
   revenueConfirmed Decimal? @db.Decimal(12, 4)
   site             Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
   zone             Zone     @relation(fields: [zoneId], references: [id], onDelete: Cascade)
@@ -260,6 +277,27 @@ model CostSource {
   traffic FactTrafficSource[]
 }
 
+// AdSpyglass format cut per site (group_by=ad_type, platforms_ids[]): the format's own loads,
+// requests, impressions and fill — not a sum of zones (ADR 0016). v_format_daily prefers it.
+model FactRevenueFormat {
+  date            DateTime @db.Date
+  siteId          String
+  format          AdFormat
+  requests        Int?
+  pageLoads       Int      @default(0)
+  impsOwn         Int      @default(0)
+  impsNetwork     Int      @default(0)
+  clicks          Int      @default(0)
+  brokerClicks    Int?
+  fillRateAsg     Decimal? @db.Decimal(7, 4)
+  revenueReported Decimal  @default(0) @db.Decimal(12, 4)
+  predictedIncome Decimal? @db.Decimal(12, 4)
+  site            Site     @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@id([date, siteId, format])
+  @@index([date])
+}
+
 /// ADOK group_by=traffic_source per site: what each traffic source brought (volume and revenue).
 model FactTrafficSource {
   date            DateTime   @db.Date
@@ -269,6 +307,11 @@ model FactTrafficSource {
   impsOwn         Int        @default(0)
   clicks          Int        @default(0)
   revenueReported Decimal    @default(0) @db.Decimal(12, 4)
+  impsNetwork     Int?                       // network-side impressions (broker_hits); null for rows before the column
+  requests        Int?
+  brokerClicks    Int?
+  fillRateAsg     Decimal?   @db.Decimal(7, 4)
+  predictedIncome Decimal?   @db.Decimal(12, 4)
   site            Site       @relation(fields: [siteId], references: [id], onDelete: Cascade)
   source          CostSource @relation(fields: [sourceSlug], references: [slug], onUpdate: Cascade)
 

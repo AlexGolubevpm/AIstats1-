@@ -28,6 +28,7 @@ const TABS = [{ id: "zones", label: "Зоны" }, { id: "formats", label: "Фо�
 const ZONE_COLS: Column[] = [
   { id: "zone", header: "Зона", kind: "text" }, { id: "format", header: "Формат", kind: "text" }, { id: "position", header: "Позиция", kind: "text" },
   { id: "imps", header: "Показы", kind: "int" }, { id: "views", header: "Видимые", kind: "int" }, { id: "viewRate", header: "View rate", kind: "percent" },
+  { id: "ctr", header: "CTR", kind: "percent", tooltip: "Клики / показы" },
   { id: "cpm", header: "CPM", kind: "cpm" }, { id: "viewableCpm", header: "Viewable CPM", kind: "cpm" }, { id: "revenue", header: "Выручка", kind: "money" },
   { id: "share", header: "Доля", kind: "share" },
 ];
@@ -103,7 +104,7 @@ export default async function SitePage({ params, searchParams }: Props) {
     const d = await devicesTable(p, site.id);
     table = <DataTable id="d" exportName={`${site.domain}-devices`} defaultSort={{ id: "revenue", dir: "desc" }}
       columns={[{ id: "device", header: "Девайс", kind: "text" }, { id: "uniques", header: "Уники", kind: "int" }, { id: "imps", header: "Показы", kind: "int" },
-        { id: "cpm", header: "CPM", kind: "cpm" }, { id: "revenue", header: "Выручка", kind: "money" }, { id: "share", header: "Доля", kind: "share" }]}
+        { id: "ctr", header: "CTR", kind: "percent", tooltip: "Клики / показы" }, { id: "cpm", header: "CPM", kind: "cpm" }, { id: "revenue", header: "Выручка", kind: "money" }, { id: "share", header: "Доля", kind: "share" }]}
       rows={d.map((r) => ({ ...r, device: DEVICE_LABEL[r.device] ?? r.device, _key: r.device }))} />;
   }
   const tabHref = (id: string) => { const q = new URLSearchParams(sp as Record<string, string>); q.set("by", id); return `?${q}`; };

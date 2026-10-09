@@ -9,6 +9,7 @@ import { checkSite, withAsg } from "@/server/ingest/probe";
 import { resumeAsg } from "@/server/ingest/run";
 import { JOB_NAMES, type JobName } from "@/server/jobs/handlers";
 import { cancelBackfill, daysBetween, requestsPerDay, startBackfill, type BackfillMode } from "@/server/jobs/backfill";
+import { CUTS, normalizePlan, planCost, readPlan, savePlan, type CutKey } from "@/server/ingest/adspyglass/plan";
 import { clearData } from "@/server/seed/demo";
 import { loadDemo } from "@/server/seed/load-demo";
 import { applyCostImport, previewCostImport, revertCostImport, type ImportPreview } from "@/server/services/costs";
@@ -176,7 +177,7 @@ export async function runJobAction(_: ActionResult, f: FormData): Promise<Action
   if (job === "asg:sites" && from && to) {
     const days = Math.round((Date.parse(to) - Date.parse(from)) / 86_400_000) + 1;
     const sites = await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(opt(f, "siteId") ? { id: opt(f, "siteId")! } : {}) } });
-    const requests = days * requestsPerDay(sites);
+    const requests = days * requestsPerDay(sites, "full", await readPlan(db));
     const budget = config().asg.dailyBudget;
     if (requests > budget && str(f, "confirm") !== "1") {
       return { error: `Бэкфилл потребует ~${requests} запросов к AdSpyglass при дневном бюджете ${budget}. Сократите диапазон или отметьте подтверждение — джоб продолжит на следующий день.`, field: "confirm" };
@@ -259,7 +260,8 @@ export async function startBackfillAction(_: ActionResult, f: FormData): Promise
     const state = await startBackfill(db, { from, to, siteId, mode });
     const sites = await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(siteId ? { id: siteId } : {}) } });
     const cfg = config();
-    const perDay = Math.floor((cfg.asg.dailyBudget - cfg.asg.backfillReserve) / requestsPerDay(sites, mode));
+    const plan = await readPlan(db);
+    const perDay = Math.floor(planCost(plan, sites, cfg.asg.dailyBudget).backfill / requestsPerDay(sites, mode, plan));
     const nights = perDay > 0 ? Math.ceil(state.pending.length / perDay) : null;
     revalidatePath("/settings/integrations");
     return { ok: true, message: `Бэкфилл (${mode === "totals" ? "только итоги" : "все разрезы"}): ${state.pending.length} из ${daysBetween(from, to).length} дней — первая порция в ближайшие 30 минут${nights ? `, всего ≈ ${nights} сут. при ${perDay} дн./сутки` : ""}` };
@@ -328,5 +330,20 @@ export async function disconnectMetrikaAction(): Promise<ActionResult> {
     await disconnectMetrika(db);
     integrations();
     return { ok: true, message: "Метрика отключена" };
+  });
+}
+
+// ---------- ADOK request plan (ADR 0016) ----------
+
+/** Which per-site cuts the nightly job pulls, how many days it restates, whether the hourly totals re-read yesterday. */
+export async function saveAsgPlanAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const cuts = Object.fromEntries(CUTS.map((c) => [c.key, c.required || f.get(`cut:${c.key}`) === "1"])) as Record<CutKey, boolean>;
+    const plan = await savePlan(db, normalizePlan({ cuts, restateDays: Number(str(f, "restateDays")), hourlyToday: f.get("hourlyToday") === "1" }));
+    const sites = await db.site.count({ where: { status: "ACTIVE", adsgSiteId: { not: null } } });
+    const cost = planCost(plan, Math.max(1, sites), config().asg.dailyBudget);
+    revalidatePath("/settings/integrations");
+    return { ok: true, message: cost.over ? `План сохранён, но не влезает в бюджет: ${cost.total} запросов в сутки` : `План сохранён: ${cost.total} запросов в сутки, бэкфиллу остаётся ${cost.backfill}` };
   });
 }

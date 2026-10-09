@@ -1,7 +1,8 @@
-// AdSpyglass ingest. Request plan is built for ADOK's limits:
-//  - hourly: ONE account-level request per day (group_by=website) → site totals (country ZZ);
+// AdSpyglass ingest. Request plan is built for ADOK's limits and set on /settings/integrations (plan.ts, ADR 0016):
+//  - hourly: ONE account-level request per day in the window (group_by=website) → site totals (country ZZ);
 //  - nightly: ONE account-level spot cut per day (the spot name carries the domain) → zones,
-//    and per site: country, network (adnetwork_squashed), device and traffic source cuts.
+//    and per site the enabled cuts: country (always), network (adnetwork_squashed), device, traffic
+//    source, ad_type (format).
 // In the per-site country and device cuts ADOK scopes only the site's own fields; the ad network
 // side (broker_income, broker_hits) is not per site there, so the site total from the website cut
 // is spread over the cells instead (map.ts allocateBroker). The network cut is per site as is.
@@ -20,7 +21,8 @@ import { matchZonesToPlacements } from "@/server/services/inventory";
 import { CountryResolver } from "@/server/ingest/normalize";
 import { rawKey, type RawStore } from "@/server/ingest/raw-store";
 import { AsgClient, AsgError } from "./client";
-import { allocateBroker, mapCountryRows, mapDeviceRows, mapNetworkRows, mapSpotRows, mapTrafficSourceRows, mapWebsiteRows, type DeviceCell, type GeoCell, type Measures, type NetworkCell, type TrafficSourceCell } from "./map";
+import { allocateBroker, mapCountryRows, mapDeviceRows, mapFormatRows, mapNetworkRows, mapSpotRows, mapTrafficSourceRows, mapWebsiteRows, optionalFields, type DeviceCell, type FormatCell, type GeoCell, type Measures, type NetworkCell, type TrafficSourceCell } from "./map";
+import { DEFAULT_PLAN, type AsgPlan } from "./plan";
 
 export interface AsgIngestDeps { db: PrismaClient; client: AsgClient; raw: RawStore; runId: string }
 
@@ -56,7 +58,7 @@ export async function writeGeo(db: PrismaClient, date: string, siteId: string, c
     await tx.factRevenueGeo.deleteMany({ where: { date: d(date), siteId } });
     const data = cells.filter((c) => c.m.pageLoads || c.m.impsOwn || c.m.revenue).map((c) => ({
       date: d(date), siteId, networkId: netId, countryCode: c.countryCode, device: "UNKNOWN" as const,
-      pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork, clicks: c.m.clicks, revenueReported: dec(c.m.revenue),
+      pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork, clicks: c.m.clicks, revenueReported: dec(c.m.revenue), ...optionalFields(c.m),
     }));
     if (data.length) await tx.factRevenueGeo.createMany({ data });
     return data.length;
@@ -110,8 +112,9 @@ async function filterIgnoredRecently(db: PrismaClient): Promise<string | null> {
  * hits to check the per-site responses against; the first unscoped response stops the cut
  * for the whole run (and for a week), since every further request would be wasted.
  */
-export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFilter?: string): Promise<{ rows: number; failed: string[]; skipped?: string }> {
+export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFilter?: string, plan: AsgPlan = DEFAULT_PLAN): Promise<{ rows: number; failed: string[]; skipped?: string }> {
   const { db, client, raw, runId } = deps;
+  const on = plan.cuts;
   const ignored = await filterIgnoredRecently(db);
   if (ignored) return { rows: 0, failed: [], skipped: `гео по сайтам пропущено: ${ignored}` };
   const sites = await db.site.findMany({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(siteFilter ? { id: siteFilter } : {}) } });
@@ -145,24 +148,39 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
           rows += await writeGeo(db, date, s.id, [{ countryCode: "ZZ", m: total }], "site", netId);
           failed.push(`${s.domain} ${date}: разрез по странам пуст — оставлен итог сайта`);
         } else rows += await writeGeo(db, date, s.id, cells, "country", netId);
-        const netBody = await client.report({ from: date, to: date, groupBy: "adnetwork_squashed", websiteId: s.adsgSiteId! });
-        const nets = mapNetworkRows(netBody);
-        if (scopedToSite(nets.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
-          await raw.put(rawKey("adspyglass", `network/${s.adsgSiteId}`, date, runId), netBody);
-          rows += await writeNetworks(db, date, s.id, nets);
-        } else failed.push(`${s.domain} ${date}: сетки не по сайту — пропущены`);
-        const devBody = await client.report({ from: date, to: date, groupBy: "device", websiteId: s.adsgSiteId! });
-        const devs = allocateBroker(mapDeviceRows(devBody), siteTotal.get(s.adsgSiteId!));
-        if (scopedToSite(devs.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
-          await raw.put(rawKey("adspyglass", `device/${s.adsgSiteId}`, date, runId), devBody);
-          rows += await writeDevices(db, date, s.id, devs);
-        } else failed.push(`${s.domain} ${date}: устройства не по сайту — пропущены`);
-        const srcBody = await client.report({ from: date, to: date, groupBy: "traffic_source", websiteId: s.adsgSiteId! });
-        const srcs = mapTrafficSourceRows(srcBody);
-        if (scopedToSite(srcs.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
-          await raw.put(rawKey("adspyglass", `traffic_source/${s.adsgSiteId}`, date, runId), srcBody);
-          rows += await writeTrafficSources(db, date, s.id, srcs);
-        } else failed.push(`${s.domain} ${date}: источники трафика не по сайту — пропущены`);
+        if (on.network) {
+          const netBody = await client.report({ from: date, to: date, groupBy: "adnetwork_squashed", websiteId: s.adsgSiteId! });
+          const nets = mapNetworkRows(netBody);
+          if (scopedToSite(nets.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
+            await raw.put(rawKey("adspyglass", `network/${s.adsgSiteId}`, date, runId), netBody);
+            rows += await writeNetworks(db, date, s.id, nets);
+          } else failed.push(`${s.domain} ${date}: сетки не по сайту — пропущены`);
+        }
+        if (on.device) {
+          const devBody = await client.report({ from: date, to: date, groupBy: "device", websiteId: s.adsgSiteId! });
+          const devs = allocateBroker(mapDeviceRows(devBody), siteTotal.get(s.adsgSiteId!));
+          if (scopedToSite(devs.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
+            await raw.put(rawKey("adspyglass", `device/${s.adsgSiteId}`, date, runId), devBody);
+            rows += await writeDevices(db, date, s.id, devs);
+          } else failed.push(`${s.domain} ${date}: устройства не по сайту — пропущены`);
+        }
+        if (on.traffic_source) {
+          const srcBody = await client.report({ from: date, to: date, groupBy: "traffic_source", websiteId: s.adsgSiteId! });
+          const srcs = mapTrafficSourceRows(srcBody);
+          if (scopedToSite(srcs.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
+            await raw.put(rawKey("adspyglass", `traffic_source/${s.adsgSiteId}`, date, runId), srcBody);
+            rows += await writeTrafficSources(db, date, s.id, srcs);
+          } else failed.push(`${s.domain} ${date}: источники трафика не по сайту — пропущены`);
+        }
+        if (on.ad_type) {
+          // The format cut: like countries and devices, ADOK scopes only the site's own fields, so the network side is spread over the formats.
+          const fmtBody = await client.report({ from: date, to: date, groupBy: "ad_type", websiteId: s.adsgSiteId! });
+          const fmts = allocateBroker(mapFormatRows(fmtBody), siteTotal.get(s.adsgSiteId!));
+          if (scopedToSite(fmts.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
+            await raw.put(rawKey("adspyglass", `ad_type/${s.adsgSiteId}`, date, runId), fmtBody);
+            rows += await writeFormats(db, date, s.id, fmts);
+          } else failed.push(`${s.domain} ${date}: форматы не по сайту — пропущены`);
+        }
         const gap = reconcile(rawCells.reduce((a, c) => a + c.m.predicted, 0), siteTotal.get(s.adsgSiteId!)?.predicted);
         if (gap != null) failed.push(`${s.domain} ${date}: сверка с итогом ADOK — выручка по странам расходится на ${(gap * 100).toFixed(1)}%`);
     } catch (e) {
@@ -191,11 +209,24 @@ export function reconcile(cutRevenue: number, siteRevenue: number | undefined): 
 export async function writeDevices(db: PrismaClient, date: string, siteId: string, cells: DeviceCell[]): Promise<number> {
   const data = cells.filter((c) => c.m.pageLoads || c.m.impsOwn || c.m.revenue).map((c) => ({
     date: d(date), siteId, device: c.device, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork,
-    clicks: c.m.clicks, revenueReported: dec(c.m.revenue),
+    clicks: c.m.clicks, revenueReported: dec(c.m.revenue), ...optionalFields(c.m),
   }));
   await db.$transaction([
     db.factRevenueDevice.deleteMany({ where: { date: d(date), siteId } }),
     db.factRevenueDevice.createMany({ data }),
+  ]);
+  return data.length;
+}
+
+/** Replaces the format rows of (date, site): the ad_type cut (ADR 0016). */
+export async function writeFormats(db: PrismaClient, date: string, siteId: string, cells: FormatCell[]): Promise<number> {
+  const data = cells.filter((c) => c.m.pageLoads || c.m.impsOwn || c.m.revenue || c.m.requests).map((c) => ({
+    date: d(date), siteId, format: c.format, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork,
+    clicks: c.m.clicks, revenueReported: dec(c.m.revenue), ...optionalFields(c.m),
+  }));
+  await db.$transaction([
+    db.factRevenueFormat.deleteMany({ where: { date: d(date), siteId } }),
+    db.factRevenueFormat.createMany({ data }),
   ]);
   return data.length;
 }
@@ -223,7 +254,8 @@ export async function sourceSlugs(db: PrismaClient, cells: TrafficSourceCell[]):
 export async function writeTrafficSources(db: PrismaClient, date: string, siteId: string, cells: TrafficSourceCell[]): Promise<number> {
   const slugs = await sourceSlugs(db, cells);
   const data = cells.filter((c) => c.m.pageLoads || c.m.impsOwn || c.m.revenue).map((c) => ({
-    date: d(date), siteId, sourceSlug: slugs.get(c.slug)!, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, clicks: c.m.clicks, revenueReported: dec(c.m.revenue),
+    date: d(date), siteId, sourceSlug: slugs.get(c.slug)!, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork, clicks: c.m.clicks, revenueReported: dec(c.m.revenue),
+    ...optionalFields(c.m),
   }));
   await db.$transaction([
     db.factTrafficSource.deleteMany({ where: { date: d(date), siteId } }),
@@ -248,7 +280,7 @@ export async function writeNetworks(db: PrismaClient, date: string, siteId: stri
   const ids = await networkIds(db, cells);
   const data = cells.filter((c) => c.m.pageLoads || c.m.impsOwn || c.m.revenue).map((c) => ({
     date: d(date), siteId, networkId: ids.get(c.slug)!, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork,
-    clicks: c.m.clicks, revenueReported: dec(c.m.revenue),
+    clicks: c.m.clicks, revenueReported: dec(c.m.revenue), ...optionalFields(c.m),
   }));
   await db.$transaction([
     db.factRevenueNetwork.deleteMany({ where: { date: d(date), siteId } }),
@@ -290,8 +322,8 @@ export async function ingestSiteZones(deps: AsgIngestDeps, dates: string[], site
             await tx.factRevenueZone.upsert({
               where: { date_zoneId: { date: d(date), zoneId: zone.id } },
               create: { date: d(date), siteId, zoneId: zone.id, format: zone.format, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn,
-                impsNetwork: c.m.impsNetwork, views: c.views, clicks: c.m.clicks, revenueReported: dec(c.m.revenue) },
-              update: { pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork, views: c.views, clicks: c.m.clicks, revenueReported: dec(c.m.revenue) },
+                impsNetwork: c.m.impsNetwork, views: c.views, clicks: c.m.clicks, revenueReported: dec(c.m.revenue), ...optionalFields(c.m) },
+              update: { pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, impsNetwork: c.m.impsNetwork, views: c.views, clicks: c.m.clicks, revenueReported: dec(c.m.revenue), ...optionalFields(c.m) },
             });
             rows++;
           }

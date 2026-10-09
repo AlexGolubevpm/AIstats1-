@@ -71,3 +71,26 @@ describe("network side of per-site cuts", () => {
     expect(measures({ predicted_income: 1.25 } as never).predicted).toBe(1.25);
   });
 });
+
+
+describe("fields ADOK sends that used to be dropped (ADR 0016)", async () => {
+  const { measures, addMeasures, mapFormatRows, optionalFields } = await import("@/server/ingest/adspyglass/map");
+  it("requests, broker clicks and ADOK's fill rate are read (fraction or percent) and absent fields stay null", () => {
+    const m = measures({ name: "x", hits: 100, impressions: 40, requests: 90, broker_clicks: 3, fill_rate: 44 });
+    expect(m).toMatchObject({ requests: 90, brokerClicks: 3, fillRateAsg: 0.44 });
+    expect(measures({ name: "x", fill_rate: 0.25 }).fillRateAsg).toBe(0.25);
+    expect(measures({ name: "x" })).toMatchObject({ requests: null, brokerClicks: null, fillRateAsg: null });
+    expect(optionalFields(m)).toEqual({ requests: 90, brokerClicks: 3, fillRateAsg: "0.4400", predictedIncome: null });
+    expect(optionalFields(measures({ name: "x", predicted_income: 1.23456 })).predictedIncome).toBe("1.2346");
+  });
+  it("merged rows: counts add up, the fill rate is weighted by loads, all-null stays null", () => {
+    const a = measures({ name: "a", hits: 100, requests: 10, fill_rate: 0.5 }), b = measures({ name: "b", hits: 300, requests: 20, fill_rate: 0.1 });
+    expect(addMeasures(a, b)).toMatchObject({ requests: 30, brokerClicks: null, fillRateAsg: 0.2 }); // (0.5×100 + 0.1×300) / 400
+    expect(addMeasures(measures({ name: "a", hits: 1 }), measures({ name: "b", hits: 2 })).fillRateAsg).toBeNull();
+  });
+  it("ad_type rows map to formats and duplicates are summed", () => {
+    const cells = mapFormatRows([{ name: "Popunder", hits: 10, requests: 12 }, { name: "Banner 300x250", hits: 5 }, { name: "Footer banner", hits: 7 }, { ad_type: "Native", name: "?", hits: 1 }]);
+    expect(Object.fromEntries(cells.map((c) => [c.format, c.m.pageLoads]))).toEqual({ POPUNDER: 10, BANNER: 12, NATIVE: 1 });
+    expect(cells.find((c) => c.format === "POPUNDER")!.m.requests).toBe(12);
+  });
+});

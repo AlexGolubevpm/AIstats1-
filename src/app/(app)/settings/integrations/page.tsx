@@ -8,13 +8,14 @@ import { db } from "@/server/db";
 import { asgPause, asgRequestsToday } from "@/server/ingest/run";
 import { SCHEDULES } from "@/server/jobs/handlers";
 import { daysBetween, defaultWindow, readBackfill, requestsPerDay } from "@/server/jobs/backfill";
+import { CUTS, planCost, readPlan } from "@/server/ingest/adspyglass/plan";
 import { isDemo } from "@/server/seed/demo";
 import { authorizeUrl } from "@/server/ingest/metrika/oauth";
 import { metrikaStatus } from "@/server/services/metrika-connection";
-import { AliasRow, BackfillBlock, DemoButtons, MetrikaBlock, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
+import { AliasRow, BackfillBlock, CutsPlanner, DemoButtons, MetrikaBlock, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
 
 const JOB_LABEL: Record<string, string> = {
-  "asg:sites": "AdSpyglass: все разрезы по сайтам — страны, сетки, устройства, источники трафика, зоны + расход (ночной, ~4 запроса на сайт в день)",
+  "asg:sites": "AdSpyglass: разрезы по сайтам из плана ниже (страны, сетки, устройства, источники, форматы), зоны + расход (ночной)",
   "asg:totals": "AdSpyglass: только итоги по сайтам (1 запрос в день окна, без разрезов)",
   "asg:backfill": "AdSpyglass: бэкфилл прошлых дней порциями под бюджет (окно — в блоке ниже)",
   metrika: "Метрика: трафик", derive: "Расход → прогноз дилов → алерты", "geo:reprocess": "Пересчитать гео из сырья (без запросов к API)",
@@ -40,12 +41,13 @@ export default async function Integrations() {
     : metrika.kind === "app" ? `приложение …${metrika.clientId.slice(-4)} сохранено, токена ещё нет — получите код ниже`
     : metrika.kind === "env" ? `токен из .env: ${tail(cfg.metrika.token)}`
     : metrika.kind === "broken" ? metrika.error : "не подключена — блок «Яндекс Метрика» ниже";
-  const backfill = await readBackfill(db);
+  const [backfill, plan] = await Promise.all([readBackfill(db), readPlan(db)]);
   const today = new Date().toISOString().slice(0, 10);
   const asgSites = sites.filter((s) => s.status === "ACTIVE" && s.adsgSiteId).length;
   const nSites = backfill?.siteId ? 1 : Math.max(1, asgSites);
-  const perNight = { full: Math.max(0, Math.floor((cfg.asg.dailyBudget - cfg.asg.backfillReserve) / requestsPerDay(nSites, "full"))),
-    totals: Math.max(0, Math.floor((cfg.asg.dailyBudget - cfg.asg.backfillReserve) / requestsPerDay(nSites, "totals"))) };
+  // What the plan spends a day over all sites; the backfill gets what is left.
+  const cost = planCost(plan, Math.max(1, asgSites), cfg.asg.dailyBudget);
+  const perNight = { full: Math.max(0, Math.floor(cost.backfill / requestsPerDay(nSites, "full", plan))), totals: Math.max(0, Math.floor(cost.backfill / requestsPerDay(nSites, "totals", plan))) };
   const backfillView = backfill ? { from: backfill.from, to: backfill.to, mode: backfill.mode ?? "full", siteDomain: backfill.siteId ? sites.find((s) => s.id === backfill.siteId)?.domain ?? null : null,
     total: daysBetween(backfill.from, backfill.to).length, done: backfill.done.length, failed: backfill.failed.length, pending: backfill.pending.length,
     updatedAt: backfill.updatedAt, lastStop: backfill.lastStop ?? null, cancelled: Boolean(backfill.cancelled) } : null;
@@ -76,6 +78,10 @@ export default async function Integrations() {
       </Section>
       </div>
 
+      <Section title="Разрезы ADOK" sub={`План запросов к AdSpyglass на сутки: какие разрезы по каждому сайту тянет ночной джоб, за сколько прошлых дней, и перечитывать ли вчера почасовыми итогами. Бюджет ${cfg.asg.dailyBudget} запросов в сутки (ASG_DAILY_BUDGET); что не занято планом, достаётся бэкфиллу`}>
+        <CutsPlanner plan={plan} cuts={CUTS.map((c) => ({ key: c.key, title: c.title, what: c.what, required: Boolean(c.required) }))} sites={Math.max(1, asgSites)} budget={cfg.asg.dailyBudget} />
+      </Section>
+
       <Section title="Лимиты AdSpyglass" sub="ADOK блокирует частые запросы: один запрос за раз, пауза между запросами, дневной бюджет">
         <div className="num grid gap-4 text-sm sm:grid-cols-3">
           <div><div className="text-xs text-muted">Запросов сегодня (UTC)</div><div className="text-lg font-semibold">{used} / {cfg.asg.dailyBudget}</div>
@@ -101,7 +107,7 @@ export default async function Integrations() {
         })}</div>
         <div className="border-t border-border pt-4">
           <h3 className="mb-1 text-sm font-medium">Бэкфилл AdSpyglass</h3>
-          <p className="mb-3 text-xs text-muted">Догружает прошлые дни от новых к старым порциями под дневной бюджет (резерв {cfg.asg.backfillReserve} запросов остаётся ночному прогону): джоба проверяет окно каждые 30 минут и продолжает на следующие сутки сама. «Все разрезы» — страны, сетки, устройства, источники, зоны и расход (2 + 4 × сайтов запросов на день); «только итоги по сайтам» — один запрос на день, хватает для графиков, прогноза и сравнения месяцев. В конце пересчитывает прогноз дилов и алерты за окно.</p>
+          <p className="mb-3 text-xs text-muted">Догружает прошлые дни от новых к старым порциями под дневной бюджет (плану выше остаётся его резерв — {cost.reserve} запросов): джоба проверяет окно каждые 30 минут и продолжает на следующие сутки сама. «Все разрезы» — разрезы из плана, зоны и расход ({cost.perDay} запросов на день для {asgSites || 1} сайтов); «только итоги по сайтам» — один запрос на день, хватает для графиков, прогноза и сравнения месяцев. В конце пересчитывает прогноз дилов и алерты за окно.</p>
           <BackfillBlock state={backfillView} sites={sites.map((s) => ({ id: s.id, domain: s.domain }))} defaults={{ full: defaultWindow(today, "full"), totals: defaultWindow(today, "totals") }} perNight={perNight} />
         </div>
         <div className="border-t border-border pt-4">

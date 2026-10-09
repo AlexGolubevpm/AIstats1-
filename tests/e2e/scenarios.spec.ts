@@ -313,3 +313,20 @@ test("integrations: the Metrika block takes the OAuth app and refuses a nonsense
   await expect(page.getByTestId("metrika-block").locator("input[name=clientId]")).toBeVisible();
   await expect(page.getByTestId("metrika-block").locator("input[name=code]")).toHaveCount(0);
 });
+
+test("integrations: the ADOK request plan shows its cost live, saves, and the backfill text follows it", async ({ page }) => {
+  await login(page, "/settings/integrations");
+  const cuts = page.getByTestId("asg-cuts");
+  await expect(cuts).toBeVisible();
+  await expect(cuts.locator("input[name='cut:country']")).toBeDisabled(); // countries are the base of the geo pages: always on
+  const cost = page.getByTestId("asg-plan-cost");
+  const before = await cost.locator(".text-2xl").innerText();
+  await cuts.locator("input[name='cut:ad_type']").uncheck();
+  await expect(cost.locator(".text-2xl")).not.toHaveText(before); // the total reacts before saving
+  await cuts.locator("input[name='cut:ad_type']").check();
+  await page.getByRole("button", { name: "Сохранить план" }).click();
+  await expect(page.getByText(/План сохранён/)).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("asg-cuts").locator("input[name='cut:ad_type']")).toBeChecked();
+  await expect(page.getByText(/запросов на день для/)).toBeVisible(); // the backfill paragraph quotes the plan's per-day cost
+});
