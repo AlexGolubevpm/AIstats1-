@@ -6,8 +6,8 @@ import { Input, Select } from "@/components/ui/input";
 import { Confirm } from "@/components/ui/sheet";
 import { useToast } from "@/components/ui/toast";
 import { applyMetrikaCountersAction, cancelBackfillAction, connectMetrikaAction, demoAction, disconnectMetrikaAction, mapAliasAction, metrikaCountersAction, resumeAsgAction, runJobAction,
-  saveAsgPlanAction, saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
-import { RESTATE_CHOICES, planCost, type AsgPlan, type CutKey } from "@/server/ingest/adspyglass/plan";
+  saveAsgBudgetAction, saveAsgPlanAction, saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
+import { RESTATE_CHOICES, UNLIMITED, planCost, type AsgPlan, type CutKey } from "@/server/ingest/adspyglass/plan";
 import { DECISION_LABEL, type MatchRow } from "@/server/domain/metrika-match";
 import { fmtDate } from "@/lib/format";
 
@@ -117,7 +117,7 @@ export function BackfillBlock({ state, sites, defaults, perNight }: { state: Bac
           </Select>
         </FormField>
         <FormField name="from" label="С"><Input type="date" name="from" value={win.from} onChange={(e) => setWin({ ...win, from: e.target.value })} required /></FormField>
-        <FormField name="to" label="По" hint={`≈ ${perNight[mode]} дн. в сутки при текущем бюджете и резерве`}><Input type="date" name="to" value={win.to} onChange={(e) => setWin({ ...win, to: e.target.value })} required /></FormField>
+        <FormField name="to" label="По" hint={perNight[mode] >= 1000 ? "без суточного лимита — всё окно за один заход" : `≈ ${perNight[mode]} дн. в сутки при текущем бюджете и резерве`}><Input type="date" name="to" value={win.to} onChange={(e) => setWin({ ...win, to: e.target.value })} required /></FormField>
         <FormField name="siteId" label="Сайт (опционально)"><Select name="siteId" defaultValue=""><option value="">Все</option>{sites.map((s) => <option key={s.id} value={s.id}>{s.domain}</option>)}</Select></FormField>
       </ActionForm>
     </div>
@@ -201,6 +201,7 @@ export function CutsPlanner({ plan, cuts, sites, budget }: { plan: AsgPlan; cuts
   const [draft, setDraft] = useState<AsgPlan>(plan);
   const cost = planCost(draft, sites, budget);
   const pct = Math.min(100, Math.round((cost.total / budget) * 100));
+  const unlimited = budget >= UNLIMITED;
   return (
     <ActionForm action={saveAsgPlanAction} submit="Сохранить план" submitSize="sm" className="flex flex-col gap-4" >
       <div className="grid gap-4 lg:grid-cols-[1fr_280px]">
@@ -227,17 +228,30 @@ export function CutsPlanner({ plan, cuts, sites, budget }: { plan: AsgPlan; cuts
         </ul>
         <div className="num rounded-lg border border-border p-3 text-sm" data-testid="asg-plan-cost">
           <div className="text-xs text-muted">В сутки по плану</div>
-          <div className={`text-2xl font-semibold ${cost.over ? "text-negative" : ""}`}>{cost.total} <span className="text-sm font-normal text-muted">из {budget}</span></div>
-          <div className="mt-1 h-1.5 rounded-full bg-surface-hover"><div className={`h-full rounded-full ${cost.over ? "bg-negative" : "bg-accent"}`} style={{ width: `${pct}%` }} /></div>
+          <div className={`text-2xl font-semibold ${cost.over ? "text-negative" : ""}`}>{cost.total} <span className="text-sm font-normal text-muted">{unlimited ? "без лимита" : `из ${budget}`}</span></div>
+          {!unlimited && <div className="mt-1 h-1.5 rounded-full bg-surface-hover"><div className={`h-full rounded-full ${cost.over ? "bg-negative" : "bg-accent"}`} style={{ width: `${pct}%` }} /></div>}
           <dl className="mt-3 grid grid-cols-[1fr_auto] gap-x-3 gap-y-1 text-xs">
             <dt className="text-muted">Ночь: {draft.restateDays} × (2 + {cost.perSite} × {sites})</dt><dd className="text-right">{cost.nightly}</dd>
             <dt className="text-muted">Почасовые итоги</dt><dd className="text-right">{cost.hourly}</dd>
             <dt className="text-muted">Запас на повторы и проверки</dt><dd className="text-right">30</dd>
-            <dt className="font-medium">Остаётся бэкфиллу</dt><dd className="text-right font-medium">{cost.backfill}</dd>
+            <dt className="font-medium">Остаётся бэкфиллу</dt><dd className="text-right font-medium">{unlimited ? "без ограничения" : cost.backfill}</dd>
           </dl>
           {cost.over > 0 && <p className="mt-2 text-xs text-negative">План не влезает в бюджет на {cost.over} запросов: уберите разрез или день.</p>}
         </div>
       </div>
     </ActionForm>
+  );
+}
+
+/** Our daily ceiling on ADOK requests: a number, or «без лимита» (0). */
+export function BudgetForm({ daily }: { daily: number }) {
+  const [unlimited, setUnlimited] = useState(daily === 0);
+  return (
+    <div data-testid="asg-budget">
+    <ActionForm action={saveAsgBudgetAction} submit="Сохранить" submitSize="sm" className="mt-3 flex flex-wrap items-end gap-2 [&>div:last-child]:pt-0">
+      <FormField name="daily" label="Суточный бюджет"><Input name="daily" inputMode="numeric" defaultValue={daily || ""} disabled={unlimited} className="w-28" placeholder="800" /></FormField>
+      <label className="flex h-9 items-center gap-2 text-sm"><input type="checkbox" name="unlimited" value="1" checked={unlimited} onChange={(e) => setUnlimited(e.target.checked)} data-testid="budget-unlimited" /> без лимита</label>
+    </ActionForm>
+    </div>
   );
 }

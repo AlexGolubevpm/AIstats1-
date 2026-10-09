@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CUTS, DEFAULT_PLAN, PLAN_MARGIN, enabledCuts, normalizePlan, perDayRequests, planCost } from "@/server/ingest/adspyglass/plan";
+import { CUTS, DEFAULT_PLAN, PLAN_MARGIN, UNLIMITED, enabledCuts, normalizePlan, perDayRequests, planCost } from "@/server/ingest/adspyglass/plan";
 
 describe("ADOK request plan (ADR 0016)", () => {
   it("the default plan on 27 sites: 3 nights × (1 + 8 × 27) + 24 hourly = 675 of 800, the rest minus a margin goes to the backfill", () => {
@@ -22,5 +22,13 @@ describe("ADOK request plan (ADR 0016)", () => {
     expect(normalizePlan({ cuts: { ad_type: false }, restateDays: 2, hourlyToday: false })).toEqual({ cuts: { ...DEFAULT_PLAN.cuts, ad_type: false }, restateDays: 2, hourlyToday: false });
     expect(normalizePlan(null)).toEqual(DEFAULT_PLAN);
     expect(CUTS.find((c) => c.key === "country")?.required).toBe(true);
+  });
+});
+
+describe("planCost without a daily ceiling", () => {
+  it("never reports the plan over budget and leaves the backfill effectively unbounded", () => {
+    const c = planCost({ ...DEFAULT_PLAN, restateDays: 7, cuts: { ...DEFAULT_PLAN.cuts, browser: true } }, 27, UNLIMITED);
+    expect(c.over).toBe(0);
+    expect(c.backfill).toBeGreaterThan(100_000);
   });
 });

@@ -4,7 +4,7 @@ import type { PrismaClient } from "@/generated/prisma/client";
 import type { Config } from "@/server/config";
 import { AsgClient, AsgError, type AsgRow } from "./adspyglass/client";
 import { MetrikaClient } from "./metrika/client";
-import { asgPause, pauseAsg, takeAsgBudget } from "./run";
+import { asgBudget, asgPause, pauseAsg, takeAsgBudget } from "./run";
 import { metrikaToken } from "@/server/services/metrika-connection";
 
 export type ProbeResult<T> = { ok: true; value: T } | { ok: false; error: string };
@@ -14,7 +14,7 @@ export async function withAsg<T>(db: PrismaClient, cfg: Config, fn: (c: AsgClien
   const pause = await asgPause(db);
   if (pause) return { ok: false, error: `AdSpyglass на паузе до ${pause.until.slice(11, 16)} UTC: ${pause.reason}` };
   const client = new AsgClient({ baseUrl: cfg.asg.baseUrl, email: cfg.asg.email, token: cfg.asg.token, minIntervalMs: cfg.asg.minIntervalMs,
-    retryDelaysMs: [], takeBudget: () => takeAsgBudget(db, cfg.asg.dailyBudget), fetchImpl });
+    retryDelaysMs: [], takeBudget: async () => takeAsgBudget(db, (await asgBudget(db, cfg.asg.dailyBudget)).limit), fetchImpl });
   try {
     return { ok: true, value: await fn(client) };
   } catch (e) {
