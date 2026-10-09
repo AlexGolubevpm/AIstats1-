@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it } from "vitest";
 import { AsgClient } from "@/server/ingest/adspyglass/client";
+import { DEFAULT_PLAN } from "@/server/ingest/adspyglass/plan";
 import { FILTER_IGNORED_KEY, ingestSiteGeo, ingestSiteTotals, ingestSiteZones, rawGeoKeys, reconcile, reprocessGeoFromRaw, scopedToSite } from "@/server/ingest/adspyglass/ingest";
 import { LocalRawStore, rawKey } from "@/server/ingest/raw-store";
 import { asgPause, asgRequestsToday, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
@@ -110,14 +111,14 @@ describe("AdSpyglass ingest", () => {
     expect(facts.map((f) => f.views)).toEqual([600, 0, 0]);
   });
 
-  it("zones of all sites come from one account-level spot request, split by domain", async () => {
+  it("zones of all sites come from one account-level spot request, split by domain, when the plan does not pull zones per site", async () => {
     const { client, calls } = fakeAsg(() => [
       { name: "491. Banners_Footer_A (alpha.test)", hits: 100, impressions: 500, broker_income: 0.5 },
       { name: "492. Popunder (www.beta.test)", hits: 200, impressions: 180, broker_income: 2 },
       { name: "493. Slider (stranger.test)", hits: 1, broker_income: 9 },
       { name: "garbage", hits: 1 },
     ]);
-    const r = await ingestSiteZones({ db, client, raw, runId: "z1" }, [DATE]);
+    const r = await ingestSiteZones({ db, client, raw, runId: "z1" }, [DATE], undefined, { ...DEFAULT_PLAN, cuts: { ...DEFAULT_PLAN.cuts, spot_site: false } });
     expect(calls).toHaveLength(1);
     expect(calls[0].searchParams.get("website_id")).toBeNull();
     expect(r.rows).toBe(2);
@@ -267,7 +268,7 @@ describe("AdSpyglass ingest", () => {
     await db.countryAlias.create({ data: { source: "adspyglass", raw: "Atlantis", countryCode: "GR" } });
     await reprocessGeoFromRaw(db, raw, [{ key: rawKey("adspyglass", "country/101", DATE, "r5"), date: DATE, siteId: "a", adsgSiteId: 101, cut: "country" }]);
     expect((await geoRows()).map((x) => x.countryCode)).toEqual(["GR"]);
-    expect(calls).toHaveLength(6); // website totals + country + network + device + traffic source + ad_type during ingest; none during reprocess
+    expect(calls).toHaveLength(8); // website totals + country + network + device + traffic source + ad_type + hour + platform during ingest; none during reprocess
   });
 
   it("finds the latest raw country response per site and day", async () => {
@@ -314,7 +315,7 @@ describe("format cut and the request plan (ADR 0016)", () => {
       ];
       return [];
     });
-    const plan = { cuts: { country: true, network: false, device: false, traffic_source: false, ad_type: true }, restateDays: 3, hourlyToday: true };
+    const plan = { cuts: { country: true, network: false, device: false, traffic_source: false, ad_type: true, spot_site: false, hour: false, platform: false, browser: false }, restateDays: 3, hourlyToday: true };
     const r = await ingestSiteGeo({ db, client, raw, runId: "f1" }, [DATE], "a", plan);
     expect(r.failed).toEqual([]);
     expect(seen).toEqual(["website", "country", "ad_type"]); // network, device and traffic_source are off in this plan
@@ -327,5 +328,65 @@ describe("format cut and the request plan (ADR 0016)", () => {
     const v = await db.$queryRaw<{ format: string; requests: unknown; page_loads: unknown; fill_rate_asg: unknown; from_format_cut: boolean }[]>`
       SELECT format, requests, page_loads, fill_rate_asg, from_format_cut FROM v_format_daily WHERE site_id = 'a' ORDER BY format`;
     expect(v.map((x) => [x.format, Number(x.requests), Number(x.page_loads), Number(x.fill_rate_asg), x.from_format_cut])).toEqual([["BANNER", 390, 400, 0.75, true], ["POPUNDER", 550, 600, 0.5, true]]);
+  });
+});
+
+describe("zones per site, hours and platforms (ADR 0016)", () => {
+  const PLAN = (over: Partial<Record<string, boolean>> = {}) => ({ cuts: { country: true, network: false, device: false, traffic_source: false, ad_type: false, spot_site: true, hour: true, platform: true, browser: false, ...over } as never, restateDays: 3, hourlyToday: true });
+  it("spot per site: one request per site, zones belong to the filtered site; an account-shaped answer falls back to the one account request", async () => {
+    const seen: string[] = [];
+    const { client } = fakeAsg((u) => {
+      const g = u.searchParams.get("group_by"), site = u.searchParams.get("platforms_ids[]");
+      seen.push(`${g}:${site ?? "all"}`);
+      if (g !== "spot") return [];
+      if (site === "101") return [{ name: "491. Footer (alpha.test)", hits: 10, impressions: 10, broker_income: 1 }];
+      if (site === "102") return [{ name: "492. Header (beta.test)", hits: 20, impressions: 20, broker_income: 2 }];
+      return [{ name: "491. Footer (alpha.test)", hits: 10, broker_income: 1 }, { name: "492. Header (beta.test)", hits: 20, broker_income: 2 }];
+    });
+    const r = await ingestSiteZones({ db, client, raw, runId: "z1" }, [DATE], undefined, PLAN());
+    expect(r.failed).toEqual([]);
+    expect(seen).toEqual(["spot:101", "spot:102"]);
+    expect((await db.factRevenueZone.findMany({ orderBy: { siteId: "asc" } })).map((z) => [z.siteId, z.pageLoads])).toEqual([["a", 10], ["b", 20]]);
+    // The filter ignored: the per-site answer names other domains → one account request for the day, zones by domain as before.
+    seen.length = 0;
+    const { client: c2 } = fakeAsg((u) => {
+      const g = u.searchParams.get("group_by"), site = u.searchParams.get("platforms_ids[]");
+      seen.push(`${g}:${site ?? "all"}`);
+      return g === "spot" ? [{ name: "491. Footer (alpha.test)", hits: 11, broker_income: 1 }, { name: "492. Header (beta.test)", hits: 22, broker_income: 2 }] : [];
+    });
+    const r2 = await ingestSiteZones({ db, client: c2, raw, runId: "z2" }, [DATE], undefined, PLAN());
+    expect(r2.failed).toEqual([expect.stringContaining("зоны не по сайту — взят общий запрос")]);
+    expect(seen).toEqual(["spot:101", "spot:all"]);
+    expect((await db.factRevenueZone.findMany({ orderBy: { siteId: "asc" } })).map((z) => [z.siteId, z.pageLoads])).toEqual([["a", 11], ["b", 22]]);
+    // Zones switched off per site: the account request alone.
+    seen.length = 0;
+    await ingestSiteZones({ db, client: c2, raw, runId: "z3" }, [DATE], undefined, PLAN({ spot_site: false }));
+    expect(seen).toEqual(["spot:all"]);
+  });
+
+  it("hour and platform cuts land in their facts with the site's network side spread; browsers only when enabled", async () => {
+    const seen: string[] = [];
+    const { client } = fakeAsg((u) => {
+      const g = u.searchParams.get("group_by"); seen.push(g!);
+      if (g === "website") return [{ name: "101. alpha.test", hits: 1000, impressions: 800, broker_hits: 790, broker_income: 10, predicted_income: 10 }];
+      if (g === "country") return [{ name: "Japan", iso: "JP", hits: 1000, impressions: 800, broker_income: 10, predicted_income: 10 }];
+      if (g === "hour") return [{ name: "13:00", hits: 600, impressions: 500, predicted_income: 6 }, { name: "14:00", hits: 400, impressions: 300, predicted_income: 4 }, { name: "??", hits: 5 }];
+      if (g === "platform") return [{ name: "Android", hits: 700, impressions: 560, predicted_income: 7 }, { name: "Windows", hits: 300, impressions: 240, predicted_income: 3 }];
+      if (g === "browser") return [{ name: "Chrome", hits: 1000, impressions: 800, predicted_income: 10 }];
+      return [];
+    });
+    const r = await ingestSiteGeo({ db, client, raw, runId: "h1" }, [DATE], "a", PLAN());
+    expect(r.failed).toEqual([]);
+    expect(seen).toEqual(["website", "country", "hour", "platform"]);
+    expect((await db.factRevenueHour.findMany({ orderBy: { hour: "asc" } })).map((x) => [x.hour, x.pageLoads, Number(x.revenueReported), x.impsNetwork])).toEqual([[13, 600, 6, 494], [14, 400, 4, 296]]);
+    expect((await db.factRevenueTech.findMany({ orderBy: { name: "asc" } })).map((x) => [x.kind, x.name, x.pageLoads, Number(x.revenueReported)])).toEqual([["PLATFORM", "Android", 700, 7], ["PLATFORM", "Windows", 300, 3]]);
+    await ingestSiteGeo({ db, client, raw, runId: "h2" }, [DATE], "a", PLAN({ browser: true }));
+    expect(await db.factRevenueTech.count({ where: { kind: "BROWSER", name: "Chrome" } })).toBe(1);
+    // The page queries read them back.
+    const { hoursTable, techTable } = await import("@/server/queries/reports");
+    const hours = await hoursTable({ from: DATE, to: DATE }, "a");
+    expect(hours.map((h) => [h.label, h.loadsPerDay, h.revenuePerDay])).toEqual([["13:00", 600, 6], ["14:00", 400, 4]]);
+    expect(hours[0].share).toBeCloseTo(0.6);
+    expect((await techTable({ from: DATE, to: DATE }, "a", "PLATFORM")).map((t) => [t.name, t.loadsShare])).toEqual([["Android", 0.7], ["Windows", 0.3]]);
   });
 });

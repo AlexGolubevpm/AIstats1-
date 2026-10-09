@@ -166,3 +166,35 @@ export function mapFormatRows(rows: AsgRow[]): FormatCell[] {
   }
   return [...acc.values()];
 }
+
+export interface HourCell { hour: number; m: Measures }
+/** group_by=hour rows: the name carries the hour ("13", "13:00", "2026-10-08 13:00"); rows without a readable hour are dropped. */
+export function parseHour(name: string): number | null {
+  const s = String(name).trim();
+  const m = s.match(/(?:^|[\sT])(\d{1,2})(?::\d{2})?(?::\d{2})?\s*$/) ?? s.match(/^(\d{1,2})$/);
+  if (!m) return null;
+  const h = Number(m[1]);
+  return h >= 0 && h <= 23 ? h : null;
+}
+export function mapHourRows(rows: AsgRow[]): HourCell[] {
+  const acc = new Map<number, HourCell>();
+  for (const r of rows) {
+    const hour = parseHour(String(r.hour ?? r.name ?? ""));
+    if (hour == null) continue;
+    const m = measures(r), cur = acc.get(hour);
+    acc.set(hour, cur ? { hour, m: addMeasures(cur.m, m) } : { hour, m });
+  }
+  return [...acc.values()].sort((a, b) => a.hour - b.hour);
+}
+
+export interface TechCell { name: string; m: Measures }
+/** group_by=platform|browser rows ("Windows", "Android", "Chrome", …): the name as sent, trimmed; empty → "Other"; duplicates summed. */
+export function mapTechRows(rows: AsgRow[]): TechCell[] {
+  const acc = new Map<string, TechCell>();
+  for (const r of rows) {
+    const name = String(r.name ?? "").trim().slice(0, 80) || "Other";
+    const key = name.toLowerCase(), m = measures(r), cur = acc.get(key);
+    acc.set(key, cur ? { name: cur.name, m: addMeasures(cur.m, m) } : { name, m });
+  }
+  return [...acc.values()];
+}

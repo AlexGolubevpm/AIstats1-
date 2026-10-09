@@ -94,3 +94,17 @@ describe("fields ADOK sends that used to be dropped (ADR 0016)", async () => {
     expect(cells.find((c) => c.format === "POPUNDER")!.m.requests).toBe(12);
   });
 });
+
+describe("hour, platform and browser rows (ADR 0016)", async () => {
+  const { parseHour, mapHourRows, mapTechRows } = await import("@/server/ingest/adspyglass/map");
+  it("reads the hour from the shapes ADOK may use and drops what is not an hour", () => {
+    expect(["13", "13:00", "2026-10-08 13:00", "2026-10-08T13:00:00", "0", "23"].map(parseHour)).toEqual([13, 13, 13, 13, 0, 23]);
+    expect(["24", "abc", "", "2026-10-08"].map(parseHour)).toEqual([null, null, null, null]);
+    const cells = mapHourRows([{ name: "13:00", hits: 5 }, { name: "13", hits: 1 }, { name: "junk", hits: 9 }, { name: "02:00", hits: 2 }]);
+    expect(cells.map((c) => [c.hour, c.m.pageLoads])).toEqual([[2, 2], [13, 6]]);
+  });
+  it("platform and browser names are kept as sent (trimmed, de-duplicated case-insensitively), empty → Other", () => {
+    const cells = mapTechRows([{ name: " Android ", hits: 1 }, { name: "android", hits: 2 }, { name: "", hits: 3 }, { name: "Windows", hits: 4 }]);
+    expect(cells.map((c) => [c.name, c.m.pageLoads])).toEqual([["Android", 3], ["Other", 3], ["Windows", 4]]);
+  });
+});
