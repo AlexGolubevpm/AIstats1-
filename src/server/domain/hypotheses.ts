@@ -52,6 +52,14 @@ const ALERT_SCOPE: Record<string, HypScope> = {
   loss_geo: "geo", waterfall_inversion: "network", discrepancy: "network", invisible_zone: "zone", dead_zone: "zone", low_fill: "format",
   deal_no_numbers: "deal", overdue_payment: "deal", ingest_down: "system", deal_ending: "deal", source_unconfigured: "source",
 };
+/**
+ * The window an alert's "money at risk" covers, in days: the hypothesis quotes it per month (× 30 / days).
+ * `null` — the sum is a debt or a one-off (overdue invoice, deal without numbers, ingest), shown as is, not "per month".
+ */
+export const ALERT_WINDOW_DAYS: Record<string, number | null> = {
+  loss_geo: 7, waterfall_inversion: 7, discrepancy: 2, invisible_zone: 7, dead_zone: 30, low_fill: 7, deal_ending: 30, source_unconfigured: 7,
+  deal_no_numbers: null, overdue_payment: null, ingest_down: null,
+};
 const ALERT_METRIC: Record<string, Metric | null> = {
   loss_geo: "margin", waterfall_inversion: "rev_per_1k", discrepancy: null, invisible_zone: "view_rate", dead_zone: "revenue", low_fill: "revenue",
   deal_no_numbers: null, overdue_payment: null, ingest_down: null, deal_ending: "revenue", source_unconfigured: null,
@@ -76,10 +84,13 @@ export function fromAlert(a: AlertRow): HypothesisCandidate {
   const action = a.action?.trim() || (sentences.length > 1 ? sentences[sentences.length - 1] : a.message);
   const why = a.action?.trim() ? a.message : sentences.length > 1 ? sentences.slice(0, -1).join(" ") : "";
   const keys = parseEntityKey(a.entityKey);
+  const window = ALERT_WINDOW_DAYS[a.rule] ?? null;
+  const debt = window == null && a.moneyAtRisk > 0;
   return {
     ruleKey: a.rule, objectKey: a.entityKey, scope: ALERT_SCOPE[a.rule] ?? "site", level: a.level, title: a.title,
-    hypothesis: `${action}${why ? ` — ${why}` : ""}`, evidence: { why, action, moneyAtRisk: a.moneyAtRisk, alert: a.rule },
-    impactMonth: a.moneyAtRisk, link: a.link, metric: ALERT_METRIC[a.rule] ?? null, source: "ALERT", alertId: a.id,
+    hypothesis: `${action}${why ? ` — ${why}` : ""}`,
+    evidence: { why, action, moneyAtRisk: round(a.moneyAtRisk, 2), alert: a.rule, ...(window != null ? { days: window } : {}), ...(debt ? { debt: true } : {}) },
+    impactMonth: round(window != null ? perMonth(a.moneyAtRisk, window) : a.moneyAtRisk, 2), link: a.link, metric: ALERT_METRIC[a.rule] ?? null, source: "ALERT", alertId: a.id,
     siteId: a.siteId ?? keys.siteId ?? null, countryCode: keys.countryCode ?? null, zoneId: keys.zoneId ?? null, format: keys.format ?? null,
     dealId: keys.dealId ?? null, sourceSlug: keys.sourceSlug ?? null,
   };
@@ -156,16 +167,24 @@ export function sourceRecs(rows: SourceRow[], days: number): HypothesisCandidate
   });
 }
 
-export interface FreeRow { siteId: string; domain: string; free: number; places: number; revenue: number; rank: number }
-/** Free ad places on the sites that earn the most: inventory nobody sells. */
-export function freePlaceRecs(rows: FreeRow[], topN = 10): HypothesisCandidate[] {
-  return rows.filter((r) => r.rank <= topN && r.free > 0 && r.revenue > 0).map((r) => ({
-    ruleKey: "free_places", objectKey: `site:${r.siteId}`, scope: "format" as const, siteId: r.siteId,
-    title: `${r.free} свободных ${r.free === 1 ? "место" : r.free < 5 ? "места" : "мест"} на ${r.domain}`,
-    hypothesis: `Если продать фикс-дил на свободное место или включить ротацию AdSpyglass, сайт №${r.rank} по выручке (${money(r.revenue)} за 7 дн.) заработает с ${r.free} из ${r.places} мест, которые сейчас ничем не заняты.`,
-    evidence: { days: 7, free: r.free, places: r.places, rank: r.rank, revenue: round(r.revenue, 2) }, impactMonth: 0, link: `/inventory?free=1`,
-    metric: "revenue" as const, level: "INFO" as const, source: "AUTO" as const,
-  }));
+export interface FreeRow {
+  siteId: string; domain: string; free: number; places: number; revenue: number; rank: number;
+  /** Median revenue of one occupied place on the site over the window: what a free place could plausibly bring. */
+  placeMedian?: number | null;
+}
+/** Free ad places on the sites that earn the most: inventory nobody sells. Effect = free places × the site's median occupied place, per month. */
+export function freePlaceRecs(rows: FreeRow[], topN = 10, days = 7): HypothesisCandidate[] {
+  return rows.filter((r) => r.rank <= topN && r.free > 0 && r.revenue > 0).map((r) => {
+    const impact = r.placeMedian ? perMonth(r.placeMedian * r.free, days) : 0;
+    return {
+      ruleKey: "free_places", objectKey: `site:${r.siteId}`, scope: "format" as const, siteId: r.siteId,
+      title: `${r.free} свободных ${r.free === 1 ? "место" : r.free < 5 ? "места" : "мест"} на ${r.domain}`,
+      hypothesis: `Если продать фикс-дил на свободное место или включить ротацию AdSpyglass, сайт №${r.rank} по выручке (${money(r.revenue)} за ${days} дн.) заработает с ${r.free} из ${r.places} мест, которые сейчас ничем не заняты${r.placeMedian ? ` — занятое место на сайте приносит в медиане ${money(r.placeMedian)} за ${days} дн.` : ""}.`,
+      evidence: { days, free: r.free, places: r.places, rank: r.rank, revenue: round(r.revenue, 2), placeMedian: r.placeMedian == null ? null : round(r.placeMedian, 2) },
+      impactMonth: round(impact, 2), link: `/inventory?free=1`,
+      metric: "revenue" as const, level: levelOf(impact), source: "AUTO" as const,
+    };
+  });
 }
 
 // ---------- New rules over the daily analytics (bundle, site vs bundle, geo vs network, format vs peers) ----------
@@ -374,4 +393,65 @@ export function mergeCandidates(lists: HypothesisCandidate[][]): HypothesisCandi
   }
   const order = { CRITICAL: 0, WARNING: 1, INFO: 2 };
   return out.sort((a, b) => order[a.level] - order[b.level] || b.impactMonth - a.impactMonth);
+}
+
+
+// ---------- Evidence line for the card ----------
+type Ev = Record<string, unknown>;
+const ev = (e: Ev, k: string): number | null => (typeof e[k] === "number" && Number.isFinite(e[k] as number) ? (e[k] as number) : null);
+const evs = (e: Ev, k: string): string | null => (typeof e[k] === "string" && (e[k] as string) ? (e[k] as string) : null);
+const sitesWord = (k: number) => `${k} ${k % 10 === 1 && k % 100 !== 11 ? "сайт" : k % 10 >= 2 && k % 10 <= 4 && (k % 100 < 10 || k % 100 >= 20) ? "сайта" : "сайтов"}`;
+const fmtMoneyOrDash = (v: number | null) => (v == null ? "—" : money(v));
+
+/**
+ * The numbers a hypothesis stands on, in one line for the card: «у вас $X · медиана $Y · лидер domain $Z · N сайтов».
+ * Reads the stored `evidence` of the rule that made it; `null` when the rule keeps nothing worth a line (alerts carry it in the text).
+ */
+export function evidenceLine(ruleKey: string, evidence: unknown): string | null {
+  if (!evidence || typeof evidence !== "object") return null;
+  const e = evidence as Ev;
+  const days = ev(e, "days");
+  const over = days ? ` за ${days} дн.` : "";
+  switch (ruleKey) {
+    case "site_below_bundle": {
+      const parts = [`у вас ${cpm(ev(e, "revPer1k") ?? 0)}`, `медиана бандла ${cpm(ev(e, "bundleMedian") ?? 0)}`];
+      if (evs(e, "leader")) parts.push(`лидер ${evs(e, "leader")} ${cpm(ev(e, "leaderRevPer1k") ?? 0)}`);
+      if (ev(e, "sites")) parts.push(sitesWord(ev(e, "sites")!));
+      return parts.join(" · ") + over;
+    }
+    case "geo_below_network": {
+      const parts = [`у вас ${cpm(ev(e, "revPer1k") ?? 0)}`, `медиана сети ${cpm(ev(e, "networkMedian") ?? 0)}`];
+      if (ev(e, "sites")) parts.push(sitesWord(ev(e, "sites")!));
+      return parts.join(" · ") + over;
+    }
+    case "format_missing":
+      return `формат зарабатывает на ${ev(e, "peersEarning") ?? 0} из ${ev(e, "peers") ?? 0} сайтов бандла · медиана ${cpm(ev(e, "peerMedianPer1k") ?? 0)} за 1000 loads · у вас ${(ev(e, "pageLoads") ?? 0).toLocaleString("ru-RU")} loads${over}`;
+    case "network_underused":
+      return `${evs(e, "network") ?? "сетка"}: у пиров ${cpm(ev(e, "peerMedianPer1k") ?? 0)} · сайт в среднем ${cpm(ev(e, "siteRevPer1k") ?? 0)} · её доля у вас ${pct(ev(e, "volShare") ?? 0)}${over}`;
+    case "network_below_floor":
+      return `у вас ${cpm(ev(e, "revPer1k") ?? 0)} · флор ${cpm(ev(e, "floor") ?? 0)} · ${pct(ev(e, "volShare") ?? 0)} объёма${over}`;
+    case "site_loss":
+      return `выручка ${fmtMoneyOrDash(ev(e, "revenue"))} · расход ${fmtMoneyOrDash(ev(e, "cost"))}${ev(e, "romi") != null ? ` · ROMI ${ev(e, "romi")!.toFixed(1)}%` : ""}${over}`;
+    case "margin_drop": {
+      const drops = Array.isArray(e.drops) ? (e.drops as { kind: string; name: string; delta: number }[]).filter((d) => d && typeof d.delta === "number") : [];
+      const head = `маржа ${fmtMoneyOrDash(ev(e, "margin"))} против ${fmtMoneyOrDash(ev(e, "prevMargin"))} неделей раньше`;
+      return drops.length ? `${head} · просели: ${drops.slice(0, 3).map((d) => `${d.kind} ${d.name} ${money(d.delta)}`).join(", ")}` : head;
+    }
+    case "source_eats_revenue":
+      return `расход ${fmtMoneyOrDash(ev(e, "cost"))} · выручка сайта ${fmtMoneyOrDash(ev(e, "siteRevenue"))} · ${pct(ev(e, "loadsShare") ?? 0)} трафика${over}`;
+    case "source_above_revenue":
+      return `цена ${cpm(ev(e, "costPer1k") ?? 0)} · выручка ${cpm(ev(e, "revPer1k") ?? 0)} за 1000 loads · ${(ev(e, "loads") ?? 0).toLocaleString("ru-RU")} loads${over}`;
+    case "bundle_cost_share":
+      return `доля расхода ${pct(ev(e, "costShare") ?? 0)} · по сети ${pct(ev(e, "networkShare") ?? 0)} · выручка ${fmtMoneyOrDash(ev(e, "revenue"))}${over}`;
+    case "deal_below_rotation":
+      return `дил ${cpm(ev(e, "dealPer1k") ?? 0)} · ротация ${cpm(ev(e, "rotationPer1k") ?? 0)} за 1000 loads · ${(ev(e, "dealLoads") ?? 0).toLocaleString("ru-RU")} loads${over}`;
+    case "dead_zone":
+      return `${pct(ev(e, "share") ?? 0)} выручки формата при ${pct(ev(e, "impShare") ?? 0)} показов · ${(ev(e, "imps") ?? 0).toLocaleString("ru-RU")} показов${over}`;
+    case "invisible_zone":
+      return ev(e, "viewRate") == null ? null : `view rate ${pct(ev(e, "viewRate")!)} · ${(ev(e, "imps") ?? 0).toLocaleString("ru-RU")} показов · ${fmtMoneyOrDash(ev(e, "revenue"))}${over}`;
+    case "free_places":
+      return `${ev(e, "free") ?? 0} из ${ev(e, "places") ?? 0} мест свободны · сайт №${ev(e, "rank") ?? "—"} по выручке${ev(e, "placeMedian") != null ? ` · занятое место в медиане ${money(ev(e, "placeMedian")!)}` : ""}${over}`;
+    default:
+      return null;
+  }
 }

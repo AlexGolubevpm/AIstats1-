@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildNetwork, D1, D2 } from "@tests/factories/network";
-import { RULES, evaluateAlerts, snoozeAlert } from "@/server/domain/alerts/rules";
+import { RULES, SNOOZE_DAYS, evaluateAlerts, snoozeAlert, snoozeDays } from "@/server/domain/alerts/rules";
 import { resetDb, testDb } from "./helpers";
 
 const db = testDb();
@@ -35,8 +35,11 @@ describe("alert rules", () => {
     await db.factRevenueGeo.createMany({ data: rows });
     const c = await RULES.waterfallInversion(ctx());
     expect(c).toHaveLength(1);
-    expect(c[0].payload).toMatchObject({ network: "ExoClick", country: "DE", rank: 4 });
+    expect(c[0].payload).toMatchObject({ network: "ExoClick", country: "DE", rank: 4, best: "AdPulsar", loads: 60_000, days: 7 });
     expect(c[0].action).toContain("AdPulsar");
+    // Money at risk: the 60 000 loads at AdPulsar's $6/1k instead of ExoClick's $0.1/1k.
+    expect(c[0].moneyAtRisk).toBeCloseTo(((6 - 0.1) * 60_000) / 1000, 2);
+    expect(c[0].message).toContain("$354.00 больше");
   });
 
   it("3: discrepancy two days in a row; negative ×2 is critical", async () => {
@@ -46,6 +49,10 @@ describe("alert rules", () => {
     const c = await RULES.discrepancyRule(ctx());
     expect(c).toHaveLength(1);
     expect(c[0].level).toBe("CRITICAL");
+    // 14 000 disputed impressions at the network's CPM ($10 / 26 000 × 1000): an estimate, marked as one.
+    expect(c[0].moneyAtRisk).toBeCloseTo((14_000 * (10 / 26_000) * 1000) / 1000, 2);
+    expect(c[0].payload).toMatchObject({ estimate: true, days: 2 });
+    expect(c[0].message).toContain("(оценка)");
     // One day only → nothing
     await db.factRevenueGeo.deleteMany({ where: { networkId: ts.id, date: D1 } });
     expect(await RULES.discrepancyRule(ctx())).toHaveLength(0);
@@ -100,6 +107,10 @@ describe("alert rules", () => {
     const c = await RULES.lowFill(ctx());
     expect(c).toHaveLength(1);
     expect(c[0].payload.fillRate).toBeCloseTo(0.12);
+    // 440 000 unfilled requests at a quarter of the format's CPM ($1.2 / 60 000 × 1000 = $0.02) → $2.20.
+    expect(c[0].moneyAtRisk).toBeCloseTo(2.2, 2);
+    expect(c[0].payload).toMatchObject({ estimate: true });
+    expect(c[0].payload.formatCpm).toBeCloseTo(0.02, 6);
   });
 
   it("7: closed period without advertiser numbers; entering them clears it", async () => {
@@ -271,6 +282,18 @@ describe("evaluateAlerts", () => {
     await db.factCost.deleteMany({ where: { siteId: "s2" } });
     const r4 = await evaluateAlerts(ctx());
     expect([r4.resolved, await db.alert.count({ where: { resolvedAt: null } })]).toEqual([0, 2]);
+  });
+
+  it("«Принято к сведению» hides a priced alert for 30 days and an unpriced one (ingest) for 7", async () => {
+    await evaluateAlerts(ctx({ configuredSources: ["adspyglass"] }));
+    const priced = await db.alert.findFirstOrThrow({ where: { entityKey: "site:s1|country:JP" } });
+    const unpriced = await db.alert.findFirstOrThrow({ where: { rule: "ingest_down" } });
+    expect(Number(unpriced.moneyAtRisk)).toBe(0);
+    await snoozeAlert(db, priced.id); await snoozeAlert(db, unpriced.id);
+    const until = async (id: string) => Math.round(((await db.alert.findUniqueOrThrow({ where: { id } })).snoozedUntil!.getTime() - Date.now()) / 86_400_000);
+    expect(await until(priced.id)).toBe(SNOOZE_DAYS.priced);
+    expect(await until(unpriced.id)).toBe(SNOOZE_DAYS.unpriced);
+    expect(snoozeDays(0)).toBe(7); expect(snoozeDays(0.5)).toBe(30);
   });
 
   it("snoozed alert wakes up when money at risk more than doubles", async () => {

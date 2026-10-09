@@ -84,7 +84,7 @@ describe("reports", () => {
     expect(nets.map((n) => n.slug).sort()).toEqual(["adpulsar", "own_deals"]);
     expect(nets[0].rank).toBe(1);
     expect((await networksTable(P, {}, "US")).map((n) => n.slug)).toEqual(["adpulsar"]);
-    expect((await zonesTable(P, "s1"))[0]).toMatchObject({ zone: "Banners_Footer_A", invisible: true });
+    expect((await zonesTable(P, "s1"))[0]).toMatchObject({ zone: "Banners_Footer_A", invisible: true, candidateRemove: false, formatShare: 1 });
     expect((await devicesTable(P, "s1"))[0]).toMatchObject({ device: "DESKTOP" });
     const g = await siteGeoWithNetworks(P, "s1");
     expect(g.find((x) => x.country === "JP")?.children.map((c) => c.network).sort()).toEqual(["AdPulsar", "Own deals"]);
@@ -232,5 +232,26 @@ describe("geo: no-country cost is allocated per site and day (rate by loads, rev
     expect(rows.find((r) => r.country === "ZZ")).toMatchObject({ revenue: 20, cost: 6, pageLoads: 10_000, romi: null });
     expect(rows.find((r) => r.country === "JP")!.cost).toBe(24); // untouched by the totals-only day
     expect(rows.reduce((a, r) => a + r.revenue, 0)).toBeCloseTo((await totals({ from: "2026-09-19", to: "2026-09-21" }, { siteIds: ["s1"] })).revenue, 6);
+  });
+});
+
+describe("zones: «кандидат на снос» uses the dead-zone alert's thresholds within the format", () => {
+  it("under 1% of the format's revenue with over 5% of its impressions and ≥ 50 000 impressions; a popunder zone is not compared with banners", async () => {
+    const dead = await db.zone.create({ data: { adsgZoneId: 901, siteId: "s1", name: "Banners_Dead", format: "BANNER", position: "sidebar" } });
+    const pop = await db.zone.create({ data: { adsgZoneId: 902, siteId: "s1", name: "Pop", format: "POPUNDER" } });
+    await db.factRevenueZone.createMany({ data: [
+      { date: D1, siteId: "s1", zoneId: dead.id, format: "BANNER", pageLoads: 1_000, impsOwn: 100_000, views: 50_000, revenueReported: "0.01" },
+      // Alone in its format: tiny against the site total, but there is nothing of its kind to compare with.
+      { date: D1, siteId: "s1", zoneId: pop.id, format: "POPUNDER", pageLoads: 1_000, impsOwn: 100_000, views: 0, revenueReported: "0.01" },
+    ] });
+    const z = await zonesTable(P, "s1");
+    const byName = Object.fromEntries(z.map((r) => [r.zone, r]));
+    expect(byName.Banners_Dead).toMatchObject({ candidateRemove: true });
+    expect(byName.Banners_Dead.formatShare).toBeCloseTo(0.01 / 1.21, 4);
+    expect(byName.Banners_Footer_A).toMatchObject({ candidateRemove: false });
+    expect(byName.Pop).toMatchObject({ candidateRemove: false, formatShare: 1 });
+    // Below 50 000 impressions the share alone is not enough.
+    await db.factRevenueZone.update({ where: { date_zoneId: { date: D1, zoneId: dead.id } }, data: { impsOwn: 40_000 } });
+    expect((await zonesTable(P, "s1")).find((r) => r.zone === "Banners_Dead")).toMatchObject({ candidateRemove: false });
   });
 });

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildNetwork, D1, D2 } from "@tests/factories/network";
-import { collectCandidates, hypothesesList, hypothesisCounts, topHypotheses } from "@/server/queries/hypotheses";
+import { collectCandidates, hypothesesList, hypothesisCounts, siteHypotheses, topHypotheses, topSiteIds } from "@/server/queries/hypotheses";
 import { createHypothesis, generateHypotheses, hypothesisFromAlert, measureMetric, setHypothesisStatus } from "@/server/services/hypotheses";
 import { RuleError } from "@/server/domain/errors";
 import { resetDb, testDb } from "./helpers";
@@ -153,5 +153,21 @@ describe("own hypotheses and statuses", () => {
     const counts = await hypothesisCounts({});
     expect(counts.tabs.proposed).toBe(proposed.length); expect(counts.tabs.accepted).toBe(0);
     expect((await topHypotheses(1))[0].id).toBe(own); // the biggest expected effect leads
+  });
+
+  it("one site, a list of sites (the top-10 chip) and the site page block", async () => {
+    await generateHypotheses(db, TODAY);
+    const s1 = await hypothesesList({ tab: "proposed", siteId: "s1" });
+    expect(s1.length).toBeGreaterThan(0); expect(s1.every((h) => h.siteId === "s1")).toBe(true);
+    expect(s1.some((h) => h.ruleKey === "invisible_zone")).toBe(true);
+    const two = await hypothesesList({ tab: "proposed", siteIds: ["s2", "s3"] });
+    expect(two.every((h) => h.siteId === "s2" || h.siteId === "s3")).toBe(true);
+    expect((await hypothesisCounts({ siteId: "s1" })).tabs.proposed).toBe(s1.total);
+    // Top earners of the week: s2 is in two bundles but counts once; the limit cuts the list.
+    const top = await topSiteIds(2, TODAY);
+    expect(top).toHaveLength(2); expect(new Set(top).size).toBe(2);
+    expect((await topSiteIds(10, TODAY)).length).toBeLessThanOrEqual(3);
+    const block = await siteHypotheses("s1", 2);
+    expect(block.length).toBeLessThanOrEqual(2); expect(block.every((h) => h.siteId === "s1" && ["PROPOSED", "ACCEPTED"].includes(h.status))).toBe(true);
   });
 });

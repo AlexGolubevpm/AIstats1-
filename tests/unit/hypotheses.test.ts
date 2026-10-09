@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  bundleCostShare, dealBelowRotation, floorRecs, formatMissingVsPeers, freePlaceRecs, fromAlert, geoBelowNetwork, levelOf, lossSites, marginDrop, median,
+  ALERT_WINDOW_DAYS, bundleCostShare, dealBelowRotation, evidenceLine, floorRecs, formatMissingVsPeers, freePlaceRecs, fromAlert, geoBelowNetwork, levelOf, lossSites, marginDrop, median,
   mergeCandidates, networkUnderused, parseEntityKey, siteBelowBundle, sourceAboveRevenue, sourceRecs, zoneRecs,
 } from "@/server/domain/hypotheses";
 
@@ -12,7 +12,9 @@ describe("hypotheses from alerts", () => {
     const h = fromAlert({ id: "a1", rule: "invisible_zone", entityKey: "zone:z1", level: "WARNING", title: "Зона не видна: Footer на one.test", siteId: "s1", domain: "one.test", moneyAtRisk: 12,
       message: "View rate 9.0%, viewable CPM $1.2000. При view rate 35% зона дала бы ≈$42.00 за 7 дней вместо $10.80.", link: "/sites/one.test?by=zones",
       action: "Поднять зону выше фолда или перенести на другое место." });
-    expect(h).toMatchObject({ ruleKey: "invisible_zone", objectKey: "zone:z1", scope: "zone", source: "ALERT", alertId: "a1", zoneId: "z1", siteId: "s1", impactMonth: 12, metric: "view_rate" });
+    // $12 at risk over the rule's 7-day window → $51.43 a month; the window is kept as evidence.
+    expect(h).toMatchObject({ ruleKey: "invisible_zone", objectKey: "zone:z1", scope: "zone", source: "ALERT", alertId: "a1", zoneId: "z1", siteId: "s1", impactMonth: 51.43, metric: "view_rate" });
+    expect(h.evidence).toMatchObject({ days: 7, moneyAtRisk: 12 });
     expect(h.hypothesis.startsWith("Поднять зону выше фолда")).toBe(true);
     // An alert stored before actions existed: the last sentence still serves.
     const old = fromAlert({ id: "a2", rule: "loss_geo", entityKey: "site:s1|country:JP", level: "CRITICAL", title: "Убыточное гео JP на one.test", siteId: "s1", domain: "one.test", moneyAtRisk: 4,
@@ -20,6 +22,21 @@ describe("hypotheses from alerts", () => {
     expect(old.hypothesis).toBe("Снизить закупку гео или поднять флор. — За 7 дней выручка $20.00 при расходе $24.00 (ROMI -16.7%).");
     expect(old).toMatchObject({ countryCode: "JP", siteId: "s1", scope: "geo", metric: "margin" });
     expect(parseEntityKey("deal:d1|from:2026-09-01")).toEqual({ dealId: "d1" });
+  });
+
+  it("the effect is quoted per month by the rule's window; a debt (overdue invoice) stays as is and is labelled; an unpriced alert has no effect", () => {
+    const base = { level: "WARNING" as const, title: "t", siteId: null, domain: null, message: "x. Сделать.", link: "/" };
+    expect(fromAlert({ ...base, id: "d", rule: "dead_zone", entityKey: "zone:z1", moneyAtRisk: 30 })).toMatchObject({ impactMonth: 30, evidence: { days: 30 } }); // 30-day window: as is
+    expect(fromAlert({ ...base, id: "e", rule: "deal_ending", entityKey: "deal:d1", moneyAtRisk: 90 })).toMatchObject({ impactMonth: 90, evidence: { days: 30 } });
+    expect(fromAlert({ ...base, id: "g", rule: "loss_geo", entityKey: "site:s1|country:JP", moneyAtRisk: 7 })).toMatchObject({ impactMonth: 30 }); // $7 a week
+    expect(fromAlert({ ...base, id: "x", rule: "discrepancy", entityKey: "site:s1|net:N", moneyAtRisk: 2 })).toMatchObject({ impactMonth: 30, evidence: { days: 2 } });
+    const debt = fromAlert({ ...base, id: "o", rule: "overdue_payment", entityKey: "period:p1", moneyAtRisk: 1000 });
+    expect(debt).toMatchObject({ impactMonth: 1000, evidence: { debt: true } });
+    expect(debt.evidence.days).toBeUndefined();
+    const ingest = fromAlert({ ...base, id: "i", rule: "ingest_down", entityKey: "source:adspyglass", moneyAtRisk: 0 });
+    expect(ingest).toMatchObject({ impactMonth: 0, scope: "system" });
+    expect(ingest.evidence.debt).toBeUndefined();
+    expect(ALERT_WINDOW_DAYS.deal_no_numbers).toBeNull();
   });
 });
 
@@ -43,7 +60,28 @@ describe("rules carried over", () => {
       { siteId: "s1", domain: "a.test", source: "Direct", sourceSlug: "direct", cost: 1, siteRevenue: 100, loadsShare: 0.5 }], 7))
       .toMatchObject([{ ruleKey: "source_eats_revenue", objectKey: "site:s1|source:tubecrown", impactMonth: 85.71, metric: "cost_share" }]);
     expect(freePlaceRecs([{ siteId: "s1", domain: "a.test", free: 3, places: 21, revenue: 50, rank: 1 }, { siteId: "s2", domain: "b.test", free: 3, places: 21, revenue: 1, rank: 11 }]))
-      .toMatchObject([{ ruleKey: "free_places", objectKey: "site:s1", level: "INFO" }]);
+      .toMatchObject([{ ruleKey: "free_places", objectKey: "site:s1", level: "INFO", impactMonth: 0 }]); // nothing to price a place with → no effect
+    // 3 free places × the site's median occupied place ($10 a week) → $128.57 a month, a WARNING.
+    const priced = freePlaceRecs([{ siteId: "s1", domain: "a.test", free: 3, places: 21, revenue: 50, rank: 1, placeMedian: 10 }]);
+    expect(priced[0]).toMatchObject({ impactMonth: 128.57, level: "WARNING", evidence: { placeMedian: 10, free: 3 } });
+    expect(priced[0].hypothesis).toContain("в медиане $10.00");
+  });
+});
+
+describe("evidence line", () => {
+  it("reads the stored numbers of a rule into one line; nothing for unknown rules or broken evidence", () => {
+    expect(evidenceLine("site_below_bundle", { days: 7, revPer1k: 0.5, bundleMedian: 1.2, leader: "top.test", leaderRevPer1k: 2, pageLoads: 100_000, sites: 4 }))
+      .toBe("у вас $0.5000 · медиана бандла $1.2000 · лидер top.test $2.0000 · 4 сайта за 7 дн.");
+    expect(evidenceLine("geo_below_network", { days: 7, revPer1k: 0.5, networkMedian: 1, pageLoads: 1, sites: 21 })).toBe("у вас $0.5000 · медиана сети $1.0000 · 21 сайт за 7 дн.");
+    expect(evidenceLine("margin_drop", { days: 7, margin: 10, prevMargin: 20, drops: [{ kind: "гео", name: "JP", delta: -6 }, { kind: "сетка", name: "Net", delta: -2 }] }))
+      .toBe("маржа $10.00 против $20.00 неделей раньше · просели: гео JP $-6.00, сетка Net $-2.00");
+    expect(evidenceLine("margin_drop", { days: 7, margin: 10, prevMargin: 20, drops: [] })).toBe("маржа $10.00 против $20.00 неделей раньше");
+    expect(evidenceLine("free_places", { days: 7, free: 3, places: 21, rank: 2, placeMedian: 10 })).toBe("3 из 21 мест свободны · сайт №2 по выручке · занятое место в медиане $10.00 за 7 дн.");
+    expect(evidenceLine("invisible_zone", { days: 7, viewRate: 0.09, imps: 60_000, revenue: 1.2 })).toContain("view rate 9.0%");
+    expect(evidenceLine("invisible_zone", { days: 7 })).toBeNull();
+    expect(evidenceLine("loss_geo", { why: "x" })).toBeNull(); // alerts carry their numbers in the text
+    expect(evidenceLine("site_loss", null)).toBeNull();
+    expect(evidenceLine("site_loss", "garbage")).toBeNull();
   });
 });
 

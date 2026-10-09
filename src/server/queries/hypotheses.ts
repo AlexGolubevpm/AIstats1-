@@ -5,7 +5,7 @@ import { db } from "@/server/db";
 import { presetPeriod, previousPeriod } from "@/lib/period";
 import * as m from "@/lib/metrics";
 import {
-  bundleCostShare, dealBelowRotation, floorRecs, formatMissingVsPeers, freePlaceRecs, fromAlert, geoBelowNetwork, lossSites, marginDrop, mergeCandidates,
+  bundleCostShare, dealBelowRotation, floorRecs, formatMissingVsPeers, freePlaceRecs, fromAlert, geoBelowNetwork, lossSites, marginDrop, median, mergeCandidates,
   networkUnderused, siteBelowBundle, sourceAboveRevenue, sourceRecs, zoneRecs, type HypScope, type HypothesisCandidate, type MarginTrendRow,
 } from "@/server/domain/hypotheses";
 import { inventoryGrid } from "./inventory";
@@ -89,7 +89,9 @@ export async function collectCandidates(today = iso(new Date())): Promise<Hypoth
   const ranked = [...live].sort((a, b) => b.revenue - a.revenue);
   const free = grid.sites.map((g) => {
     const rank = ranked.findIndex((x) => x.id === g.id) + 1;
-    return { siteId: g.id, domain: g.domain, free: g.free, places: grid.places.length, revenue: ranked[rank - 1]?.revenue ?? 0, rank: rank || 999 };
+    // What an occupied place on this site brings: the median of the cells that earned in the window.
+    const occupied = Object.values(g.cells).filter((c) => c.use !== "FREE" && c.revenue > 0).map((c) => c.revenue);
+    return { siteId: g.id, domain: g.domain, free: g.free, places: grid.places.length, revenue: ranked[rank - 1]?.revenue ?? 0, rank: rank || 999, placeMedian: median(occupied) };
   });
   const bundleRows = bundleSites.map((b) => ({ bundleId: s(b.bundle_id), bundleTitle: s(b.bundle_title), bundleSlug: s(b.bundle_slug), siteId: s(b.site_id), domain: s(b.domain), revenue: n(b.revenue), pageLoads: n(b.page_loads), cost: n(b.cost) }));
   const siteTotals = new Map(bundleRows.map((b) => [b.siteId, b]));
@@ -134,18 +136,25 @@ const sitesTotalsFor = (rows: { siteId: string; bundleId: string; bundleTitle: s
 export type HypothesisTab = "proposed" | "accepted" | "done" | "all";
 export const TAB_LABEL: Record<HypothesisTab, string> = { proposed: "Предложено системой", accepted: "В работе", done: "Проверено", all: "Все" };
 
-export interface HypothesisFilter { tab: HypothesisTab; scope?: HypScope | null; bundleSiteIds?: string[] | null; bundleId?: string | null; page?: number }
+export interface HypothesisFilter {
+  tab: HypothesisTab; scope?: HypScope | null; bundleSiteIds?: string[] | null; bundleId?: string | null; page?: number;
+  /** One site's hypotheses (the site page block, `?site=`). */
+  siteId?: string | null;
+  /** Only the sites in this list — the «Топ-10 сайтов» chip passes the ids of the week's top earners. */
+  siteIds?: string[] | null;
+}
 export const HYPOTHESES_PAGE = 50;
 
 const TAB_WHERE: Record<HypothesisTab, Prisma.HypothesisWhereInput> = {
   proposed: { status: "PROPOSED" }, accepted: { status: "ACCEPTED" }, done: { status: { in: ["DONE", "REJECTED"] } }, all: { status: { not: "EXPIRED" } },
 };
 
-/** The page list: by tab, scope and bundle (a bundle's hypotheses are its own plus those of its sites). */
+/** The page list: by tab, scope, bundle (a bundle's hypotheses are its own plus those of its sites), one site or a list of sites. */
 export async function hypothesesList(f: HypothesisFilter) {
   const where: Prisma.HypothesisWhereInput = {
     ...TAB_WHERE[f.tab], ...(f.scope ? { scope: f.scope } : {}),
     ...(f.bundleSiteIds ? { OR: [{ siteId: { in: f.bundleSiteIds } }, ...(f.bundleId ? [{ bundleId: f.bundleId }] : [])] } : {}),
+    ...(f.siteId ? { siteId: f.siteId } : f.siteIds ? { siteId: { in: f.siteIds } } : {}),
   };
   const page = Math.max(1, f.page ?? 1);
   const [rows, total] = await Promise.all([
@@ -158,7 +167,10 @@ export async function hypothesesList(f: HypothesisFilter) {
 }
 
 export async function hypothesisCounts(f: Omit<HypothesisFilter, "tab" | "scope">) {
-  const bundle = f.bundleSiteIds ? { OR: [{ siteId: { in: f.bundleSiteIds } }, ...(f.bundleId ? [{ bundleId: f.bundleId }] : [])] } : {};
+  const bundle: Prisma.HypothesisWhereInput = {
+    ...(f.bundleSiteIds ? { OR: [{ siteId: { in: f.bundleSiteIds } }, ...(f.bundleId ? [{ bundleId: f.bundleId }] : [])] } : {}),
+    ...(f.siteId ? { siteId: f.siteId } : f.siteIds ? { siteId: { in: f.siteIds } } : {}),
+  };
   const [tabs, scopes] = await Promise.all([
     Promise.all((Object.keys(TAB_WHERE) as HypothesisTab[]).map(async (t) => [t, await db.hypothesis.count({ where: { ...TAB_WHERE[t], ...bundle } })] as const)),
     db.hypothesis.groupBy({ by: ["scope", "status"], _count: { _all: true }, where: bundle }),
@@ -173,4 +185,16 @@ export const proposedCount = () => db.hypothesis.count({ where: { status: "PROPO
 export function topHypotheses(limit = 3) {
   return db.hypothesis.findMany({ where: { status: "PROPOSED" }, include: { site: { select: { domain: true } } },
     orderBy: [{ impactMonth: { sort: "desc", nulls: "last" } }, { level: "desc" }], take: limit });
+}
+
+/** Ids of the sites that earned the most over the last 7 days — the «Топ-10 сайтов» chip. */
+export async function topSiteIds(limit = 10, today = iso(new Date())): Promise<string[]> {
+  const rows = await sitesTable(presetPeriod("7d", today));
+  return rows.filter((x) => x.status !== "ARCHIVED" && x.revenue > 0).sort((a, b) => b.revenue - a.revenue).slice(0, limit).map((x) => x.id);
+}
+
+/** Open and accepted hypotheses about one site, the site page block: critical first, then by effect. */
+export function siteHypotheses(siteId: string, limit = 6) {
+  return db.hypothesis.findMany({ where: { siteId, status: { in: ["PROPOSED", "ACCEPTED"] } },
+    orderBy: [{ level: "desc" }, { impactMonth: { sort: "desc", nulls: "last" } }], take: limit });
 }
