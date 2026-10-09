@@ -198,7 +198,13 @@ ADOK блокирует клиентов за частые запросы (на 
 - Один пользователь: логин `APP_LOGIN` (по умолчанию `Admin`, сравнивается без учёта регистра), пароль — bcrypt-хеш в базе (первый вход берёт `APP_PASSWORD` из env; `Sync server .env` с секретом `APP_PASSWORD` сбрасывает хеш и сессии), httpOnly + SameSite=Lax cookie сессии на 30 дней (`Secure` при `COOKIE_SECURE=1`), 5 неудачных попыток с IP → блокировка на 15 минут.
 - `proxy.ts` (Next 16) закрывает всё, кроме `/login`, `/api/health`, `/api/mcp`.
 - MCP — отдельный Bearer-токен (хеш в базе) и отдельная роль Postgres без доступа к таблицам.
-- Секреты интеграций — только в `.env` на сервере, в базу не пишутся.
+- Секреты интеграций, которые задаёт деплой (ADOK, S3, пароль), — только в `.env` на сервере. Исключение — подключение Метрики из интерфейса ([ADR 0018](../adr/0018-metrika-oauth-ui.md)): секрет OAuth-приложения и токены Яндекса лежат в `AppSetting` (`metrika_oauth`) зашифрованными AES-256-GCM ключом `APP_SECRET` (`src/server/crypto.ts`; формат `v1:<iv>:<tag>:<ciphertext>`). Ключ генерирует деплой (`deploy/apply-env.sh`, один раз, не перезаписывается); без `.env` дамп базы токенов не раскрывает. Роль `mcp_reader` таблицу `AppSetting` не читает.
+
+## Яндекс Метрика
+
+- **Stat API** `GET /stat/v1/data` (`MetrikaClient.fetchCounter`) — трафик по счётчику за окно: уники, визиты, просмотры, отказы, глубина × дата × страна × устройство → `FactTraffic` (джоб `metrika`, каждый час в :15, окно вчера–сегодня).
+- **Management API** `GET /management/v1/counters?per_page=1000&field=mirrors` (`MetrikaClient.listCounters`) — счётчики, доступные токену, с зеркалами; `matchCounters` (`src/server/domain/metrika-match.ts`) сопоставляет их с нашими сайтами по `normalizeDomain`.
+- **OAuth** (`src/server/ingest/metrika/oauth.ts`): `authorizeUrl` → `https://oauth.yandex.ru/authorize?response_type=code&client_id=…`; код подтверждения со страницы `verification_code` меняется на токены `POST https://oauth.yandex.ru/token` (`grant_type=authorization_code`, Basic-auth приложения); `refresh_token` — обновление. Хранение и чтение — `src/server/services/metrika-connection.ts`: `saveMetrikaApp`, `connectMetrika`, `metrikaToken` (база, иначе `METRIKA_TOKEN`), `ensureFreshToken` (за 30 дней до истечения, в джобе `metrika`), `metrikaCounters`, `applyMetrikaCounters` (запись `Site.metrikaId` + `AuditLog`). `configuredSources(db, cfg)` в `handlers.ts` считает Метрику подключённой, когда есть любой из токенов, — от этого зависит алерт «ингест упал».
 
 ## Наблюдаемость
 
@@ -220,6 +226,7 @@ ADOK блокирует клиентов за частые запросы (на 
 | `MCP_TOKEN` | web | Запасной MCP-токен; основной выпускается в UI |
 | `ASG_AUTH_EMAIL`, `ASG_AUTH_TOKEN`, `ASG_API_URL` | worker, web (проверки) | AdSpyglass |
 | `ASG_MIN_INTERVAL_MS`, `ASG_DAILY_BUDGET`, `ASG_RESTATE_DAYS`, `ASG_BACKFILL_RESERVE` | worker, web | Лимиты AdSpyglass и резерв бэкфилла |
-| `METRIKA_TOKEN` | worker, web (проверки) | Яндекс Метрика |
+| `METRIKA_TOKEN` | worker, web (проверки) | Яндекс Метрика — запасной путь; основной — подключение из UI (`metrikaToken()` в `src/server/services/metrika-connection.ts` сначала берёт токен из базы) |
+| `APP_SECRET` | web, worker | Ключ шифрования секретов в базе (Метрика); пишет деплой, менять нельзя без переподключения |
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY`, `S3_SECRET_KEY` | worker | Сырьё в S3; без них — `RAW_DIR` (том `raw_data`) |
 | `COMPOSE_PROFILES=worker` | compose | Включает воркер |

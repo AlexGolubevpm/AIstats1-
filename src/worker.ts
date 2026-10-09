@@ -2,7 +2,7 @@
 import { Worker } from "bullmq";
 import { config } from "@/server/config";
 import { db } from "@/server/db";
-import { JOB_NAMES, SCHEDULES, runJob, type JobData, type JobName } from "@/server/jobs/handlers";
+import { JOB_NAMES, SCHEDULES, configuredSources, runJob, type JobData, type JobName } from "@/server/jobs/handlers";
 import { queue, redis } from "@/server/jobs/queue";
 import { rawStoreFromEnv } from "@/server/ingest/raw-store";
 import { seedReference } from "@/server/seed/reference";
@@ -26,8 +26,7 @@ try {
   const daysAgo = (n: number) => new Date(Date.now() - (n - 1) * 86_400_000).toISOString().slice(0, 10);
   const deals = await forecastDeals(db, daysAgo(REFORECAST_DAYS), today);
   const costs = await revshareCosts(db, daysAgo(62), today);
-  const sources = [cfg.asg.configured && "adspyglass", cfg.metrika.configured && "metrika"].filter(Boolean) as string[];
-  const alerts = await evaluateAlerts({ db, asOf: today, configuredSources: sources });
+  const alerts = await evaluateAlerts({ db, asOf: today, configuredSources: await configuredSources(db, cfg) });
   const zones = await matchZonesToPlacements(db); // zone names → places (ADR 0010)
   const hyp = await generateHypotheses(db, today); // proposals from the rules and the alerts (ADR 0013)
   log("startup catch-up", { deals, costs, alerts: alerts.active, zones, hypotheses: hyp });

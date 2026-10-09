@@ -47,9 +47,11 @@ nano /opt/tubestat/.env       # шаблон — .env.example в репозит�
 | `COMPOSE_PROFILES=worker` | Включает воркер ингеста |
 | `COOKIE_SECURE=1` | Когда сайт открывается по HTTPS |
 | `ASG_AUTH_EMAIL`, `ASG_AUTH_TOKEN` | AdSpyglass; без них воркер пропускает джобы AdSpyglass |
-| `METRIKA_TOKEN` | Метрика |
+| `METRIKA_TOKEN` | Метрика — запасной путь; обычно Метрика подключается из интерфейса, секрет не нужен ([ADR 0018](adr/0018-metrika-oauth-ui.md)) |
 
 После правки `.env` — `cd /opt/tubestat && docker compose up -d` (или дождаться следующего деплоя).
+
+**`APP_SECRET`.** Каждый деплой (`deploy/apply-env.sh`) проверяет, что в `/opt/tubestat/.env` есть `APP_SECRET`, и один раз генерирует его (`openssl rand -hex 32`); дальше не трогает. Это ключ шифрования секретов, которые владелец вводит в интерфейсе (подключение Метрики). Потеря или смена ключа означает «подключить Метрику заново», поэтому `.env` входит в бэкап сервера.
 
 **Без ручной правки.** Воркфлоу `Sync server .env` (`.github/workflows/sync-env.yml`, вручную или при изменении `.github/sync-env.request`) переносит `ASG_AUTH_EMAIL`, `ASG_AUTH_TOKEN`, `METRIKA_TOKEN` и `APP_PASSWORD` из секретов окружения `production` в `/opt/tubestat/.env`, один раз генерирует `APP_PASSWORD`, если его нет и секрета нет, включает `COMPOSE_PROFILES=worker`, убирает `COOKIE_SECURE=1`, пока сайт открыт по HTTP (`APP_DOMAIN` пустой или `:80`), и перезапускает стек. Значения идут через stdin SSH и в лог не попадают; другие ключи скрипт не трогает. Пароль читается только на сервере: `grep APP_PASSWORD /opt/tubestat/.env`.
 

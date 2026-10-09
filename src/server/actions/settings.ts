@@ -16,6 +16,7 @@ import {
   addCostRate, addCostSource, addSitesToBundle, setSourceShare, deleteBundle, mapAlias, missingAsgSites, removeSitesFromBundle, saveBundle, saveNetwork, saveSite,
   setBundleSites, setSitesStatus, type RateInput,
 } from "@/server/services/settings";
+import { applyMetrikaCounters, connectMetrika, disconnectMetrika, metrikaCounters, saveMetrikaApp } from "@/server/services/metrika-connection";
 import { requireSession } from "@/server/session";
 import { guarded, int, opt, str, type ActionResult } from "./result";
 
@@ -268,4 +269,64 @@ export async function startBackfillAction(_: ActionResult, f: FormData): Promise
 export async function cancelBackfillAction(): Promise<ActionResult> {
   await requireSession();
   return guarded(async () => { await cancelBackfill(db); revalidatePath("/settings/integrations"); return { ok: true, message: "Бэкфилл отменён" }; });
+}
+
+// ---------- Yandex Metrika (ADR 0018) ----------
+
+const integrations = () => { revalidatePath("/settings/integrations"); revalidatePath("/settings/sites"); };
+
+export async function saveMetrikaAppAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    await saveMetrikaApp(db, config(), { clientId: str(f, "clientId"), clientSecret: str(f, "clientSecret") });
+    integrations();
+    return { ok: true, message: "Приложение сохранено — теперь получите код в Яндексе" };
+  });
+}
+
+/** The pasted confirmation code → tokens; answers with the counters matched to our sites right away. */
+export async function connectMetrikaAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const cfg = config();
+    await connectMetrika(db, cfg, str(f, "code"));
+    const rows = await metrikaCounters(db, cfg).catch((e: Error) => ({ error: e.message }));
+    integrations();
+    if (!Array.isArray(rows)) return { ok: true, message: `Метрика подключена, но счётчики не прочитались: ${rows.error}` };
+    const n = rows.filter((r) => r.decision === "matched").length;
+    return { ok: true, message: n ? `Метрика подключена · совпало счётчиков: ${n}` : "Метрика подключена · новых совпадений по доменам нет", data: { rows } };
+  });
+}
+
+export async function metrikaCountersAction(): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const rows = await metrikaCounters(db, config());
+    const n = rows.filter((r) => r.decision === "matched").length;
+    return { ok: true, message: n ? `Совпало счётчиков: ${n}` : "Новых совпадений по доменам нет", data: { rows } };
+  });
+}
+
+/** Writes the matched counters and queues the Metrika ingest for the last 30 days. */
+export async function applyMetrikaCountersAction(rows: { siteId: string; counterId: string }[]): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const n = await applyMetrikaCounters(db, rows);
+    if (n) {
+      const { enqueue } = await import("@/server/jobs/queue");
+      const to = new Date().toISOString().slice(0, 10), from = new Date(Date.now() - 29 * 86_400_000).toISOString().slice(0, 10);
+      await enqueue("metrika", { from, to }).catch(() => null); // without Redis (tests) the nightly job picks the counters up
+    }
+    integrations();
+    return { ok: true, message: n ? `Привязано счётчиков: ${n} · трафик за 30 дней поставлен в очередь` : "Нечего привязывать" };
+  });
+}
+
+export async function disconnectMetrikaAction(): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    await disconnectMetrika(db);
+    integrations();
+    return { ok: true, message: "Метрика отключена" };
+  });
 }

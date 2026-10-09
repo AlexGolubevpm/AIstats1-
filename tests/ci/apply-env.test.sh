@@ -10,7 +10,15 @@ check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fail=1; fi; }
 
 printf 'POSTGRES_PASSWORD=keep-me\nAPP_DOMAIN=:80\nCOOKIE_SECURE=1\n' > "$tmp/.env"
 out=$(run)
-check "nothing given → untouched"   '[ "$(cat "$tmp/.env")" = "$(printf "POSTGRES_PASSWORD=keep-me\nAPP_DOMAIN=:80\nCOOKIE_SECURE=1")" ] && [ -z "$out" ]'
+check "nothing given → only APP_SECRET added" '[ "$(grep -v "^APP_SECRET=" "$tmp/.env")" = "$(printf "POSTGRES_PASSWORD=keep-me\nAPP_DOMAIN=:80\nCOOKIE_SECURE=1")" ] && [ -z "$out" ]'
+check "app secret generated (64 hex)" 'grep -Eq "^APP_SECRET=[0-9a-f]{64}$" "$tmp/.env" && [ "$(grep -c "^APP_SECRET=" "$tmp/.env")" = 1 ]'
+secret=$(grep "^APP_SECRET=" "$tmp/.env")
+run >/dev/null
+check "app secret never rewritten"  '[ "$(grep "^APP_SECRET=" "$tmp/.env")" = "$secret" ]'
+check "secret never printed"        '[[ "$out" != *"${secret#APP_SECRET=}"* ]]'
+printf 'APP_SECRET=\n' > "$tmp/.env"; run >/dev/null
+check "empty app secret is filled"  'grep -Eq "^APP_SECRET=[0-9a-f]{64}$" "$tmp/.env" && [ "$(grep -c "^APP_SECRET" "$tmp/.env")" = 1 ]'
+printf 'POSTGRES_PASSWORD=keep-me\nAPP_DOMAIN=:80\nCOOKIE_SECURE=1\n' > "$tmp/.env"
 
 out=$(APP_DOMAIN=stats.example.test BASE_PATH=/admin run)
 env=$(cat "$tmp/.env")

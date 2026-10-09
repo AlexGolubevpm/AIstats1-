@@ -31,7 +31,7 @@ describe("job handlers", () => {
     let calls = 0;
     const fetchImpl = (async () => { calls++; return new Response("[]"); }) as typeof fetch;
     expect((await runJob("asg:totals", { db, cfg: config({}), raw, today, fetchImpl })).status).toBe("skipped");
-    expect((await runJob("metrika", { db, cfg: config({}), raw, today, fetchImpl })).skipped).toContain("METRIKA_TOKEN");
+    expect((await runJob("metrika", { db, cfg: config({}), raw, today, fetchImpl })).skipped).toContain("Метрика не подключена");
     await pauseAsg(db, 60, "тест");
     const cfg = config({ ASG_AUTH_EMAIL: "e", ASG_AUTH_TOKEN: "t" });
     expect((await runJob("asg:totals", { db, cfg, raw, today, fetchImpl })).skipped).toContain("паузе");

@@ -15,6 +15,12 @@ import { recalcCosts, revshareCosts } from "@/server/services/costs";
 import { matchZonesToPlacements } from "@/server/services/inventory";
 import { forecastDeals } from "@/server/services/deals";
 import { generateHypotheses } from "@/server/services/hypotheses";
+import { ensureFreshToken, metrikaToken } from "@/server/services/metrika-connection";
+
+/** Sources the alert «ингест упал» watches: ADOK from .env, Metrika from the UI connection or .env (ADR 0018). */
+export async function configuredSources(db: PrismaClient, cfg: Config): Promise<string[]> {
+  return [cfg.asg.configured && "adspyglass", (await metrikaToken(db, cfg)) && "metrika"].filter(Boolean) as string[];
+}
 
 export interface JobContext { db: PrismaClient; cfg: Config; raw: RawStore; today?: string; fetchImpl?: typeof fetch }
 export interface JobData { from?: string; to?: string; siteId?: string; mode?: BackfillMode }
@@ -71,11 +77,14 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
     });
   }
   if (name === "metrika") {
-    if (!cfg.metrika.configured) return { status: "skipped", skipped: "METRIKA_TOKEN не задан" };
-    const client = new MetrikaClient({ token: cfg.metrika.token, fetchImpl: ctx.fetchImpl });
+    // Renew an expiring OAuth token first; a failed renewal is reported through the run, not swallowed.
+    const refreshed = await ensureFreshToken(db, cfg, ctx.fetchImpl).then(() => null, (e: Error) => `обновление токена: ${e.message}`);
+    const token = await metrikaToken(db, cfg);
+    if (!token) return { status: "skipped", skipped: "Метрика не подключена (Настройки → Интеграции)" };
+    const client = new MetrikaClient({ token, fetchImpl: ctx.fetchImpl });
     return withIngestRun(db, { source: "metrika", job: name, ...w }, async (runId) => {
       const r = await ingestMetrika({ db, client, raw, runId }, w.from, w.to, data.siteId);
-      return { rows: r.rows, partial: r.failed };
+      return { rows: r.rows, partial: [...(refreshed ? [refreshed] : []), ...r.failed] };
     });
   }
   if (name === "geo:reprocess") {
@@ -92,8 +101,7 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
     const costs = await recalcCosts(db, w.from, w.to, data.siteId) + await revshareCosts(db, w.from, w.to, data.siteId);
     await matchZonesToPlacements(db); // zones created before a place was added
     const deals = await forecastDeals(db, w.from, w.to);
-    const sources = [cfg.asg.configured && "adspyglass", cfg.metrika.configured && "metrika"].filter(Boolean) as string[];
-    const alerts = await evaluateAlerts({ db, asOf: todayOf(ctx), configuredSources: sources });
+    const alerts = await evaluateAlerts({ db, asOf: todayOf(ctx), configuredSources: await configuredSources(db, cfg) });
     const hyp = await generateHypotheses(db, todayOf(ctx)); // after the alerts: they feed the proposals
     return { rows: costs + deals + alerts.active + hyp.created + hyp.refreshed };
   });

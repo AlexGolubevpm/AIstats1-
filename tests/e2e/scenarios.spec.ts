@@ -298,3 +298,18 @@ test("integrations: the backfill block shows the window, queues the job and repo
   await page.getByRole("button", { name: "Отменить" }).click();
   await expect(page.getByText("Бэкфилл отменён")).toBeVisible();
 });
+
+test("integrations: the Metrika block takes the OAuth app and refuses a nonsense id; the connection row links to it", async ({ page }) => {
+  await login(page, "/settings/integrations");
+  const block = page.getByTestId("metrika-block");
+  await expect(block).toBeVisible();
+  await expect(page.getByRole("link", { name: "Настроить" })).toHaveAttribute("href", "#metrika");
+  await block.locator("input[name=clientId]").fill("not valid!");
+  await block.locator("input[name=clientSecret]").fill("secret");
+  await block.getByRole("button", { name: "Сохранить приложение" }).click();
+  await expect(block.getByText("ID приложения — строка")).toBeVisible();
+  // Nothing was stored: the page still offers the app form, not the code step.
+  await page.reload();
+  await expect(page.getByTestId("metrika-block").locator("input[name=clientId]")).toBeVisible();
+  await expect(page.getByTestId("metrika-block").locator("input[name=code]")).toHaveCount(0);
+});
