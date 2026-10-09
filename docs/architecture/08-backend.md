@@ -213,7 +213,7 @@ ADOK блокирует клиентов за частые запросы (на 
 
 - **Stat API** `GET /stat/v1/data` (`MetrikaClient.fetchCounter`) — трафик по счётчику за окно: уники, визиты, просмотры, отказы, глубина × дата × страна × устройство → `FactTraffic` (джоб `metrika`, каждый час в :15, окно вчера–сегодня).
 - **Management API** `GET /management/v1/counters?per_page=1000&field=mirrors` (`MetrikaClient.listCounters`) — счётчики, доступные токену, с зеркалами; `matchCounters` (`src/server/domain/metrika-match.ts`) сопоставляет их с нашими сайтами по `normalizeDomain`.
-- **OAuth** (`src/server/ingest/metrika/oauth.ts`): `authorizeUrl` → `https://oauth.yandex.ru/authorize?response_type=code&client_id=…`; код подтверждения со страницы `verification_code` меняется на токены `POST https://oauth.yandex.ru/token` (`grant_type=authorization_code`, Basic-auth приложения); `refresh_token` — обновление. Хранение и чтение — `src/server/services/metrika-connection.ts`: `saveMetrikaApp`, `connectMetrika`, `metrikaToken` (база, иначе `METRIKA_TOKEN`), `ensureFreshToken` (за 30 дней до истечения, в джобе `metrika`), `metrikaCounters`, `applyMetrikaCounters` (запись `Site.metrikaId` + `AuditLog`). `configuredSources(db, cfg)` в `handlers.ts` считает Метрику подключённой, когда есть любой из токенов, — от этого зависит алерт «ингест упал».
+- **OAuth** (`src/server/ingest/metrika/oauth.ts`): `authorizeUrl(clientId, { redirectUri?, state? })` → `https://oauth.yandex.ru/authorize?response_type=code&client_id=…`; код меняется на токены `POST https://oauth.yandex.ru/token` (`grant_type=authorization_code`, Basic-auth приложения, `redirect_uri` при callback); `refresh_token` — обновление. Маршруты `GET /api/metrika/oauth/start` (сессия, cookie `ts_metrika_state` на 10 минут, редирект на Яндекс с `redirect_uri` = `metrikaCallbackUrl(cfg)` — `APP_URL` + `/api/metrika/oauth/callback`, только https) и `GET /api/metrika/oauth/callback` (сверка `state`, `connectMetrika`, редирект на блок с `?connected=1` или `?metrika_error=`); без сессии callback уводит на `/login?next=`, а не отвечает JSON 401 (`proxy.ts`). Без https-адреса остаётся ручная вставка кода. Хранение и чтение — `src/server/services/metrika-connection.ts`: `saveMetrikaApp`, `connectMetrika`, `metrikaToken` (база, иначе `METRIKA_TOKEN`), `ensureFreshToken` (за 30 дней до истечения, в джобе `metrika`), `metrikaCounters`, `applyMetrikaCounters` (запись `Site.metrikaId` + `AuditLog`). `configuredSources(db, cfg)` в `handlers.ts` считает Метрику подключённой, когда есть любой из токенов, — от этого зависит алерт «ингест упал».
 
 ## Наблюдаемость
 
@@ -231,7 +231,7 @@ ADOK блокирует клиентов за частые запросы (на 
 | `APP_LOGIN` | web | Логин (по умолчанию `Admin`) |
 | `APP_PASSWORD` | web | Пароль до первой смены в UI |
 | `COOKIE_SECURE` | web | `1` — cookie сессии только по HTTPS |
-| `APP_URL` | web | Абсолютные ссылки в ответах MCP |
+| `APP_URL` | web | Абсолютные ссылки в ответах MCP; callback Метрики (`<APP_URL>/api/metrika/oauth/callback`, только https) |
 | `MCP_TOKEN` | web | Запасной MCP-токен; основной выпускается в UI |
 | `ASG_AUTH_EMAIL`, `ASG_AUTH_TOKEN`, `ASG_API_URL` | worker, web (проверки) | AdSpyglass |
 | `ASG_MIN_INTERVAL_MS`, `ASG_DAILY_BUDGET` | worker, web | Лимиты AdSpyglass: пауза между запросами и бюджет на сутки. Разрезы, окно пересчёта и резерв бэкфилла — не переменные, а план на «Интеграциях» (`AppSetting asg_cuts`, ADR 0016) |

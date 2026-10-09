@@ -19,6 +19,8 @@ export function config(env: Record<string, string | undefined> = process.env) {
     },
     /** Key for secrets stored in the database (src/server/crypto.ts); the deploy generates it once. */
     appSecret: (env.APP_SECRET ?? "").trim(),
+    /** Public https address of the app incl. the base path (deploy/apply-env.sh): absolute links, the Metrika OAuth callback. */
+    appUrl: (env.APP_URL ?? "").trim().replace(/\/$/, ""),
     redisUrl: env.REDIS_URL ?? "redis://127.0.0.1:6379",
     appLogin: (env.APP_LOGIN ?? "Admin").trim() || "Admin",
     appPassword: env.APP_PASSWORD ?? "",

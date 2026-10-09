@@ -8,7 +8,8 @@ export function proxy(req: NextRequest) {
   const { pathname, search } = req.nextUrl;
   if (PUBLIC.some((p) => pathname === p || pathname.startsWith(`${p}/`))) return NextResponse.next();
   if (req.cookies.get("ts_session")) return NextResponse.next();
-  if (pathname.startsWith("/api/")) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  // The Metrika OAuth callback is a browser navigation from Yandex: without a session it goes to the login page, not a JSON 401.
+  if (pathname.startsWith("/api/") && !pathname.startsWith("/api/metrika/oauth/")) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   const url = req.nextUrl.clone();
   url.pathname = "/login";
   url.search = pathname === "/" ? "" : `?next=${encodeURIComponent(pathname + search)}`;

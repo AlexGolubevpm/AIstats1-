@@ -3,6 +3,8 @@ import { BAD_KEY, decryptSecret, encryptSecret } from "@/server/crypto";
 import { matchCounters } from "@/server/domain/metrika-match";
 import { authorizeUrl, exchangeCode, refreshTokens } from "@/server/ingest/metrika/oauth";
 import { MetrikaClient } from "@/server/ingest/metrika/client";
+import { metrikaCallbackUrl } from "@/server/services/metrika-connection";
+import { config } from "@/server/config";
 
 describe("secrets at rest", () => {
   it("round-trips, differs per call, refuses another key or a mangled blob, and needs a key at all", () => {
@@ -21,11 +23,20 @@ describe("secrets at rest", () => {
 describe("Yandex OAuth", () => {
   const app = { clientId: "cid", clientSecret: "sec" };
   const now = new Date("2026-10-09T00:00:00Z");
-  it("authorize url asks for a code and forces the account picker", () => {
+  it("authorize url asks for a code and forces the account picker; with a callback it carries redirect_uri and state", () => {
     const u = new URL(authorizeUrl("abc"));
     expect(u.origin + u.pathname).toBe("https://oauth.yandex.ru/authorize");
     expect(u.searchParams.get("response_type")).toBe("code");
     expect(u.searchParams.get("client_id")).toBe("abc");
+    expect(u.searchParams.has("redirect_uri")).toBe(false);
+    const c = new URL(authorizeUrl("abc", { redirectUri: "https://x.test/admin/api/metrika/oauth/callback", state: "s1" }));
+    expect(c.searchParams.get("redirect_uri")).toBe("https://x.test/admin/api/metrika/oauth/callback");
+    expect(c.searchParams.get("state")).toBe("s1");
+  });
+  it("the callback address exists only on an https app address", () => {
+    expect(metrikaCallbackUrl(config({ APP_URL: "https://x.test/admin/" }))).toBe("https://x.test/admin/api/metrika/oauth/callback");
+    expect(metrikaCallbackUrl(config({ APP_URL: "http://1.2.3.4" }))).toBeNull();
+    expect(metrikaCallbackUrl(config({}))).toBeNull();
   });
   it("exchanges the pasted code with basic auth and reads the expiry; refresh is the same request with another grant", async () => {
     const calls: { url: string; body: string; auth: string }[] = [];
@@ -40,6 +51,8 @@ describe("Yandex OAuth", () => {
     expect(calls[0].auth).toBe(`Basic ${Buffer.from("cid:sec").toString("base64")}`);
     await refreshTokens(app, "ref", fetchImpl, undefined, now);
     expect(calls[1].body).toBe("grant_type=refresh_token&refresh_token=ref");
+    await exchangeCode(app, "c0de", fetchImpl, undefined, now, "https://x.test/cb");
+    expect(calls[2].body).toBe("grant_type=authorization_code&code=c0de&redirect_uri=https%3A%2F%2Fx.test%2Fcb");
   });
   it("turns Yandex errors into words and never leaks the secret", async () => {
     const fail = (error: string, status = 400) => (async () => Response.json({ error, error_description: "x" }, { status })) as typeof fetch;

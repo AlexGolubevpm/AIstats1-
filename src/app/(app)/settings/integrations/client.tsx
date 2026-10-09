@@ -127,7 +127,7 @@ export function BackfillBlock({ state, sites, defaults, perNight }: { state: Bac
 export type MetrikaView = { kind: "none" | "env" | "app" } | { kind: "oauth"; expiresAt: string | null; connectedAt: string | null } | { kind: "broken"; error: string };
 
 /** «Яндекс Метрика»: the OAuth app → the confirmation code → the counters matched to our sites → apply. */
-export function MetrikaBlock({ status, authorizeHref }: { status: MetrikaView; authorizeHref: string | null }) {
+export function MetrikaBlock({ status, authorizeHref, connectHref = null, callbackUri = null, notice = null }: { status: MetrikaView; authorizeHref: string | null; connectHref?: string | null; callbackUri?: string | null; notice?: { kind: "ok" | "error"; text: string } | null }) {
   const { pending, run } = useRun();
   const [rows, setRows] = useState<MatchRow[] | null>(null);
   const [editApp, setEditApp] = useState(status.kind === "none" || status.kind === "env" || status.kind === "broken");
@@ -137,6 +137,7 @@ export function MetrikaBlock({ status, authorizeHref }: { status: MetrikaView; a
   return (
     <div className="flex flex-col gap-4" data-testid="metrika-block">
       {status.kind === "broken" && <p className="rounded-md bg-negative-soft px-3 py-2 text-sm text-negative">{status.error}</p>}
+      {notice && <p className={`rounded-md px-3 py-2 text-sm ${notice.kind === "ok" ? "bg-positive-soft text-positive" : "bg-negative-soft text-negative"}`} data-testid="metrika-notice">{notice.text}</p>}
       {status.kind === "env" && <p className="text-sm text-muted">Сейчас работает токен из `.env` (METRIKA_TOKEN). Подключение через приложение заменит его и позволит подтягивать счётчики.</p>}
       {(editApp || status.kind === "none") ? (
         <ActionForm action={saveMetrikaAppAction} submit="Сохранить приложение" submitSize="sm" onDone={() => setEditApp(false)} className="grid items-end gap-3 sm:grid-cols-2 [&>div:last-child]:col-span-full"
@@ -153,7 +154,14 @@ export function MetrikaBlock({ status, authorizeHref }: { status: MetrikaView; a
       )}
       {!editApp && authorizeHref && (
         <div className="rounded-lg border border-border p-3">
-          <p className="text-sm">{status.kind === "oauth" ? "Переподключить: " : "Шаг 2. "}<a href={authorizeHref} target="_blank" rel="noreferrer" className="text-accent hover:underline">Получить код в Яндексе ↗</a> — войти под аккаунтом, где лежат счётчики, разрешить доступ и скопировать код.</p>
+          {connectHref && (
+            <div className="mb-3 flex flex-wrap items-center gap-3">
+              <Button asChild variant="primary" size="sm"><a href={connectHref} data-testid="metrika-connect">{status.kind === "oauth" ? "Переподключить через Яндекс" : "Подключить через Яндекс"}</a></Button>
+              <span className="text-xs text-muted">войти под аккаунтом со счётчиками, нажать «Разрешить» — и вы вернётесь сюда</span>
+              {callbackUri && <span className="w-full text-xs text-faint">Redirect URI в приложении Яндекса: <code className="select-all">{callbackUri}</code></span>}
+            </div>
+          )}
+          <p className="text-sm">{connectHref ? "Или вручную: " : status.kind === "oauth" ? "Переподключить: " : "Шаг 2. "}<a href={authorizeHref} target="_blank" rel="noreferrer" className="text-accent hover:underline">Получить код в Яндексе ↗</a> — войти под аккаунтом, где лежат счётчики, разрешить доступ и скопировать код.</p>
           <ActionForm action={connectMetrikaAction} submit={status.kind === "oauth" ? "Переподключить" : "Подключить"} submitSize="sm" onDone={takeRows} className="mt-2 grid items-end gap-3 sm:grid-cols-[1fr_auto] [&>div:last-child]:col-span-full">
             <FormField name="code" label="Код подтверждения"><Input name="code" inputMode="numeric" autoComplete="one-time-code" className="num" /></FormField>
           </ActionForm>

@@ -11,7 +11,8 @@ import { daysBetween, defaultWindow, readBackfill, requestsPerDay } from "@/serv
 import { CUTS, planCost, readPlan } from "@/server/ingest/adspyglass/plan";
 import { isDemo } from "@/server/seed/demo";
 import { authorizeUrl } from "@/server/ingest/metrika/oauth";
-import { metrikaStatus } from "@/server/services/metrika-connection";
+import { metrikaCallbackUrl, metrikaStatus } from "@/server/services/metrika-connection";
+import { withBase } from "@/lib/base-path";
 import { AliasRow, BackfillBlock, CutsPlanner, DemoButtons, MetrikaBlock, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
 
 const JOB_LABEL: Record<string, string> = {
@@ -23,7 +24,8 @@ const JOB_LABEL: Record<string, string> = {
 const CRON: Record<string, string> = { "5 * * * *": "каждый час в :05", "0 4 * * *": "ежедневно 04:00 UTC", "*/30 * * * *": "каждые 30 минут, если есть что догружать", "15 * * * *": "каждый час в :15", "45 4 * * *": "ежедневно 04:45 UTC" };
 const tail = (s: string) => (s ? `задан · …${s.slice(-4)}` : "не задан");
 
-export default async function Integrations() {
+export default async function Integrations({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
+  const sp = await searchParams;
   const cfg = config();
   const since = new Date(Date.now() - 7 * 86_400_000);
   const [[xx], pause, used, runs, unresolved, countries, sites, demo, hasData] = await Promise.all([
@@ -71,10 +73,12 @@ export default async function Integrations() {
       </Section>
 
       <div id="metrika" className="scroll-mt-20">
-      <Section title="Яндекс Метрика" sub="Приложение из oauth.yandex.ru (доступ «Метрика: получение статистики, чтение параметров счётчиков», Redirect URI — «подставить URL для разработки»). Код подтверждения Яндекс показывает на своей странице — вставьте его сюда. Счётчики подбираются по доменам наших сайтов; чужие не заводятся">
+      <Section title="Яндекс Метрика" sub={`Приложение из oauth.yandex.ru с доступом «Метрика: получение статистики, чтение параметров счётчиков». ${metrikaCallbackUrl(cfg) ? "Нажмите «Подключить через Яндекс» — согласие и возврат в приложение; в Redirect URI приложения Яндекса должен быть адрес из подсказки ниже. Запасной путь — вставить код руками." : "Код подтверждения Яндекс показывает на своей странице — вставьте его сюда."} Счётчики подбираются по доменам наших сайтов; чужие не заводятся`}>
         <MetrikaBlock status={metrika.kind === "oauth" ? { kind: "oauth", expiresAt: metrika.expiresAt?.toISOString() ?? null, connectedAt: metrika.connectedAt?.toISOString() ?? null }
           : metrika.kind === "broken" ? { kind: "broken", error: metrika.error } : { kind: metrika.kind }}
-          authorizeHref={metrika.kind === "app" || metrika.kind === "oauth" ? authorizeUrl(metrika.clientId) : null} />
+          authorizeHref={metrika.kind === "app" || metrika.kind === "oauth" ? authorizeUrl(metrika.clientId) : null}
+          connectHref={metrikaCallbackUrl(cfg) && (metrika.kind === "app" || metrika.kind === "oauth") ? withBase("/api/metrika/oauth/start") : null}
+          callbackUri={metrikaCallbackUrl(cfg)} notice={sp.connected === "1" ? { kind: "ok", text: "Метрика подключена — нажмите «Подтянуть счётчики»" } : sp.metrika_error ? { kind: "error", text: sp.metrika_error } : null} />
       </Section>
       </div>
 
