@@ -84,11 +84,22 @@ export function distribute(amount: Decimal.Value, cells: Cell[]): (Cell & { amou
   return out;
 }
 
-export interface GeoScope { geoScope: string[]; geoExclude: boolean }
-export function inGeoScope(d: GeoScope, country: string): boolean {
-  if (!d.geoScope.length) return true;
-  const hit = d.geoScope.includes(country);
+export interface GeoScope { geoScope: string[]; geoExclude: boolean; geoTiers?: number[] }
+/** Whether a country is in the deal's scope: listed, or of a listed tier (`tierOf`, ADR 0017); «все, кроме» inverts. Empty scope = everything. */
+export function inGeoScope(d: GeoScope, country: string, tierOf?: (code: string) => number | null | undefined): boolean {
+  const tiers = d.geoTiers ?? [];
+  if (!d.geoScope.length && !tiers.length) return true;
+  const tier = tierOf?.(country);
+  const hit = d.geoScope.includes(country) || (tier != null && tier > 0 && tiers.includes(tier));
   return d.geoExclude ? !hit : hit;
+}
+/** «T1, T2 + JP, KR» / «все, кроме T3» / «все гео» — the scope as the cards print it. */
+export function geoScopeLabel(d: GeoScope, maxCodes = 8): string {
+  const tiers = [...(d.geoTiers ?? [])].sort().map((t) => `T${t}`);
+  const codes = d.geoScope.length > maxCodes ? `${d.geoScope.slice(0, maxCodes).join(", ")} и ещё ${d.geoScope.length - maxCodes}` : d.geoScope.join(", ");
+  const body = [tiers.join(", "), codes].filter(Boolean).join(" + ");
+  if (!body) return "все гео";
+  return d.geoExclude ? `все, кроме ${body}` : body;
 }
 
 const DAY = 86_400_000;
@@ -176,7 +187,7 @@ export function parsePlaceKey(k: string): DealPlaceRef | null {
 
 export interface DealInput {
   title: string; advertiser: string; paymentBasis: PaymentBasis; price: string; siteIds: string[];
-  geoScope: string[]; geoExclude: boolean; startsAt: string; endsAt: string | null; billingPeriod: BillingPeriod; paymentTermsDays: number;
+  geoScope: string[]; geoExclude: boolean; geoTiers?: number[]; startsAt: string; endsAt: string | null; billingPeriod: BillingPeriod; paymentTermsDays: number;
   counterSource: "ASG_ZONE" | "METRIKA" | "MANUAL"; billedVia: "DIRECT" | "VIA_ASG"; notes?: string | null; zoneBySite?: Record<string, string | null>;
   /** Places on the deal's sites; the format of the deal follows the zones mapped to them (ADR 0009). */
   places?: DealPlaceRef[];
@@ -200,11 +211,18 @@ export function validateDeal(i: DealInput): DealInput {
   if (!Number.isInteger(i.paymentTermsDays) || i.paymentTermsDays < 0 || i.paymentTermsDays > 180) throw new DealRuleError("terms", "Срок оплаты — от 0 до 180 дней", "paymentTermsDays");
   const bad = i.geoScope.find((c) => !/^[A-Z]{2}$/.test(c));
   if (bad) throw new DealRuleError("geo", `Неизвестный код страны: ${bad}`, "geoScope");
+  const badTier = (i.geoTiers ?? []).find((t) => !Number.isInteger(t) || t < 1 || t > 5);
+  if (badTier != null) throw new DealRuleError("geo", `Тир должен быть от 1 до 5: ${badTier}`, "geoTiers");
   const stray = (i.places ?? []).find((p) => !i.siteIds.includes(p.siteId));
   if (stray) throw new DealRuleError("place", "Место выбрано на сайте, которого нет в диле", "place");
   const places = [...new Map((i.places ?? []).map((p) => [placeKey(p), p])).values()];
-  return { ...i, title: i.title.trim(), advertiser: i.advertiser.trim(), price: price.toString(), places };
+  return { ...i, title: i.title.trim(), advertiser: i.advertiser.trim(), price: price.toString(), places, geoTiers: [...new Set(i.geoTiers ?? [])].sort() };
 }
 
-/** Parses "JP, us kr" into ISO codes; tier shortcuts are expanded by the caller. */
+/** «T1»…«T5» tokens typed into the geo field are tiers, kept apart from the codes (ADR 0017). */
+export function parseGeoInput(s: string): { codes: string[]; tiers: number[] } {
+  const all = parseGeoList(s);
+  return { codes: all.filter((c) => !/^T[1-5]$/.test(c)), tiers: [...new Set(all.filter((c) => /^T[1-5]$/.test(c)).map((c) => Number(c.slice(1))))].sort() };
+}
+/** Parses "JP, us kr" into ISO codes. */
 export const parseGeoList = (s: string) => [...new Set(s.toUpperCase().split(/[\s,;]+/).filter(Boolean))];

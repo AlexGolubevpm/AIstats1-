@@ -106,7 +106,7 @@ export default async function Hypotheses({ searchParams }: { searchParams: Promi
                     {tab === "all" && <span className={tag}>{STATUS_LABEL[h.status]}</span>}
                     {h.bundle && <span className={tag}>{h.bundle.title}</span>}
                     {h.format && <span className={tag}>{FORMAT_LABEL[h.format] ?? h.format}</span>}
-                    {h.countryCode && <span className={tag}>{h.countryCode}</span>}
+                    {h.countryCode && <span className={tag}>{h.countryCode}{typeof (h.evidence as Record<string, unknown> | null)?.tier === "number" ? ` · T${(h.evidence as Record<string, unknown>).tier}` : ""}</span>}
                   </div>
                   <p className="mt-1 text-sm">{h.hypothesis}</p>
                   {(() => { const line = h.ruleKey ? evidenceLine(h.ruleKey, h.evidence) : null; return line ? <p className="num mt-1 text-xs text-muted" data-evidence>{line}</p> : null; })()}

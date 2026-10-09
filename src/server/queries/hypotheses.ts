@@ -48,9 +48,9 @@ export async function collectCandidates(today = iso(new Date())): Promise<Hypoth
       LEFT JOIN v_site_geo_daily g ON g.site_id = s.id AND g.date BETWEEN ${r7.from} AND ${r7.to}
       GROUP BY 1, 2, 3, 4, 5`,
     db.$queryRaw<Raw[]>`
-      SELECT g.site_id, s.domain, g.country_code, SUM(g.revenue)::float8 revenue, SUM(g.page_loads)::float8 page_loads
-      FROM v_site_geo_alloc_daily g JOIN "Site" s ON s.id = g.site_id AND s.status <> 'ARCHIVED'
-      WHERE g.date BETWEEN ${r7.from} AND ${r7.to} GROUP BY 1, 2, 3`,
+      SELECT g.site_id, s.domain, g.country_code, c.tier, SUM(g.revenue)::float8 revenue, SUM(g.page_loads)::float8 page_loads
+      FROM v_site_geo_alloc_daily g JOIN "Site" s ON s.id = g.site_id AND s.status <> 'ARCHIVED' LEFT JOIN "Country" c ON c.code = g.country_code
+      WHERE g.date BETWEEN ${r7.from} AND ${r7.to} GROUP BY 1, 2, 3, 4`,
     db.$queryRaw<Raw[]>`SELECT site_id, format, SUM(revenue)::float8 revenue, SUM(page_loads)::float8 page_loads FROM v_format_daily WHERE date BETWEEN ${r7.from} AND ${r7.to} GROUP BY 1, 2`,
     db.$queryRaw<Raw[]>`
       SELECT g.site_id, g.network_id, g.network_title network, SUM(g.revenue)::float8 revenue, SUM(g.page_loads)::float8 page_loads
@@ -123,7 +123,7 @@ export async function collectCandidates(today = iso(new Date())): Promise<Hypoth
     sourceRecs(sources.map((r) => ({ siteId: s(r.site_id), domain: s(r.domain), source: s(r.source), sourceSlug: s(r.source_slug), cost: n(r.cost), siteRevenue: n(r.site_revenue), loadsShare: m.share(n(r.loads), n(r.site_loads)) })), 7),
     sourceAboveRevenue(sources.map((r) => ({ siteId: s(r.site_id), domain: s(r.domain), sourceSlug: s(r.source_slug), source: s(r.source), cost: n(r.cost), loads: n(r.loads), siteRevenue: n(r.site_revenue), siteLoads: n(r.site_geo_loads) })), 7),
     siteBelowBundle(bundleRows, 7),
-    geoBelowNetwork(geo.filter((g) => liveIds.has(s(g.site_id))).map((g) => ({ siteId: s(g.site_id), domain: s(g.domain), countryCode: s(g.country_code), revenue: n(g.revenue), pageLoads: n(g.page_loads) })), 7),
+    geoBelowNetwork(geo.filter((g) => liveIds.has(s(g.site_id))).map((g) => ({ siteId: s(g.site_id), domain: s(g.domain), countryCode: s(g.country_code), tier: g.tier == null ? null : n(g.tier), revenue: n(g.revenue), pageLoads: n(g.page_loads) })), 7),
     formatMissingVsPeers(bundleRows, formats.map((f) => ({ siteId: s(f.site_id), format: s(f.format), revenue: n(f.revenue), pageLoads: n(f.page_loads) })), 7),
     bundleCostShare([...bundleTotals.values()], network, 7),
     dealBelowRotation(dealRot.map((d) => ({ dealId: s(d.deal_id), title: s(d.title), advertiser: s(d.advertiser), siteId: s(d.site_id), domain: s(d.domain), format: s(d.format), dealRevenue: n(d.deal_revenue), dealLoads: n(d.deal_loads), rotationPer1k: d.rotation_per_1k == null ? null : n(d.rotation_per_1k) })), 7),

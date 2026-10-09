@@ -157,3 +157,24 @@ export async function mapAlias(db: PrismaClient, source: string, raw: string, co
     db.unresolvedAlias.delete({ where: { source_raw: { source, raw } } }),
   ]);
 }
+
+// ---------- country tiers (ADR 0017) ----------
+
+/** Sets tiers 1–5 on real countries; every change is an AuditLog row, which also marks the country as hand-edited for later seeds. */
+export async function setCountryTiers(db: PrismaClient, tiers: Record<string, number>, reason?: string | null): Promise<number> {
+  let changed = 0;
+  for (const [codeRaw, tier] of Object.entries(tiers)) {
+    const code = codeRaw.trim().toUpperCase();
+    if (!Number.isInteger(tier) || tier < 1 || tier > 5) throw new RuleError("tier", `Тир ${code}: от 1 до 5`, "tier");
+    const c = await db.country.findUnique({ where: { code } });
+    if (!c) throw new RuleError("code", `Неизвестный код страны: ${code}`, "codes");
+    if (c.tier === 0) throw new RuleError("code", `${code} — служебный код, тир не задаётся`, "codes");
+    if (c.tier === tier) continue;
+    await db.$transaction([
+      db.country.update({ where: { code }, data: { tier } }),
+      db.auditLog.create({ data: { entity: "Country", entityId: code, field: "tier", before: String(c.tier), after: String(tier), reason: reason?.trim() || null } }),
+    ]);
+    changed++;
+  }
+  return changed;
+}

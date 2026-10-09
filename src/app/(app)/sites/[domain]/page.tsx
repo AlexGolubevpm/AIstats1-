@@ -13,6 +13,7 @@ import { Section } from "@/components/ui/card";
 import { cn } from "@/lib/cn";
 import { fmtDate, fmtInt, fmtMoney, fmtMultiplier } from "@/lib/format";
 import { dealMultiplier } from "@/lib/metrics";
+import { geoScopeLabel } from "@/server/domain/deals";
 import { periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
 import { D, costCoverage, dailyTotals, kpis } from "@/server/queries/common";
@@ -23,6 +24,7 @@ import { colorFor, pivot } from "@/lib/charts";
 import { eachDay } from "@/lib/period";
 import { fmtPercent } from "@/lib/format";
 import type { KpiCompare } from "@/components/data/kpi-row";
+import { TierChips } from "@/components/pages/tier-chips";
 import { SnoozeButton } from "../../alerts/snooze";
 import { HypothesisActions, ToHypothesisButton } from "../../hypotheses/client";
 
@@ -128,9 +130,13 @@ export default async function SitePage({ params, searchParams }: Props) {
       columns={[...NETWORK_COLS, { id: "floor", header: "Флор", kind: "cpm", tooltip: "60-й перцентиль rev/1000 loads двух лучших источников" }]}
       rows={n.map((r) => ({ ...r, _key: r.slug, _warn: r.inverted, _badges: { network: r.belowFloor ? [{ label: "ниже флора", tone: "warning" as const }] : [] } }))} />;
   } else if (by === "geo") {
-    const g = await siteGeoWithNetworks(p, site.id);
-    table = <DataTable id="g" exportName={`${site.domain}-geo`} defaultSort={{ id: "pageLoads", dir: "desc" }} columns={GEO_COLS} nestedColumns={NESTED_NET}
-      rows={geoRows(g).map((r) => ({ ...r, _children: r.children }))} filters={[{ id: "loss", label: "Только убыточные", column: "margin", op: "lt", value: 0 }]} />;
+    const tier = /^[1-5]$/.test(sp.tier ?? "") ? Number(sp.tier) : null;
+    const g = await siteGeoWithNetworks(p, site.id, tier);
+    table = <div className="flex flex-col gap-3">
+      <div className="px-5"><TierChips active={tier} params={sp} /></div>
+      <DataTable id="g" exportName={`${site.domain}-geo`} defaultSort={{ id: "pageLoads", dir: "desc" }} columns={GEO_COLS} nestedColumns={NESTED_NET}
+        rows={geoRows(g).map((r) => ({ ...r, _children: r.children }))} filters={[{ id: "loss", label: "Только убыточные", column: "margin", op: "lt", value: 0 }]} />
+    </div>;
   } else if (by === "platforms") {
     const [os, browsers] = await Promise.all([techTable(p, site.id, "PLATFORM"), techTable(p, site.id, "BROWSER")]);
     table = (
@@ -269,7 +275,7 @@ export default async function SitePage({ params, searchParams }: Props) {
                       {!d.sites.length && <Badge tone="negative" title="Сайт убран из дила, но начисления за период остались">не привязан</Badge>}
                     </span>
                     <span className="num flex items-center gap-3 text-muted">
-                      <span>{FORMAT_LABEL[d.format]}</span><span>{d.geoScope.length ? d.geoScope.join(", ") : "все гео"}</span>
+                      <span>{FORMAT_LABEL[d.format]}</span><span>{geoScopeLabel(d)}</span>
                       <span>{fmtInt(own)} / {rep ? fmtInt(rep) : "—"}</span>
                       <span className={mult && mult > 1.5 ? "font-medium text-warning" : ""} title={mult && mult > 1.5 ? `Рекламодатель засчитывает в ${mult.toFixed(1)} раза больше показов` : undefined}>{fmtMultiplier(mult)}</span>
                       {f.map((x) => <MoneyStatus key={x.revenueState} amount={Number(x._sum.revenue ?? 0)} state={x.revenueState} />)}
