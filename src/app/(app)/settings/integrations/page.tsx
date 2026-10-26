@@ -20,8 +20,9 @@ const JOB_LABEL: Record<string, string> = {
   "asg:totals": "AdSpyglass: только итоги по сайтам (1 запрос в день окна, без разрезов)",
   "asg:backfill": "AdSpyglass: бэкфилл прошлых дней порциями под бюджет (окно — в блоке ниже)",
   metrika: "Метрика: трафик", derive: "Расход → прогноз дилов → алерты", "geo:reprocess": "Пересчитать гео из сырья (без запросов к API)",
+  "raw:prune": "Диск: сжать и почистить сырые ответы (без запросов к API)",
 };
-const CRON: Record<string, string> = { "5 * * * *": "каждый час в :05", "0 4 * * *": "ежедневно 04:00 UTC", "*/30 * * * *": "каждые 30 минут, если есть что догружать", "15 * * * *": "каждый час в :15", "45 4 * * *": "ежедневно 04:45 UTC" };
+const CRON: Record<string, string> = { "5 * * * *": "каждый час в :05", "0 4 * * *": "ежедневно 04:00 UTC", "*/30 * * * *": "каждые 30 минут, если есть что догружать", "15 * * * *": "каждый час в :15", "45 4 * * *": "ежедневно 04:45 UTC", "30 5 * * *": "ежедневно 05:30 UTC" };
 const tail = (s: string) => (s ? `задан · …${s.slice(-4)}` : "не задан");
 
 export default async function Integrations({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {

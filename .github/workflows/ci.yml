@@ -136,7 +136,7 @@ jobs:
 
       - name: Upload stack files
         if: steps.app.outputs.ready == 'true'
-        run: scp deploy/docker-compose.yml deploy/Caddyfile deploy/Caddyfile.basepath deploy/deploy.sh deploy/apply-env.sh deploy/backup.sh deploy@${{ secrets.DEPLOY_HOST }}:/opt/tubestat/
+        run: scp deploy/docker-compose.yml deploy/Caddyfile deploy/Caddyfile.basepath deploy/deploy.sh deploy/apply-env.sh deploy/backup.sh deploy/prune-images.sh deploy@${{ secrets.DEPLOY_HOST }}:/opt/tubestat/
 
       - name: Deploy
         if: steps.app.outputs.ready == 'true'
