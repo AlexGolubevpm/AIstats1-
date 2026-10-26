@@ -178,3 +178,25 @@ describe("v_site_geo_alloc_daily (ADR 0015)", () => {
     expect(totals[0].a).toBeCloseTo(base[0].b as number, 6); // allocation moves money, never creates or loses it
   });
 });
+
+describe("date filters reach the fact tables (no history-wide CTE)", () => {
+  type Node = { "Node Type": string; "Relation Name"?: string; Filter?: string; "Index Cond"?: string; "Recheck Cond"?: string; Plans?: Node[] };
+  const walk = (n: Node, out: Node[] = []): Node[] => { out.push(n); for (const c of n.Plans ?? []) walk(c, out); return out; };
+  const FACTS = ["FactRevenueGeo", "FactTraffic", "FactCost", "FactRevenueFormat", "FactRevenueZone"];
+
+  it.each(["v_site_geo_alloc_daily", "v_format_daily"])("%s: a week's query scans facts by date and materialises nothing", async (view) => {
+    // generic plans would hide nothing here: the literal dates make the planner show where the filter lands
+    const [row] = await db.$queryRawUnsafe<{ "QUERY PLAN": [{ Plan: Node }] }[]>(
+      `EXPLAIN (FORMAT JSON) SELECT count(*) FROM ${view} WHERE date BETWEEN '2026-10-19' AND '2026-10-25'`);
+    const nodes = walk(row["QUERY PLAN"][0].Plan);
+    expect(nodes.filter((n) => n["Node Type"] === "CTE Scan")).toEqual([]);
+    const facts = nodes.filter((n) => n["Relation Name"] && FACTS.includes(n["Relation Name"]));
+    expect(facts.length).toBeGreaterThan(0);
+    // every fact table read is reached by the date filter at least once (the row source); the existence probe of
+    // v_format_daily («does this day have an ad_type cut») may be a hash anti-join on tiny test tables
+    const byDate = (n: Node) => /date/.test(`${n.Filter ?? ""} ${n["Index Cond"] ?? ""} ${n["Recheck Cond"] ?? ""}`);
+    for (const rel of new Set(facts.map((n) => n["Relation Name"]!))) {
+      expect(facts.some((n) => n["Relation Name"] === rel && byDate(n)), `${view}: ${rel} is scanned without the date filter`).toBe(true);
+    }
+  });
+});
