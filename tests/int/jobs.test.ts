@@ -32,6 +32,18 @@ describe("job handlers", () => {
     expect(windowFor("metrika", { db, cfg, raw, today }, { from: "2026-09-01", to: "2026-09-02" })).toEqual({ from: "2026-09-01", to: "2026-09-02" });
   });
 
+  it("raw:prune runs nightly as its own IngestRun and reports what it deleted", async () => {
+    const { rawKey } = await import("@/server/ingest/raw-store");
+    const { SCHEDULES } = await import("@/server/jobs/handlers");
+    expect(SCHEDULES).toContainEqual({ name: "raw:prune", pattern: "30 5 * * *", queue: "main" });
+    const store = new LocalRawStore(mkdtempSync(path.join(tmpdir(), "raw-")));
+    await store.put(rawKey("adspyglass", "website", "2026-01-01", "c1"), {});
+    await store.put(rawKey("adspyglass", "website", "2026-09-21", "c1"), {});
+    expect((await runJob("raw:prune", { db, cfg: config({}), raw: store, today })).status).toBe("ok");
+    expect(await db.ingestRun.findFirstOrThrow({ where: { job: "raw:prune" } })).toMatchObject({ source: "raw", status: "ok", rowsUpsert: 1 });
+    expect(await store.list("raw/")).toEqual([rawKey("adspyglass", "website", "2026-09-21", "c1")]);
+  });
+
   it("skips unconfigured sources and a paused AdSpyglass without sending requests", async () => {
     let calls = 0;
     const fetchImpl = (async () => { calls++; return new Response("[]"); }) as typeof fetch;

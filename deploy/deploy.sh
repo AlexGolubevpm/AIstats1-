@@ -50,5 +50,6 @@ else
 fi
 
 echo "$IMAGE" > .current-image
-docker image prune -af --filter "until=168h" >/dev/null || true
+# Old app images were the bulk of the disk (each deploy ~1 GB, kept a week): keep the last 3 for rollback.
+bash /opt/tubestat/prune-images.sh "$IMAGE" || echo "note: image cleanup failed, deploy is fine"
 echo "==> Deployed $IMAGE"

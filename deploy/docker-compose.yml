@@ -2,10 +2,19 @@
 # Secrets come from /opt/tubestat/.env (never committed).
 name: tubestat
 
+# Docker keeps container logs forever by default; 3 × 20 MB per container is enough to read an incident.
+x-logging: &logging
+  driver: json-file
+  options: { max-size: "20m", max-file: "3" }
+
+# Memory on the 8 GB VPS (ADR 0019): postgres 2 GB, worker 1.5 GB, web 1 GB, redis 384 MB, caddy 128 MB;
+# the rest (~3 GB) stays with the OS page cache. Node heaps are capped below their container limit.
 services:
   caddy:
     image: caddy:2-alpine
     restart: unless-stopped
+    logging: *logging
+    mem_limit: 128m
     ports: ["80:80", "443:443"]
     environment:
       APP_DOMAIN: ${APP_DOMAIN:-:80}
@@ -26,6 +35,9 @@ services:
     environment:
       DATABASE_URL: postgresql://tubestat:${POSTGRES_PASSWORD}@postgres:5432/tubestat
       REDIS_URL: redis://redis:6379
+      NODE_OPTIONS: --max-old-space-size=768
+    logging: *logging
+    mem_limit: 1g
     volumes:
       - raw_data:/data/raw
     depends_on:
@@ -50,6 +62,9 @@ services:
     environment:
       DATABASE_URL: postgresql://tubestat:${POSTGRES_PASSWORD}@postgres:5432/tubestat
       REDIS_URL: redis://redis:6379
+      NODE_OPTIONS: --max-old-space-size=1152
+    logging: *logging
+    mem_limit: 1536m
     volumes:
       - raw_data:/data/raw
     depends_on:
@@ -59,6 +74,12 @@ services:
   postgres:
     image: postgres:16-alpine
     restart: unless-stopped
+    # Sized for a 2 GB container on an 8 GB host: own cache 512 MB, planner assumes ~2 GB of OS cache.
+    command: ["postgres", "-c", "shared_buffers=512MB", "-c", "effective_cache_size=2GB", "-c", "work_mem=16MB",
+              "-c", "maintenance_work_mem=128MB", "-c", "max_connections=60", "-c", "wal_buffers=16MB"]
+    shm_size: 256m
+    logging: *logging
+    mem_limit: 2g
     environment:
       POSTGRES_DB: tubestat
       POSTGRES_USER: tubestat
@@ -74,7 +95,10 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    # BullMQ needs noeviction; maxmemory turns a runaway queue into a clear error instead of eating the host.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "noeviction"]
+    logging: *logging
+    mem_limit: 384m
     volumes:
       - redis_data:/data
     healthcheck:

@@ -8,6 +8,7 @@ import { ingestSiteGeo, ingestSiteTotals, ingestSiteZones, rawGeoKeys, reprocess
 import { MetrikaClient } from "@/server/ingest/metrika/client";
 import { ingestMetrika } from "@/server/ingest/metrika/ingest";
 import type { RawStore } from "@/server/ingest/raw-store";
+import { pruneRaw } from "@/server/ingest/raw-retention";
 import { AsgError } from "@/server/ingest/adspyglass/client";
 import { asgBudget, asgPause, asgRequestsToday, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
 import { daysThatFit, defaultWindow, readBackfill, requestsPerDay, saveBackfill, startBackfill, type BackfillMode } from "./backfill";
@@ -26,7 +27,7 @@ export async function configuredSources(db: PrismaClient, cfg: Config): Promise<
 export interface JobContext { db: PrismaClient; cfg: Config; raw: RawStore; today?: string; fetchImpl?: typeof fetch }
 export interface JobData { from?: string; to?: string; siteId?: string; mode?: BackfillMode }
 
-export const JOB_NAMES = ["asg:totals", "asg:sites", "asg:backfill", "metrika", "derive", "geo:reprocess"] as const;
+export const JOB_NAMES = ["asg:totals", "asg:sites", "asg:backfill", "metrika", "derive", "geo:reprocess", "raw:prune"] as const;
 export type JobName = (typeof JOB_NAMES)[number];
 
 const todayOf = (ctx: JobContext) => ctx.today ?? new Date().toISOString().slice(0, 10);
@@ -54,6 +55,7 @@ export function windowFor(name: JobName, ctx: JobContext, data: JobData, plan: A
     case "metrika": return { from: addDays(t, -1), to: t };
     case "derive": return { from: addDays(t, -4), to: addDays(t, -1) };
     case "geo:reprocess": return { from: addDays(t, -90), to: t };
+    case "raw:prune": return { from: t, to: t };
   }
 }
 
@@ -97,6 +99,13 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
       const rows = await reprocessGeoFromRaw(db, raw, keys.filter((k) => !data.siteId || k.siteId === data.siteId));
       const derived = await runJob("derive", ctx, { from: w.from, to: addDays(todayOf(ctx), -1) });
       return { rows, partial: derived.error ? [`derive: ${derived.error}`] : [] };
+    });
+  }
+  if (name === "raw:prune") {
+    // Disk: gzip old plain files, drop superseded runs of final days and everything past 90 days (ADR 0019).
+    return withIngestRun(db, { source: "raw", job: name, ...w }, async () => {
+      const r = await pruneRaw(raw, todayOf(ctx));
+      return { rows: r.deleted, partial: [] };
     });
   }
   // derive: costs → deal forecast → alerts, in that order.
@@ -176,4 +185,5 @@ export const SCHEDULES: { name: JobName; pattern: string; queue: "asg" | "main" 
   { name: "asg:backfill", pattern: "*/30 * * * *", queue: "asg" },
   { name: "metrika", pattern: "15 * * * *", queue: "main" },
   { name: "derive", pattern: "45 4 * * *", queue: "main" },
+  { name: "raw:prune", pattern: "30 5 * * *", queue: "main" },
 ];

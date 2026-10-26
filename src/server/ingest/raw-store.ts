@@ -1,29 +1,65 @@
 // Raw API responses are stored BEFORE transformation, so metrics can be recomputed without
 // calling the API again (docs/tubestat-spec.md, principle 4). S3 when configured, else a local dir.
-import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, rmdir, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { promisify } from "node:util";
+import { gunzip, gzip } from "node:zlib";
+
+const gz = promisify(gzip);
+const gunz = promisify(gunzip);
 
 export interface RawStore {
   put(key: string, body: unknown): Promise<string>;
   get(key: string): Promise<unknown>;
   /** Keys under a prefix (e.g. "raw/adspyglass/country/"). */
   list(prefix: string): Promise<string[]>;
+  delete(key: string): Promise<void>;
 }
 
+/**
+ * Files on the server's disk, gzipped (`<key>.gz`; ADOK JSON shrinks ~10×). Keys stay `….json`:
+ * callers never see the compression. Plain files written before it are still read and listed,
+ * and `compressLegacy` (the nightly raw:prune) converts them.
+ */
 export class LocalRawStore implements RawStore {
   constructor(private dir: string) {}
   async put(key: string, body: unknown) {
     const file = path.join(this.dir, key);
     await mkdir(path.dirname(file), { recursive: true });
-    await writeFile(file, JSON.stringify(body));
+    await writeFile(`${file}.gz`, await gz(JSON.stringify(body)));
     return key;
   }
-  async get(key: string) { return JSON.parse(await readFile(path.join(this.dir, key), "utf8")); }
-  async list(prefix: string) {
+  async get(key: string) {
+    const file = path.join(this.dir, key);
+    const text = await readFile(`${file}.gz`).then(async (b) => (await gunz(b)).toString("utf8"), () => readFile(file, "utf8"));
+    return JSON.parse(text);
+  }
+  private async files(prefix: string): Promise<string[]> {
     try {
       const files = await readdir(path.join(this.dir, prefix), { recursive: true, withFileTypes: true });
-      return files.filter((f) => f.isFile()).map((f) => path.relative(this.dir, path.join(f.parentPath, f.name)).split(path.sep).join("/")).sort();
+      return files.filter((f) => f.isFile()).map((f) => path.relative(this.dir, path.join(f.parentPath, f.name)).split(path.sep).join("/"));
     } catch { return []; }
+  }
+  async list(prefix: string) {
+    return [...new Set((await this.files(prefix)).map((f) => f.replace(/\.gz$/, "")))].sort();
+  }
+  async delete(key: string) {
+    const file = path.join(this.dir, key);
+    await rm(`${file}.gz`, { force: true });
+    await rm(file, { force: true });
+    await rmdir(path.dirname(file)).catch(() => {}); // the day's folder, once it is empty
+  }
+  /** Gzips plain files left from before compression; returns how many. */
+  async compressLegacy(prefix = "raw/"): Promise<number> {
+    let n = 0;
+    for (const f of await this.files(prefix)) {
+      if (!f.endsWith(".json")) continue;
+      const file = path.join(this.dir, f);
+      await writeFile(`${file}.gz`, await gz(await readFile(file)));
+      await rm(file);
+      n++;
+    }
+    return n;
   }
 }
 
@@ -55,6 +91,10 @@ export class S3RawStore implements RawStore {
       token = r.IsTruncated ? r.NextContinuationToken : undefined;
     } while (token);
     return out.sort();
+  }
+  async delete(key: string) {
+    const { DeleteObjectCommand } = await import("@aws-sdk/client-s3");
+    await (await this.client()).send(new DeleteObjectCommand({ Bucket: this.cfg.bucket, Key: key }));
   }
 }
 

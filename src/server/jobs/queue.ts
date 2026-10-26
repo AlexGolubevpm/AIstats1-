@@ -11,7 +11,7 @@ export function redis(url = process.env.REDIS_URL ?? "redis://127.0.0.1:6379"): 
 
 const queues = new Map<string, Queue>();
 export function queue(name: "asg" | "main"): Queue {
-  if (!queues.has(name)) queues.set(name, new Queue(name, { connection: redis(), defaultJobOptions: { removeOnComplete: 200, removeOnFail: 500 } }));
+  if (!queues.has(name)) queues.set(name, new Queue(name, { connection: redis(), defaultJobOptions: { removeOnComplete: { count: 100, age: 7 * 86_400 }, removeOnFail: { count: 200, age: 30 * 86_400 } } }));
   return queues.get(name)!;
 }
 
