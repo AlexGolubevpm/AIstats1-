@@ -698,6 +698,7 @@ enum HypothesisSource {
 
 enum HypothesisStatus {
   PROPOSED
+  TESTING // own hypotheses: «Тест» (ADR 0013, 2026-10-27)
   ACCEPTED
   DONE
   REJECTED

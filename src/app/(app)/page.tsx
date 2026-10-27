@@ -86,7 +86,7 @@ export default async function Overview({ searchParams }: { searchParams: SP }) {
           <ul className="divide-y divide-border">
             {hypotheses.map((h) => (
               <li key={h.id} className="flex items-start justify-between gap-4 py-2 text-[13px]">
-                <div className="min-w-0"><Link href="/hypotheses" className="font-medium hover:text-accent">{h.title}</Link><p className="mt-0.5 line-clamp-2 text-xs text-muted">{h.hypothesis}</p></div>
+                <div className="min-w-0"><Link href={`/hypotheses/${h.id}`} className="font-medium hover:text-accent">{h.title}</Link><p className="mt-0.5 line-clamp-2 text-xs text-muted">{h.hypothesis}</p></div>
                 <span className="num shrink-0 text-right">{Number(h.impactMonth ?? 0) > 0 ? <><div className="font-medium">{fmtMoney(Number(h.impactMonth))}</div><div className="text-[11px] text-faint">в месяц</div></> : <span className="text-faint">—</span>}</span>
               </li>
             ))}

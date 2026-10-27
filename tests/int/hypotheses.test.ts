@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { buildNetwork, D1, D2 } from "@tests/factories/network";
 import { collectCandidates, hypothesesList, hypothesisCounts, siteHypotheses, topHypotheses, topSiteIds } from "@/server/queries/hypotheses";
-import { createHypothesis, generateHypotheses, hypothesisFromAlert, measureMetric, setHypothesisStatus } from "@/server/services/hypotheses";
+import { createHypothesis, generateHypotheses, hypothesisFromAlert, measureMetric, setHypothesisStatus, setOwnStatus, updateHypothesis } from "@/server/services/hypotheses";
 import { RuleError } from "@/server/domain/errors";
 import { resetDb, testDb } from "./helpers";
 
@@ -95,14 +95,16 @@ describe("own hypotheses and statuses", () => {
     await expect(createHypothesis(db, { title: "x", hypothesis: "если поднять флор, то вырастет", siteId: "s3", bundleId: net.jav.id })).rejects.toMatchObject({ field: "bundleId" }); // s3 is not in JAV
     const id = await createHypothesis(db, { title: "Флор баннеров", hypothesis: "Если поднять флор баннеров до $1, то rev/1k вырастет", siteId: "s1", bundleId: net.jav.id, format: "BANNER", countryCode: "jp", impactMonth: "120", metric: "rev_per_1k" });
     const h = await db.hypothesis.findUniqueOrThrow({ where: { id } });
-    expect(h).toMatchObject({ source: "MANUAL", status: "PROPOSED", scope: "format", format: "BANNER", countryCode: "JP", link: "/sites/one.test", metric: "rev_per_1k" });
+    expect(h).toMatchObject({ source: "MANUAL", status: "TESTING", scope: "format", format: "BANNER", countryCode: "JP", link: "/sites/one.test", metric: "rev_per_1k" });
+    expect(h.acceptedAt).not.toBeNull(); // ours from the start: the baseline window ends the day before it was added
+    await expect(createHypothesis(db, { title: "x", hypothesis: "если поднять флор, то вырастет", siteId: "s1", countryCode: "Japan" })).rejects.toMatchObject({ field: "countryCode" });
     expect(Number(h.impactMonth)).toBe(120);
     expect(await db.auditLog.count({ where: { entity: "Hypothesis", entityId: id } })).toBe(1);
   });
 
   it("accepting freezes the baseline over the 14 days before; finishing measures the result; transitions are checked", async () => {
-    // Site s1 earns $1 per 1000 loads on the factory's two days (09-20, 09-21).
-    const id = await createHypothesis(db, { title: "Флор", hypothesis: "Если поднять флор, то rev/1k вырастет", siteId: "s1", metric: "rev_per_1k" });
+    // Site s1 earns $1 per 1000 loads on the factory's two days (09-20, 09-21). A system proposal on s1, measured by rev/1k.
+    const id = (await db.hypothesis.create({ data: { source: "AUTO", status: "PROPOSED", ruleKey: "test_rule", objectKey: "site:s1", scope: "site", siteId: "s1", title: "Флор", hypothesis: "Если поднять флор, то rev/1k вырастет", metric: "rev_per_1k" } })).id;
     await expect(setHypothesisStatus(db, id, "DONE", null, TODAY)).rejects.toBeInstanceOf(RuleError); // not accepted yet
     // Two days of data are under the 7-day minimum: the baseline stays empty, the acceptance still happens.
     await setHypothesisStatus(db, id, "ACCEPTED", null, TODAY);
@@ -122,7 +124,48 @@ describe("own hypotheses and statuses", () => {
     h = await db.hypothesis.findUniqueOrThrow({ where: { id } });
     expect(h.status).toBe("DONE"); expect(h.resultNote).toBe("подняли флор");
     expect(Number(h.result)).toBeCloseTo(2, 3);
-    expect(await db.auditLog.count({ where: { entity: "Hypothesis", entityId: id, field: "status" } })).toBe(6);
+    expect(await db.auditLog.count({ where: { entity: "Hypothesis", entityId: id, field: "status" } })).toBe(5);
+  });
+
+  it("own hypotheses: Тест → В работе → Готово in any order; «Готово» measures the result from the start day, leaving it clears it; system statuses do not apply", async () => {
+    for (let i = 2; i <= 15; i++) await db.factRevenueGeo.create({ data: { date: new Date(`2026-09-${String(22 - i).padStart(2, "0")}T00:00:00Z`), siteId: "s1", networkId: net.net.id, countryCode: "US", device: "DESKTOP", pageLoads: 10_000, revenueReported: "10" } }).catch(() => null);
+    const id = await createHypothesis(db, { title: "Флор", hypothesis: "Если поднять флор, то rev/1k вырастет", siteId: "s1", metric: "rev_per_1k" }, TODAY);
+    let h = await db.hypothesis.findUniqueOrThrow({ where: { id } });
+    expect(h.status).toBe("TESTING"); expect(Number(h.baseline)).toBeGreaterThan(1); expect(Number(h.baseline)).toBeLessThan(1.1);
+    await expect(setHypothesisStatus(db, id, "ACCEPTED", null, TODAY)).rejects.toBeInstanceOf(RuleError);
+    await setOwnStatus(db, id, "ACCEPTED", TODAY);
+    expect((await db.hypothesis.findUniqueOrThrow({ where: { id } })).status).toBe("ACCEPTED");
+    const later = "2026-10-10";
+    for (let day = 1; day <= 9; day++) await db.factRevenueGeo.create({ data: { date: new Date(`2026-10-0${day}T00:00:00Z`), siteId: "s1", networkId: net.net.id, countryCode: "US", device: "DESKTOP", pageLoads: 10_000, revenueReported: "20" } });
+    await db.hypothesis.update({ where: { id }, data: { acceptedAt: new Date("2026-09-25T00:00:00Z") } });
+    await setOwnStatus(db, id, "DONE", later);
+    h = await db.hypothesis.findUniqueOrThrow({ where: { id } });
+    expect(h.status).toBe("DONE"); expect(Number(h.result)).toBeCloseTo(2, 3); expect(h.closedAt).not.toBeNull();
+    await setOwnStatus(db, id, "TESTING", later); // back to test: the result goes, the baseline and start stay
+    h = await db.hypothesis.findUniqueOrThrow({ where: { id } });
+    expect(h).toMatchObject({ status: "TESTING", result: null, closedAt: null }); expect(h.baseline).not.toBeNull();
+    await setOwnStatus(db, id, "REJECTED", later);
+    expect((await db.hypothesis.findUniqueOrThrow({ where: { id } })).status).toBe("REJECTED");
+    expect((await db.auditLog.findMany({ where: { entity: "Hypothesis", entityId: id, field: "status" }, orderBy: { at: "asc" } })).map((a) => a.after))
+      .toEqual(["TESTING", "ACCEPTED", "DONE", "TESTING", "REJECTED"]);
+    const auto = (await db.hypothesis.create({ data: { source: "AUTO", status: "PROPOSED", ruleKey: "r", objectKey: "o", scope: "site", siteId: "s1", title: "t", hypothesis: "если так, то этак" } })).id;
+    await expect(setOwnStatus(db, auto, "TESTING", TODAY)).rejects.toBeInstanceOf(RuleError);
+  });
+
+  it("editing: own ones change every field with an audit line per field and a re-measured baseline on a new object; system ones keep their text and take a note", async () => {
+    const id = await createHypothesis(db, { title: "Флор", hypothesis: "Если поднять флор, то rev/1k вырастет", siteId: "s1", metric: "rev_per_1k", impactMonth: "50" }, TODAY);
+    await updateHypothesis(db, id, { title: "Флор баннеров", hypothesis: "Если поднять флор, то rev/1k вырастет", siteId: "s2", metric: "rev_per_1k", impactMonth: "50", note: "начали с японского гео" }, TODAY);
+    const h = await db.hypothesis.findUniqueOrThrow({ where: { id } });
+    expect(h).toMatchObject({ title: "Флор баннеров", siteId: "s2", link: "/sites/two.test", resultNote: "начали с японского гео", status: "TESTING" });
+    const fields = (await db.auditLog.findMany({ where: { entity: "Hypothesis", entityId: id, reason: "правка" } })).map((a) => a.field).sort();
+    expect(fields).toEqual(["resultNote", "siteId", "title"]); // impact 50 → "50" is no change
+    await updateHypothesis(db, id, { title: "Флор баннеров", hypothesis: "Если поднять флор, то rev/1k вырастет", siteId: "s2", metric: "rev_per_1k", impactMonth: "50", note: "начали с японского гео" }, TODAY);
+    expect(await db.auditLog.count({ where: { entity: "Hypothesis", entityId: id, reason: "правка" } })).toBe(3); // nothing changed, nothing written
+    await expect(updateHypothesis(db, id, { title: "", hypothesis: "Если поднять флор, то rev/1k вырастет", siteId: "s2" })).rejects.toMatchObject({ field: "title" });
+
+    const auto = (await db.hypothesis.create({ data: { source: "AUTO", status: "PROPOSED", ruleKey: "r", objectKey: "o", scope: "site", siteId: "s1", title: "Системная", hypothesis: "если так, то этак" } })).id;
+    await updateHypothesis(db, auto, { title: "Переименовал", hypothesis: "другой текст гипотезы", siteId: "s2", note: "смотрим после релиза" });
+    expect(await db.hypothesis.findUniqueOrThrow({ where: { id: auto } })).toMatchObject({ title: "Системная", siteId: "s1", resultNote: "смотрим после релиза" });
   });
 
   it("measureMetric reads the right slice: zone view rate, network rev/1k, format revenue, source cost per 1k, bundle cost share", async () => {
@@ -143,16 +186,21 @@ describe("own hypotheses and statuses", () => {
     await generateHypotheses(db, TODAY);
     const own = await createHypothesis(db, { title: "Своя", hypothesis: "Если сделать X, то будет Y", bundleId: net.hentai.id, impactMonth: "9999" });
     const proposed = await hypothesesList({ tab: "proposed" });
-    expect(proposed.some((h) => h.id === own)).toBe(true);
+    expect(proposed.some((h) => h.id === own)).toBe(false); // ours are not system proposals
+    expect(proposed.every((h) => h.source !== "MANUAL")).toBe(true);
+    expect((await hypothesesList({ tab: "test" })).map((h) => h.id)).toEqual([own]);
+    expect((await hypothesesList({ tab: "mine" })).map((h) => h.id)).toEqual([own]);
+    expect(await hypothesesList({ tab: "all" })).toHaveLength(proposed.length);
     expect(proposed.every((h) => h.status === "PROPOSED")).toBe(true);
     const zones = await hypothesesList({ tab: "proposed", scope: "zone" });
     expect(zones.length).toBeGreaterThan(0); expect(zones.every((h) => h.scope === "zone")).toBe(true);
-    const hentai = await hypothesesList({ tab: "proposed", bundleSiteIds: ["s2", "s3"], bundleId: net.hentai.id });
+    const hentai = await hypothesesList({ tab: "mine", bundleSiteIds: ["s2", "s3"], bundleId: net.hentai.id });
     expect(hentai.some((h) => h.id === own)).toBe(true);
     expect(hentai.every((h) => h.bundleId === net.hentai.id || ["s2", "s3"].includes(h.siteId ?? ""))).toBe(true);
     const counts = await hypothesisCounts({});
     expect(counts.tabs.proposed).toBe(proposed.length); expect(counts.tabs.accepted).toBe(0);
-    expect((await topHypotheses(1))[0].id).toBe(own); // the biggest expected effect leads
+    expect(counts.tabs.test).toBe(1); expect(counts.tabs.mine).toBe(1); expect(counts.tabs.work).toBe(0);
+    expect((await topHypotheses(1))[0].id).toBe(proposed.sort((a, b) => Number(b.impactMonth ?? 0) - Number(a.impactMonth ?? 0))[0].id); // the overview top: system proposals by effect
   });
 
   it("one site, a list of sites (the top-10 chip) and the site page block", async () => {
@@ -168,6 +216,6 @@ describe("own hypotheses and statuses", () => {
     expect(top).toHaveLength(2); expect(new Set(top).size).toBe(2);
     expect((await topSiteIds(10, TODAY)).length).toBeLessThanOrEqual(3);
     const block = await siteHypotheses("s1", 2);
-    expect(block.length).toBeLessThanOrEqual(2); expect(block.every((h) => h.siteId === "s1" && ["PROPOSED", "ACCEPTED"].includes(h.status))).toBe(true);
+    expect(block.length).toBeLessThanOrEqual(2); expect(block.every((h) => h.siteId === "s1" && ["PROPOSED", "TESTING", "ACCEPTED"].includes(h.status))).toBe(true);
   });
 });

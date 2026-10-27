@@ -29,7 +29,7 @@ Claude ──HTTPS + Bearer──► caddy ──► web /api/mcp
 | `get_zones` | `site`, `date_from`, `date_to` | Зоны: view rate, viewable CPM, доля, флаги «не видна» / «кандидат на снос» |
 | `get_alerts` | `level?`, `bundle?`, `site?` | Активные алерты с контекстом и ссылками на UI |
 | `get_deals` | `status?`, `advertiser?`, `date_from?`, `date_to?` | Дилы: места (`places`), прогноз, выставлено, подтверждено, остаток, множитель |
-| `get_hypotheses` | `status?` (по умолчанию `PROPOSED`), `bundle?`, `site?`, `scope?` | Гипотезы: источник, уровень, разрез, текст, ожидаемый эффект $/мес, метрика, база и итог, ссылка |
+| `get_hypotheses` | `status?` (по умолчанию `PROPOSED`; у своих гипотез — `TESTING`, `ACCEPTED`, `DONE`, `REJECTED`), `bundle?`, `site?`, `scope?` | Гипотезы: источник, уровень, разрез, текст, ожидаемый эффект $/мес, метрика, база и итог, ссылка |
 
 `get_deals` добавлен к спецификации вместе с разделом фикс-дилов; `get_hypotheses` — вместе с гипотезами (ADR 0013).
 

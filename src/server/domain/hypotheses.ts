@@ -27,7 +27,11 @@ export const SCOPE_LABEL: Record<HypScope, string> = {
   bundle: "Бандлы", site: "Сайты", geo: "Гео", zone: "Зоны", network: "Сетки", format: "Форматы", deal: "Фикс-дилы", source: "Источники", system: "Система",
 };
 export const SOURCE_LABEL = { AUTO: "авто", ALERT: "алерт", MANUAL: "своя" } as const;
-export const STATUS_LABEL = { PROPOSED: "предложена", ACCEPTED: "в работе", DONE: "проверена", REJECTED: "отклонена", EXPIRED: "неактуальна" } as const;
+export const STATUS_LABEL = { PROPOSED: "предложена", TESTING: "тест", ACCEPTED: "в работе", DONE: "проверена", REJECTED: "отклонена", EXPIRED: "неактуальна" } as const;
+/** Own hypotheses move freely between these (ADR 0013, 2026-10-27); system ones keep предложена → в работе → проверена. */
+export const OWN_STATUSES = ["TESTING", "ACCEPTED", "DONE", "REJECTED"] as const;
+export type OwnStatus = (typeof OWN_STATUSES)[number];
+export const OWN_STATUS_LABEL: Record<OwnStatus, string> = { TESTING: "Тест", ACCEPTED: "В работе", DONE: "Готово", REJECTED: "Отклонена" };
 
 const money = (v: number) => `$${v.toFixed(2)}`;
 const cpm = (v: number) => `$${v.toFixed(4)}`;
