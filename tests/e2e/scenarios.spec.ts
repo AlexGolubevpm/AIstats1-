@@ -234,7 +234,7 @@ test("forecast: the month is drawn day by day, the pace switch changes the URL, 
   await expect(page.locator("tr[data-kind=forecast]")).toHaveCount(0); // a finished month has no forecast rows
 });
 
-test("hypotheses: system proposals on demo data, scope chips, an own hypothesis accepted into work; old /recommendations links redirect", async ({ page }) => {
+test("hypotheses: system proposals and ours apart, scope chips, own statuses Тест · В работе · Готово, the hypothesis page edits it; old /recommendations links redirect", async ({ page }) => {
   await login(page, "/recommendations");
   await expect(page).toHaveURL(/\/hypotheses/);
   await expect(page.getByRole("heading", { name: "Гипотезы", exact: true }).first()).toBeVisible();
@@ -243,23 +243,42 @@ test("hypotheses: system proposals on demo data, scope chips, an own hypothesis 
   await page.locator("a[href*='scope=format']").first().click();
   await expect(page).toHaveURL(/scope=format/);
   await expect(page.locator("li[data-scope]:not([data-scope=format])")).toHaveCount(0);
-  // An own hypothesis: bundle + site + sentence; it lands in «Предложено системой» as «своя», «Принять» moves it to «В работе».
+  // Two lists: system proposals and ours. A new own hypothesis lands in «Наши» on «Тест», never among the proposals.
+  await expect(page.locator("a[data-kind=system]")).toHaveClass(/border-accent/);
   await page.getByRole("button", { name: "Новая гипотеза" }).click();
   await page.locator("select[name=siteId]").selectOption({ label: "japan-tube.demo" });
   await page.locator("input[name=title]").fill("E2E: поднять флор баннеров");
   await page.locator("textarea[name=hypothesis]").fill("Если поднять флор баннеров до $1, то rev/1000 loads вырастет на 10%");
   await page.locator("input[name=impactMonth]").fill("150");
   await page.getByRole("button", { name: "Добавить" }).click();
-  await expect(page.getByText("Гипотеза добавлена")).toBeVisible();
-  // Proposals are paginated (50 a page, critical and biggest effect first): find the own one through its scope chip.
-  await page.goto("/hypotheses?tab=proposed&scope=site");
+  await expect(page.getByText(/Гипотеза добавлена/)).toBeVisible();
+  await expect(page.locator("li[data-scope]", { hasText: "E2E: поднять флор баннеров" })).toHaveCount(0); // not a system proposal
+  await page.locator("a[data-kind=own]").click();
+  await expect(page).toHaveURL(/tab=mine/);
   const own = page.locator("li[data-scope]", { hasText: "E2E: поднять флор баннеров" });
-  await expect(own.getByText("своя")).toBeVisible();
-  await own.getByRole("button", { name: "Принять" }).click();
-  await expect(page.getByText(/Гипотеза в работе/)).toBeVisible();
-  await page.goto("/hypotheses?tab=accepted");
+  await expect(own.locator("[data-own-status=TESTING]")).toHaveText("Тест");
+  // Status in one click: «В работе», then it is under the «В работе» tab of ours.
+  await own.getByTestId("own-status").getByRole("button", { name: "В работе" }).click();
+  await expect(page.getByText("Статус: В работе")).toBeVisible();
+  await page.locator("a[data-tab=work]").click();
   await expect(page.locator("li[data-status=ACCEPTED]", { hasText: "E2E: поднять флор баннеров" })).toBeVisible();
-  await expect(page.getByText(/в работе с/).first()).toBeVisible();
+  // Into the hypothesis: edit the title and add a note; the history lists both, «Готово» closes it.
+  await page.locator("li[data-scope]", { hasText: "E2E: поднять флор баннеров" }).locator("a[data-open]").click();
+  await expect(page).toHaveURL(/\/hypotheses\/[a-z0-9]+$/);
+  await expect(page.getByTestId("hypothesis-status")).toHaveText("В работе");
+  const form = page.getByTestId("hypothesis-edit");
+  await form.locator("input[name=title]").fill("E2E: флор баннеров $1");
+  await form.locator("textarea[name=note]").fill("Подняли флор на JP");
+  await form.getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText("Сохранено")).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "E2E: флор баннеров $1" })).toBeVisible();
+  await expect(page.getByTestId("hypothesis-history")).toContainText("заголовок");
+  await expect(page.getByTestId("hypothesis-history")).toContainText("Подняли флор на JP");
+  await page.getByTestId("own-status").getByRole("button", { name: "Готово" }).click();
+  await expect(page.getByText("Статус: Готово")).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("hypothesis-status")).toHaveText("Готово");
 });
 
 test("hypotheses: evidence line, «По сайтам» groups the list by domain, «Топ-10 сайтов» narrows it; a site page shows its alerts with an action and its hypotheses", async ({ page }) => {

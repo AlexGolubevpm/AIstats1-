@@ -17,7 +17,7 @@ import { geoScopeLabel } from "@/server/domain/deals";
 import { periodFromParams } from "@/lib/period";
 import { db } from "@/server/db";
 import { D, costCoverage, dailyTotals, kpis } from "@/server/queries/common";
-import { SCOPE_LABEL, SOURCE_LABEL, STATUS_LABEL, type HypScope } from "@/server/domain/hypotheses";
+import { OWN_STATUS_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATUS_LABEL, type HypScope, type OwnStatus } from "@/server/domain/hypotheses";
 import { siteHypotheses } from "@/server/queries/hypotheses";
 import { costSplitDaily, devicesTable, formatFillDaily, formatsTable, hoursTable, networksTable, peerMedians, revenueSplitDaily, siteDataQuality, siteGeoWithNetworks, sourcesTable, techTable, zonesTable, type SplitBy } from "@/server/queries/reports";
 import { colorFor, pivot } from "@/lib/charts";
@@ -26,7 +26,7 @@ import { fmtPercent } from "@/lib/format";
 import type { KpiCompare } from "@/components/data/kpi-row";
 import { TierChips } from "@/components/pages/tier-chips";
 import { SnoozeButton } from "../../alerts/snooze";
-import { HypothesisActions, ToHypothesisButton } from "../../hypotheses/client";
+import { HypothesisActions, OwnStatusSwitch, ToHypothesisButton } from "../../hypotheses/client";
 
 type Props = { params: Promise<{ domain: string }>; searchParams: Promise<Record<string, string | undefined>> };
 const TABS = [{ id: "zones", label: "Зоны" }, { id: "formats", label: "Форматы" }, { id: "networks", label: "Сетки" }, { id: "geo", label: "Гео" }, { id: "devices", label: "Девайсы" },
@@ -227,24 +227,24 @@ export default async function SitePage({ params, searchParams }: Props) {
           </Section>
         )}
         {hyps.length > 0 && (
-          <Section title={`Гипотезы сайта · ${hyps.length}`} sub="Что система предлагает попробовать на этом сайте" actions={<Link href={`/hypotheses?site=${encodeURIComponent(site.domain)}`} className="text-sm text-accent hover:underline">Все гипотезы сайта →</Link>}>
+          <Section title={`Гипотезы сайта · ${hyps.length}`} sub="Что система предлагает попробовать на этом сайте, и наши гипотезы на тесте и в работе" actions={<Link href={`/hypotheses?site=${encodeURIComponent(site.domain)}`} className="text-sm text-accent hover:underline">Все гипотезы сайта →</Link>}>
             <ul className="-mx-5 divide-y divide-border/60" data-testid="site-hypotheses">{hyps.map((h) => (
               <li key={h.id} className="flex flex-col gap-2 px-5 py-2.5 sm:flex-row sm:items-start">
                 <div className="flex min-w-0 flex-1 gap-3">
                   <span className={cn("mt-0.5 grid size-7 shrink-0 place-items-center rounded-full", h.level === "CRITICAL" ? "bg-negative-soft text-negative" : h.level === "WARNING" ? "bg-warning-soft text-warning" : "bg-accent-soft text-accent")}><FlaskConical className="size-3.5" /></span>
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
-                      <Link href={h.link} className="text-sm font-medium hover:text-accent">{h.title}</Link>
+                      <Link href={`/hypotheses/${h.id}`} className="text-sm font-medium hover:text-accent">{h.title}</Link>
                       <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">{SCOPE_LABEL[h.scope as HypScope] ?? h.scope}</span>
                       <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">{SOURCE_LABEL[h.source]}</span>
-                      {h.status === "ACCEPTED" && <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">{STATUS_LABEL[h.status]}</span>}
+                      {(h.source === "MANUAL" || h.status === "ACCEPTED") && <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">{h.source === "MANUAL" ? OWN_STATUS_LABEL[h.status as OwnStatus] ?? STATUS_LABEL[h.status] : STATUS_LABEL[h.status]}</span>}
                     </div>
                     <p className="mt-0.5 text-xs text-muted">{h.hypothesis}</p>
                   </div>
                 </div>
                 <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 pl-10 sm:flex-col sm:items-end sm:pl-0">
                   <span className="num text-sm">{Number(h.impactMonth ?? 0) > 0 ? <><span className="font-medium">{fmtMoney(Number(h.impactMonth))}</span><span className="ml-1 text-[11px] text-faint">{(h.evidence as Record<string, unknown> | null)?.debt ? "долг" : "в месяц"}</span></> : <span className="text-faint">—</span>}</span>
-                  <HypothesisActions id={h.id} status={h.status} />
+                  {h.source === "MANUAL" ? <OwnStatusSwitch id={h.id} status={h.status} /> : <HypothesisActions id={h.id} status={h.status} />}
                 </div>
               </li>
             ))}</ul>

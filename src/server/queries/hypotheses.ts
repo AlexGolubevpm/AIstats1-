@@ -133,8 +133,16 @@ export async function collectCandidates(today = iso(new Date())): Promise<Hypoth
 /** The bundle rows of one site (a site can sit in several bundles). */
 const sitesTotalsFor = (rows: { siteId: string; bundleId: string; bundleTitle: string; bundleSlug: string; domain: string; revenue: number; pageLoads: number }[], siteId: string) => rows.filter((b) => b.siteId === siteId);
 
-export type HypothesisTab = "proposed" | "accepted" | "done" | "all";
-export const TAB_LABEL: Record<HypothesisTab, string> = { proposed: "Предложено системой", accepted: "В работе", done: "Проверено", all: "Все" };
+/** System proposals (rules and alerts) and our own hypotheses are two lists, each with its own statuses. */
+export type HypothesisKind = "system" | "own";
+export type HypothesisTab = "proposed" | "accepted" | "done" | "all" | "test" | "work" | "ready" | "rejected" | "mine";
+export const TAB_LABEL: Record<HypothesisTab, string> = {
+  proposed: "Предложено", accepted: "В работе", done: "Проверено", all: "Все",
+  test: "Тест", work: "В работе", ready: "Готово", rejected: "Отклонённые", mine: "Все",
+};
+export const KIND_TABS: Record<HypothesisKind, HypothesisTab[]> = { system: ["proposed", "accepted", "done", "all"], own: ["test", "work", "ready", "rejected", "mine"] };
+export const KIND_LABEL: Record<HypothesisKind, string> = { system: "Предложенные системой", own: "Наши гипотезы" };
+export const kindOf = (tab: HypothesisTab): HypothesisKind => (KIND_TABS.own.includes(tab) ? "own" : "system");
 
 export interface HypothesisFilter {
   tab: HypothesisTab; scope?: HypScope | null; bundleSiteIds?: string[] | null; bundleId?: string | null; page?: number;
@@ -145,9 +153,20 @@ export interface HypothesisFilter {
 }
 export const HYPOTHESES_PAGE = 50;
 
+const SYSTEM: Prisma.HypothesisWhereInput = { source: { in: ["AUTO", "ALERT"] } };
+const OWN: Prisma.HypothesisWhereInput = { source: "MANUAL" };
 const TAB_WHERE: Record<HypothesisTab, Prisma.HypothesisWhereInput> = {
-  proposed: { status: "PROPOSED" }, accepted: { status: "ACCEPTED" }, done: { status: { in: ["DONE", "REJECTED"] } }, all: { status: { not: "EXPIRED" } },
+  proposed: { ...SYSTEM, status: "PROPOSED" }, accepted: { ...SYSTEM, status: "ACCEPTED" }, done: { ...SYSTEM, status: { in: ["DONE", "REJECTED"] } }, all: { ...SYSTEM, status: { not: "EXPIRED" } },
+  test: { ...OWN, status: "TESTING" }, work: { ...OWN, status: "ACCEPTED" }, ready: { ...OWN, status: "DONE" }, rejected: { ...OWN, status: "REJECTED" }, mine: { ...OWN, status: { not: "EXPIRED" } },
 };
+
+/** One hypothesis for its page: the object, and every status change and edit from the audit log, newest first. */
+export async function hypothesisDetail(id: string) {
+  const h = await db.hypothesis.findUnique({ where: { id }, include: { site: { select: { id: true, domain: true } }, bundle: { select: { id: true, title: true, slug: true } } } });
+  if (!h) return null;
+  const history = await db.auditLog.findMany({ where: { entity: "Hypothesis", entityId: id }, orderBy: { at: "desc" }, take: 100 });
+  return { ...h, history };
+}
 
 /** The page list: by tab, scope, bundle (a bundle's hypotheses are its own plus those of its sites), one site or a list of sites. */
 export async function hypothesesList(f: HypothesisFilter) {
@@ -173,7 +192,7 @@ export async function hypothesisCounts(f: Omit<HypothesisFilter, "tab" | "scope"
   };
   const [tabs, scopes] = await Promise.all([
     Promise.all((Object.keys(TAB_WHERE) as HypothesisTab[]).map(async (t) => [t, await db.hypothesis.count({ where: { ...TAB_WHERE[t], ...bundle } })] as const)),
-    db.hypothesis.groupBy({ by: ["scope", "status"], _count: { _all: true }, where: bundle }),
+    db.hypothesis.groupBy({ by: ["scope", "status", "source"], _count: { _all: true }, where: bundle }),
   ]);
   return { tabs: Object.fromEntries(tabs) as Record<HypothesisTab, number>, scopes };
 }
@@ -195,6 +214,6 @@ export async function topSiteIds(limit = 10, today = iso(new Date())): Promise<s
 
 /** Open and accepted hypotheses about one site, the site page block: critical first, then by effect. */
 export function siteHypotheses(siteId: string, limit = 6) {
-  return db.hypothesis.findMany({ where: { siteId, status: { in: ["PROPOSED", "ACCEPTED"] } },
+  return db.hypothesis.findMany({ where: { siteId, status: { in: ["PROPOSED", "TESTING", "ACCEPTED"] } }, // open ones: system proposals and work, ours on test and in work
     orderBy: [{ level: "desc" }, { impactMonth: { sort: "desc", nulls: "last" } }], take: limit });
 }

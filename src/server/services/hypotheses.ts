@@ -2,7 +2,7 @@
 // own hypotheses, status changes and the measurement of a result. docs/product/03-pages.md#hypotheses, ADR 0013.
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import { RuleError, parseDecimal } from "@/server/domain/errors";
-import { METRICS, type HypScope, type HypothesisCandidate, type Metric } from "@/server/domain/hypotheses";
+import { METRICS, OWN_STATUSES, OWN_STATUS_LABEL, type HypScope, type HypothesisCandidate, type Metric, type OwnStatus } from "@/server/domain/hypotheses";
 import { collectCandidates } from "@/server/queries/hypotheses";
 
 const d = (s: string) => new Date(`${s}T00:00:00Z`);
@@ -63,8 +63,8 @@ export interface HypothesisInput {
 
 const SCOPE_OF = (i: HypothesisInput): HypScope => (i.format ? "format" : i.countryCode ? "geo" : i.siteId ? "site" : "bundle");
 
-/** The owner's own hypothesis: at least a bundle or a site, a real sentence, optional format / geo / effect / metric. */
-export async function createHypothesis(db: PrismaClient, i: HypothesisInput): Promise<string> {
+/** Checks an own hypothesis's fields and resolves its object; the same rules for a new one and an edit. */
+async function ownFields(db: PrismaClient, i: HypothesisInput) {
   if (!i.bundleId && !i.siteId) throw new RuleError("object", "Выберите бандл или сайт", "siteId");
   if (!i.title.trim()) throw new RuleError("title", "Назовите гипотезу", "title");
   if (i.hypothesis.trim().length < 10) throw new RuleError("hypothesis", "Опишите гипотезу: если …, то …", "hypothesis");
@@ -74,6 +74,8 @@ export async function createHypothesis(db: PrismaClient, i: HypothesisInput): Pr
   if (i.bundleId && !bundle) throw new RuleError("bundle", "Бандл не найден", "bundleId");
   if (site && bundle && !bundle.sites.some((s) => s.siteId === site.id)) throw new RuleError("bundle", "Сайт не входит в этот бандл", "bundleId");
   if (i.metric && !METRICS.includes(i.metric as Metric)) throw new RuleError("metric", "Неизвестная метрика", "metric");
+  const cc = i.countryCode?.trim().toUpperCase() || null;
+  if (cc && !/^[A-Z]{2}$/.test(cc)) throw new RuleError("country", "Гео — двухбуквенный код, например JP", "countryCode");
   let impact: string | null = null;
   if (i.impactMonth) {
     const v = parseDecimal(i.impactMonth);
@@ -81,13 +83,86 @@ export async function createHypothesis(db: PrismaClient, i: HypothesisInput): Pr
     impact = v.toFixed(4);
   }
   const link = site ? `/sites/${site.domain}` : bundle ? `/bundles/${bundle.slug}` : "/hypotheses";
-  const h = await db.hypothesis.create({ data: {
-    source: "MANUAL", status: "PROPOSED", level: "INFO", scope: SCOPE_OF(i), title: i.title.trim(), hypothesis: i.hypothesis.trim(), link,
-    bundleId: bundle?.id ?? null, siteId: site?.id ?? null, format: (i.format || null) as never, countryCode: i.countryCode?.toUpperCase() || null,
-    impactMonth: impact, metric: (i.metric as Metric) || null, evidence: {},
-  } });
-  await db.auditLog.create({ data: { entity: "Hypothesis", entityId: h.id, field: "status", before: null, after: "PROPOSED", reason: "своя гипотеза" } });
+  return {
+    scope: SCOPE_OF(i), title: i.title.trim(), hypothesis: i.hypothesis.trim(), link, bundleId: bundle?.id ?? null, siteId: site?.id ?? null,
+    format: (i.format || null) as never, countryCode: cc, impactMonth: impact, metric: (i.metric as Metric) || null,
+  };
+}
+
+/** The baseline of an own hypothesis: its metric over the 14 days before the day it started (acceptedAt). */
+async function baselineFor(db: PrismaClient, h: Measured, started: string) {
+  const base = await measureMetric(db, h, addDays(started, -MEASURE_DAYS), addDays(started, -1));
+  return base.days >= MIN_MEASURE_DAYS && base.value != null ? base.value.toFixed(6) : null;
+}
+
+/**
+ * The owner's own hypothesis: at least a bundle or a site, a real sentence, optional format / geo / effect / metric.
+ * It is ours from the start: status «Тест», the baseline is frozen now (14 days before today).
+ */
+export async function createHypothesis(db: PrismaClient, i: HypothesisInput, today = isoOf(new Date())): Promise<string> {
+  const f = await ownFields(db, i);
+  const h = await db.hypothesis.create({ data: { source: "MANUAL", status: "TESTING", level: "INFO", ...f, evidence: {}, acceptedAt: d(today) } });
+  const baseline = await baselineFor(db, { ...h, format: h.format as string | null }, today);
+  if (baseline) await db.hypothesis.update({ where: { id: h.id }, data: { baseline } });
+  await db.auditLog.create({ data: { entity: "Hypothesis", entityId: h.id, field: "status", before: null, after: "TESTING", reason: "своя гипотеза" } });
   return h.id;
+}
+
+const EDITABLE = ["title", "hypothesis", "bundleId", "siteId", "format", "countryCode", "impactMonth", "metric"] as const;
+const show = (v: unknown) => (v == null || v === "" ? null : v instanceof Prisma.Decimal ? v.toString() : String(v));
+
+/**
+ * Edit a hypothesis from its page. Own ones: every field, each change in the audit log; a new object or
+ * metric re-measures the baseline from the same start day. System ones are rewritten by the nightly run,
+ * so only the note is ours to change.
+ */
+export async function updateHypothesis(db: PrismaClient, id: string, i: HypothesisInput & { note?: string | null }, today = isoOf(new Date())): Promise<void> {
+  const h = await db.hypothesis.findUniqueOrThrow({ where: { id } });
+  const note = i.note?.trim() || null;
+  const audit: { field: string; before: string | null; after: string | null }[] = [];
+  let data: Record<string, unknown> = {};
+  if (h.source === "MANUAL") {
+    const f = await ownFields(db, i);
+    for (const k of EDITABLE) {
+      const before = show(h[k]), after = show(f[k]);
+      if (k === "impactMonth" ? Number(before ?? 0) !== Number(after ?? 0) : before !== after) audit.push({ field: k, before, after });
+    }
+    data = { ...f };
+    const remeasure = audit.some((a) => ["bundleId", "siteId", "format", "countryCode", "metric"].includes(a.field)) && h.status !== "DONE";
+    if (remeasure) data.baseline = await baselineFor(db, { ...h, ...f, format: f.format as string | null }, h.acceptedAt ? isoOf(h.acceptedAt) : today);
+  }
+  if (note !== (h.resultNote ?? null)) { audit.push({ field: "resultNote", before: h.resultNote, after: note }); data.resultNote = note; }
+  if (!audit.length) return;
+  await db.hypothesis.update({ where: { id }, data });
+  await db.auditLog.createMany({ data: audit.map((a) => ({ entity: "Hypothesis", entityId: id, ...a, reason: "правка" })) });
+}
+
+/**
+ * Own hypotheses: «Тест», «В работе», «Готово», «Отклонена» in any order. Starting work without a baseline
+ * freezes one; «Готово» measures the result over the last 14 days (not before the start); leaving «Готово»
+ * clears the result.
+ */
+export async function setOwnStatus(db: PrismaClient, id: string, to: OwnStatus, today = isoOf(new Date())): Promise<void> {
+  if (!OWN_STATUSES.includes(to)) throw new RuleError("status", "Неизвестный статус");
+  const h = await db.hypothesis.findUniqueOrThrow({ where: { id } });
+  if (h.source !== "MANUAL") throw new RuleError("status", "Статусы «Тест / В работе / Готово» — только у своих гипотез");
+  if (h.status === to) return;
+  const now = new Date();
+  const m = { ...h, format: h.format as string | null };
+  let data: Record<string, unknown> = { status: to };
+  const started = h.acceptedAt ? isoOf(h.acceptedAt) : today;
+  if (!h.acceptedAt) data = { ...data, acceptedAt: d(today), baseline: await baselineFor(db, m, today) };
+  if (to === "DONE") {
+    const from = started > addDays(today, -MEASURE_DAYS) ? started : addDays(today, -MEASURE_DAYS);
+    const res = await measureMetric(db, m, from, addDays(today, -1));
+    data = { ...data, closedAt: now, result: res.days >= MIN_MEASURE_DAYS && res.value != null ? res.value.toFixed(6) : null };
+  } else if (to === "REJECTED") {
+    data = { ...data, closedAt: now, result: null };
+  } else {
+    data = { ...data, closedAt: null, result: null };
+  }
+  await db.hypothesis.update({ where: { id }, data });
+  await db.auditLog.create({ data: { entity: "Hypothesis", entityId: id, field: "status", before: h.status, after: to, reason: OWN_STATUS_LABEL[to] } });
 }
 
 export type HypothesisTransition = "ACCEPTED" | "DONE" | "REJECTED" | "PROPOSED";
@@ -95,6 +170,7 @@ export type HypothesisTransition = "ACCEPTED" | "DONE" | "REJECTED" | "PROPOSED"
 /** Accept (freezes the baseline), finish (measures the result), reject, or reopen a hypothesis. */
 export async function setHypothesisStatus(db: PrismaClient, id: string, to: HypothesisTransition, note?: string | null, today = isoOf(new Date())): Promise<void> {
   const h = await db.hypothesis.findUniqueOrThrow({ where: { id } });
+  if (h.source === "MANUAL") throw new RuleError("status", "У своих гипотез статусы «Тест / В работе / Готово»");
   const allowed: Record<HypothesisTransition, string[]> = { ACCEPTED: ["PROPOSED", "EXPIRED"], DONE: ["ACCEPTED"], REJECTED: ["PROPOSED", "ACCEPTED", "EXPIRED"], PROPOSED: ["DONE", "REJECTED", "EXPIRED"] };
   if (!allowed[to].includes(h.status)) throw new RuleError("status", `Из статуса «${h.status}» нельзя перейти в «${to}»`);
   const now = new Date();
