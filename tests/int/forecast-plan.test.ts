@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { D1, D2, buildNetwork } from "@tests/factories/network";
 import { RuleError } from "@/server/domain/errors";
 import { monthsForecast } from "@/server/queries/forecast";
-import { deletePlanItem, readForecastPlan, saveForecastPlan, savePlanItem } from "@/server/services/forecast-plan";
+import { copyOpexToMonth, deletePlanItem, readForecastPlan, resetPlanMonth, saveForecastPlan, savePlanItem, savePlanMonth } from "@/server/services/forecast-plan";
 import { saveOpex } from "@/server/services/opex";
 import { resetDb, testDb } from "./helpers";
 
@@ -127,5 +127,36 @@ describe("months ahead (ADR 0020)", () => {
     f = await monthsForecast(TODAY, 7, 3);
     expect(f.months[1].itemsSaving).toBe(500);
     await expect(savePlanItem(db, { month: "2026-09", kind: "SAVING", title: "Срезать источник", amount: "500" }, id, "2026-11-05")).rejects.toMatchObject({ field: "month" });
+  });
+
+  it("the month chain: next month starts from this month per day; an edited month carries on; reset goes back; only months ahead; audited", async () => {
+    let f = await monthsForecast(TODAY, 7, 3);
+    expect(f.monthRate.rotation).toBeCloseTo(61, 6); // Sept: 2 days of facts + 9 days of pace, all at $61 of rotation
+    const deal = f.months[0].dealLines[0];
+    await savePlanMonth(db, "2026-10", { rotation: "3100", traffic_cost: "", [`deal:${net.direct.id}`]: "0" }, TODAY);
+    await expect(savePlanMonth(db, "2026-09", { rotation: "1" }, TODAY)).rejects.toMatchObject({ field: "month" });
+    await expect(savePlanMonth(db, "2026-10", { rotation: "-5" }, TODAY)).rejects.toBeInstanceOf(RuleError);
+    await expect(savePlanMonth(db, "2026-10", { "deal:nope": "5" }, TODAY)).rejects.toBeInstanceOf(RuleError);
+    f = await monthsForecast(TODAY, 7, 3);
+    const [oct, nov] = f.months;
+    expect(oct).toMatchObject({ rotation: 3100, edited: { rotation: true, trafficCost: false } });
+    expect(nov.rotation).toBeCloseTo(3000, 6); // $100/day × 30
+    expect(oct.dealLines.find((d) => d.id === deal.id)).toMatchObject({ amount: 0, edited: true });
+    expect(nov.dealLines.find((d) => d.id === deal.id)).toMatchObject({ amount: 0, source: "carried" });
+    expect((await db.auditLog.findMany({ where: { entity: "PlanMonth", entityId: "2026-10" } })).map((a) => a.field).sort()).toEqual([`deal:${net.direct.id}`, "rotation"]);
+    expect(await savePlanMonth(db, "2026-10", { rotation: "3100" }, TODAY)).toBe(0); // the same figure is no change
+    expect(await resetPlanMonth(db, "2026-10")).toBe(2);
+    expect((await monthsForecast(TODAY, 7, 3)).months[0].rotation).toBeCloseTo(61 * 31, 6);
+  });
+
+  it("copies the operating expenses of the last month that has them onto an empty month, once", async () => {
+    await saveOpex(db, { month: "2026-09", title: "Servers", category: "HOSTING", amount: "300" });
+    await saveOpex(db, { month: "2026-09", title: "People", category: "SALARY", amount: "1200", siteId: "s1" });
+    expect(await copyOpexToMonth(db, "2026-11", TODAY)).toEqual({ from: "2026-09", count: 2 });
+    expect((await db.opexEntry.findMany({ where: { month: new Date("2026-11-01T00:00:00Z") } })).map((e) => [e.title, Number(e.amount), e.siteId]).sort())
+      .toEqual([["People", 1200, "s1"], ["Servers", 300, null]]);
+    await expect(copyOpexToMonth(db, "2026-11", TODAY)).rejects.toMatchObject({ field: "month" });
+    const [oct, nov] = (await monthsForecast(TODAY, 7, 3)).months;
+    expect([oct.opex, oct.opexCarried, nov.opex, nov.opexCarried]).toEqual([1500, true, 1500, false]);
   });
 });

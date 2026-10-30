@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
 import { HORIZONS } from "@/lib/forecast";
-import { deletePlanItemAction, saveForecastPlanAction, savePlanItemAction } from "@/server/actions/forecast";
+import { copyOpexAction, deletePlanItemAction, resetPlanMonthAction, saveForecastPlanAction, savePlanItemAction, savePlanMonthAction } from "@/server/actions/forecast";
 import { PLAN_ITEM_KINDS, PLAN_ITEM_LABEL, type ForecastPlan } from "@/server/services/forecast-plan";
 
 const pctText = (v: number) => (v ? String(Math.round(v * 1000) / 10) : "");
@@ -74,6 +74,55 @@ export function DeletePlanItem({ id }: { id: string }) {
   return (
     <ActionForm action={deletePlanItemAction} submit="Удалить" className="inline" submitVariant="ghost" submitSize="sm">
       <input type="hidden" name="id" value={id} />
+    </ActionForm>
+  );
+}
+
+export interface MonthLine { key: string; label: string; sub?: string; defaultAmount: number; value: number | null; deal?: boolean }
+
+const usd = (v: number) => `$${v.toLocaleString("ru-RU", { maximumFractionDigits: 0 })}`;
+
+/**
+ * The month panel: each line shows what the month carries from the one before and takes the month's own figure.
+ * Empty = «как прошлый месяц»; the months after carry whatever this month ends up with.
+ */
+export function PlanMonthForm({ month, prevLabel, lines }: { month: string; prevLabel: string; lines: MonthLine[] }) {
+  const [vals, setVals] = useState<Record<string, string>>(() => Object.fromEntries(lines.map((l) => [l.key, l.value == null ? "" : String(l.value)])));
+  return (
+    <div data-testid="plan-month-form">
+      <ActionForm action={savePlanMonthAction} submit="Сохранить месяц">
+        <input type="hidden" name="month" value={month} />
+        <div className="-mx-1 divide-y divide-border/60">
+          {lines.map((l) => (
+            <div key={l.key} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 py-2" data-line={l.key}>
+              <div className="min-w-0 flex-1">
+                <div className="text-sm font-medium">{l.label}</div>
+                <div className="num text-xs text-muted">по умолчанию {usd(l.defaultAmount)} — {l.sub ?? `как ${prevLabel}`}</div>
+              </div>
+              <Input name={`line:${l.key}`} inputMode="decimal" className="num w-36" placeholder={usd(l.defaultAmount)} value={vals[l.key]}
+                onChange={(e) => setVals({ ...vals, [l.key]: e.target.value })} aria-label={l.label} />
+              {l.deal && <Button type="button" size="sm" variant="ghost" onClick={() => setVals({ ...vals, [l.key]: "0" })}>Не будет</Button>}
+              {vals[l.key] !== "" && <Button type="button" size="sm" variant="ghost" onClick={() => setVals({ ...vals, [l.key]: "" })}>По умолчанию</Button>}
+            </div>
+          ))}
+        </div>
+      </ActionForm>
+    </div>
+  );
+}
+
+export function ResetMonth({ month }: { month: string }) {
+  return (
+    <ActionForm action={resetPlanMonthAction} submit="Сбросить месяц" className="inline" submitVariant="ghost" submitSize="sm">
+      <input type="hidden" name="month" value={month} />
+    </ActionForm>
+  );
+}
+
+export function CopyOpex({ month, from }: { month: string; from: string }) {
+  return (
+    <ActionForm action={copyOpexAction} submit={`Скопировать из ${from}`} className="inline" submitVariant="secondary" submitSize="sm">
+      <input type="hidden" name="month" value={month} />
     </ActionForm>
   );
 }

@@ -247,12 +247,12 @@ test("forecast months ahead: horizon, a planned line and a future deal land in t
   await expect(table.locator("tbody tr")).toHaveCount(4);
   // A planned line on next month: it shows in the month's details and in the row's «Статьи».
   await page.getByRole("button", { name: "Добавить статью" }).click();
-  await page.locator("input[name=month]").fill(next);
+  await page.getByRole("dialog").locator("input[name=month]").fill(next); // the month panel has hidden month fields of its own
   await page.locator("input[name=title]").fill("E2E новый сайт");
   await page.locator("input[name=amount]").fill("5000");
   await page.getByRole("button", { name: "Сохранить" }).last().click();
   await expect(page.getByText("Статья сохранена")).toBeVisible();
-  await expect(page.locator(`details[data-month='${next}']`)).toContainText("E2E новый сайт");
+  await expect(page.locator("[data-item]", { hasText: "E2E новый сайт" })).toBeVisible(); // the panel opens on next month
   await expect(table.locator(`tr[data-month='${next}']`)).toContainText("5");
   // A deal that starts next month: created from the plan, it is counted in that month (an estimate until it accrues).
   await page.getByRole("button", { name: "Новый дил" }).click();
@@ -264,7 +264,7 @@ test("forecast months ahead: horizon, a planned line and a future deal land in t
   await page.getByRole("button", { name: "Создать дил" }).click();
   await expect(page).toHaveURL(/\/deals\/[a-z0-9]+$/);
   await page.goto("/forecast?view=months&h=3");
-  await expect(page.locator(`details[data-month='${next}']`)).toContainText("E2E будущий баннер");
+  await expect(page.getByTestId("plan-month-form")).toContainText("E2E будущий баннер");
   await page.goto("/deals?status=future");
   await expect(page.getByRole("row", { name: /E2E Future · E2E будущий баннер/ })).toBeVisible();
   // The scenario: growth per month is saved and read back.
@@ -304,11 +304,47 @@ test("plan effects: a hypothesis goes into the plan as a monthly cost cut and sh
   await expect(page).toHaveURL(/view=months/);
   const now = new Date();
   const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 7);
-  await expect(page.locator(`details[data-month='${next}']`)).toContainText("гипотеза: E2E срезать дорогой источник");
+  await expect(page.locator("[data-item]", { hasText: "гипотеза: E2E срезать дорогой источник" })).toBeVisible();
   await expect(page.locator(`tr[data-month='${next}'] td[data-base]`)).toBeVisible(); // the base column sits next to the plan
-  await expect(page.getByText("База: только ASG")).toBeVisible();
+  await expect(page.getByText("База: только ASG").first()).toBeVisible();
   // Planning a deal for a given future month right from that month.
-  await expect(page.locator(`details[data-month='${next}']`).getByRole("button", { name: /^Дил с / })).toBeVisible();
+  await expect(page.getByRole("button", { name: /^Дил с / })).toBeVisible();
+});
+
+test("month chain: pick a month, edit its rotation and a deal, the next month starts from it; opex copied from the month before", async ({ page }) => {
+  const now = new Date();
+  const m = (k: number) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + k, 1)).toISOString().slice(0, 7);
+  const days = (k: number) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + k + 1, 0)).getUTCDate();
+  await login(page, `/forecast?view=months&h=3&m=${m(2)}`);
+  await expect(page.locator(`[data-month-chip='${m(2)}']`)).toHaveClass(/border-accent/);
+  const form = page.getByTestId("plan-month-form");
+  await form.locator("input[name='line:rotation']").fill(String(1000 * days(2)));
+  const deal = form.locator("[data-line^='deal:']").first();
+  await deal.getByRole("button", { name: "Не будет" }).click();
+  await form.getByRole("button", { name: "Сохранить месяц" }).click();
+  await expect(page.getByText(/Месяц сохранён/)).toBeVisible();
+  await expect(page.locator(`tr[data-month='${m(2)}'] [data-edited]`)).toBeVisible();
+  // The month after carries $1000/day and the deal at 0 as its defaults.
+  await page.locator(`[data-month-chip='${m(3)}']`).click();
+  await expect(page).toHaveURL(new RegExp(`m=${m(3)}`));
+  const next = page.getByTestId("plan-month-form");
+  await expect(next.locator("[data-line=rotation]")).toContainText(`как ${["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"][+m(2).slice(5, 7) - 1]}`);
+  await expect(next.locator("input[name='line:rotation']")).toHaveAttribute("placeholder", new RegExp((1000 * days(3)).toLocaleString("ru-RU").replace(/\s/g, "\\s")));
+  // Opex: none entered on that month → copy them from the month before (the demo has none: add one on the edited month first).
+  await page.goto(`/forecast?view=months&h=3&m=${m(2)}`);
+  await page.getByTestId("plan-month-opex").getByRole("button", { name: "Добавить расход" }).click();
+  await page.locator("input[name=title]").fill("E2E серверы");
+  await page.locator("input[name=amount]").fill("900");
+  await page.getByRole("button", { name: "Сохранить" }).last().click();
+  await expect(page.getByTestId("plan-month-opex")).toContainText("E2E серверы");
+  await page.locator(`[data-month-chip='${m(3)}']`).click();
+  await page.getByTestId("plan-month-opex").getByRole("button", { name: /^Скопировать из / }).click();
+  await expect(page.getByText(/Скопировано 1 расход/)).toBeVisible();
+  await expect(page.getByTestId("plan-month-opex")).toContainText("E2E серверы");
+  // Back to «как прошлый месяц».
+  await page.locator(`[data-month-chip='${m(2)}']`).click();
+  await page.getByRole("button", { name: "Сбросить месяц" }).click();
+  await expect(page.getByText("Месяц как прошлый")).toBeVisible();
 });
 
 test("hypotheses: system proposals and ours apart, scope chips, own statuses Тест · В работе · Готово, the hypothesis page edits it; old /recommendations links redirect", async ({ page }) => {

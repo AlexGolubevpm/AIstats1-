@@ -101,35 +101,69 @@ export function planItemMonths(item: { month: string; recurring: boolean; until:
   if (!item.recurring) return months.filter((m) => m === item.month);
   return months.filter((m) => m >= item.month && (!item.until || m <= item.until));
 }
+export interface PlanDealLine {
+  id: string; title: string; sites: string; amount: number; draft: boolean; estimate: boolean; edited: boolean; defaultAmount: number;
+  /** Where the default comes from: the contract, or the rate an earlier month's edit set. */
+  source: "contract" | "carried";
+}
 export interface PlanMonthRow {
   month: string; days: number;
   rotation: number; deals: number; draftDeals: number; itemsRevenue: number; itemsCost: number; itemsSaving: number;
   revenue: number; trafficCost: number; cost: number; opex: number; opexCarried: boolean;
   margin: number; romi: number | null; cumMargin: number;
-  /** The base: AdSpyglass alone at its pace — no direct deals, no planned lines; what the month brings if nothing new is done. */
+  /** The base: AdSpyglass alone — no direct deals, no planned lines; what the month brings if nothing new is done. */
   baseMargin: number; cumBaseMargin: number;
-  dealLines: { id: string; title: string; sites: string; amount: number; draft: boolean; estimate: boolean }[];
+  /** What the month would hold without its own edits (carried from the month before), and which lines are edited. */
+  defaults: { rotation: number; trafficCost: number };
+  edited: { rotation: boolean; trafficCost: boolean };
+  dealLines: PlanDealLine[];
+}
+
+/** Edits of a month, by line: `rotation`, `traffic_cost`, `deal:<id>` → the month's amount. */
+export type MonthOverrides = Record<string, Record<string, number>>;
+export const dealLine = (id: string) => `deal:${id}`;
+
+/** Days of `month` the deal runs (inside its start and end). */
+export function dealActiveDays(deal: Pick<PlanDeal, "startsAt" | "endsAt">, month: string): number {
+  const first = `${month}-01`, last = addDays(first, daysInMonth(first) - 1);
+  const from = deal.startsAt > first ? deal.startsAt : first, to = deal.endsAt && deal.endsAt < last ? deal.endsAt : last;
+  return from > to ? 0 : Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / DAY) + 1;
 }
 
 /**
- * The months after the current one. Rotation (AdSpyglass) and traffic cost run at today's pace per day,
- * grown by the scenario per month ahead (k = 1 for next month); fix deals by their own dates; drafts only
- * when the scenario says so; operating expenses as entered, else the last month that has any (carried);
- * planned lines as entered. `cumStart` — the margin accumulated before the first of these months.
+ * The months after the current one as a chain (ADR 0020, 2026-10-30): each line of a month is, by default, the
+ * month before it per day × this month's days (× the scenario growth); an edit sets the month's amount and from
+ * then on the next months carry its rate. The first month carries `base` — this month's AdSpyglass rotation and
+ * traffic cost per day. Fix deals follow their contract (flat exact, per-load at their per-day revenue) until a
+ * month edits them; an edited deal carries its edited rate over the days it runs. Drafts only when the scenario
+ * says so; operating expenses as entered, else the last month that has any; planned lines as entered.
  */
 export function projectMonths(i: {
-  months: string[]; current: string; rate: { rotation: number; cost: number }; scenario: PlanScenario;
-  deals: PlanDeal[]; opexByMonth: Record<string, number>; items: { month: string; kind: PlanItemKind; amount: number }[]; cumStart?: number; cumBaseStart?: number;
+  months: string[]; current: string; base: { rotation: number; cost: number }; scenario: PlanScenario;
+  deals: PlanDeal[]; opexByMonth: Record<string, number>; items: { month: string; kind: PlanItemKind; amount: number }[];
+  overrides?: MonthOverrides; cumStart?: number; cumBaseStart?: number;
 }): PlanMonthRow[] {
   let cum = i.cumStart ?? 0, cumBase = i.cumBaseStart ?? 0;
+  let rotRate = i.base.rotation, costRate = i.base.cost;
+  const dealRate = new Map<string, number>();
   const known = Object.keys(i.opexByMonth).filter((m) => i.opexByMonth[m] > 0).sort();
   return i.months.map((month) => {
     const days = daysInMonth(`${month}-01`);
-    const k = Math.max(1, (+month.slice(0, 4) - +i.current.slice(0, 4)) * 12 + (+month.slice(5, 7) - +i.current.slice(5, 7)));
-    const rotation = i.rate.rotation * days * (1 + i.scenario.revenueGrowth) ** k;
-    const trafficCost = i.rate.cost * days * (1 + i.scenario.costGrowth) ** k;
-    const dealLines = i.deals.map((d) => ({ id: d.id, title: d.title, sites: d.sites, amount: dealMonthAmount(d, month), draft: d.status === "DRAFT", estimate: Boolean(d.estimate) && d.basis !== "FLAT_DAILY" && d.basis !== "FLAT_PERIOD" }))
-      .filter((d) => d.amount > 0).sort((a, b) => b.amount - a.amount);
+    const ov = i.overrides?.[month] ?? {};
+    const defaults = { rotation: rotRate * (1 + i.scenario.revenueGrowth) * days, trafficCost: costRate * (1 + i.scenario.costGrowth) * days };
+    const rotation = ov.rotation ?? defaults.rotation, trafficCost = ov.traffic_cost ?? defaults.trafficCost;
+    rotRate = rotation / days; costRate = trafficCost / days;
+    const dealLines: PlanDealLine[] = i.deals.map((d) => {
+      const active = dealActiveDays(d, month);
+      const carried = dealRate.get(d.id);
+      const defaultAmount = active === 0 ? 0 : carried != null ? carried * active : dealMonthAmount(d, month);
+      const edit = active > 0 ? ov[dealLine(d.id)] : undefined;
+      const amount = edit ?? defaultAmount;
+      if (edit != null) dealRate.set(d.id, edit / active);
+      return { id: d.id, title: d.title, sites: d.sites, amount, draft: d.status === "DRAFT", estimate: Boolean(d.estimate) && d.basis !== "FLAT_DAILY" && d.basis !== "FLAT_PERIOD" && edit == null && carried == null,
+        edited: edit != null, defaultAmount, source: carried != null ? "carried" as const : "contract" as const, active };
+    // Every deal that runs in the month stays listed — one set to 0 («не будет») too, so it can be brought back.
+    }).filter((d) => d.active > 0).map(({ active: _a, ...d }) => d).sort((a, b) => b.amount - a.amount);
     const deals = dealLines.filter((d) => !d.draft).reduce((a, d) => a + d.amount, 0);
     const draftDeals = dealLines.filter((d) => d.draft).reduce((a, d) => a + d.amount, 0);
     const itemsRevenue = i.items.filter((x) => x.month === month && x.kind === "REVENUE").reduce((a, x) => a + x.amount, 0);
@@ -144,7 +178,8 @@ export function projectMonths(i: {
     const baseMargin = rotation - trafficCost - opex;
     cum += margin; cumBase += baseMargin;
     return { month, days, rotation, deals, draftDeals, itemsRevenue, itemsCost, itemsSaving, revenue, trafficCost, cost, opex, opexCarried: carriedFrom != null, margin,
-      romi: cost ? ((revenue - cost) / cost) * 100 : null, cumMargin: cum, baseMargin, cumBaseMargin: cumBase, dealLines };
+      romi: cost ? ((revenue - cost) / cost) * 100 : null, cumMargin: cum, baseMargin, cumBaseMargin: cumBase,
+      defaults, edited: { rotation: ov.rotation != null, trafficCost: ov.traffic_cost != null }, dealLines };
   });
 }
 
