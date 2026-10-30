@@ -5,17 +5,53 @@ import { KpiCard } from "@/components/data/kpi-card";
 import { PageHeader } from "@/components/layout/page-header";
 import { Section } from "@/components/ui/card";
 import { fmtDate, fmtMoney } from "@/lib/format";
-import { LOOKBACKS, parseLookback } from "@/lib/forecast";
-import { monthForecast } from "@/server/queries/forecast";
-
-const MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
-const monthLabel = (m: string) => `${MONTHS[+m.slice(5, 7) - 1]} ${m.slice(0, 4)}`;
-const shiftMonth = (m: string, k: number) => new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7) - 1 + k, 1)).toISOString().slice(0, 7);
+import { cn } from "@/lib/cn";
+import { HORIZONS, LOOKBACKS, parseHorizon, parseLookback, shiftMonth } from "@/lib/forecast";
+import { db } from "@/server/db";
+import { dealFormOptions } from "@/server/queries/deal-form";
+import { monthForecast, monthsForecast } from "@/server/queries/forecast";
+import { MonthsView, monthLabel } from "./months";
 
 export default async function Forecast({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
   const sp = await searchParams;
   const today = new Date().toISOString().slice(0, 10);
   const n = parseLookback(sp.n);
+  const href0 = (over: Record<string, string | undefined>) => {
+    const q = new URLSearchParams();
+    for (const [k, v] of Object.entries({ ...sp, ...over })) if (v) q.set(k, v);
+    return `/forecast${q.size ? `?${q}` : ""}`;
+  };
+  const tab = (active: boolean) => cn("-mb-px border-b-2 px-3 py-2 text-sm font-medium", active ? "border-accent text-accent" : "border-transparent text-muted hover:text-text");
+  const views = (months: boolean) => (
+    <nav className="flex gap-1 border-b border-border" aria-label="Вид прогноза">
+      <Link href={href0({ view: undefined, h: undefined })} className={tab(!months)} data-view="month">Этот месяц</Link>
+      <Link href={href0({ view: "months", month: undefined })} className={tab(months)} data-view="months">На месяцы вперёд</Link>
+    </nav>
+  );
+  const lookbackChips = (
+    <>
+      <span className="text-muted">Динамика по последним</span>
+      {LOOKBACKS.map((k) => <Link key={k} href={href0({ n: String(k) })} className={`rounded-md border px-3 py-1.5 ${k === n ? "border-accent bg-accent-soft text-accent" : "border-border hover:bg-surface-hover"}`}>{k} дн.</Link>)}
+    </>
+  );
+  if (sp.view === "months") {
+    const [mf, opts, sites] = await Promise.all([
+      monthsForecast(today, n, sp.h ? parseHorizon(sp.h) : undefined), dealFormOptions(),
+      db.site.findMany({ where: { status: { not: "ARCHIVED" } }, orderBy: { domain: "asc" }, select: { id: true, domain: true } }),
+    ]);
+    return (
+      <>
+        <PageHeader title="Прогноз" sub={`План на ${mf.horizon} мес. вперёд: темп ротации и расхода, фикс-дилы по датам, опер. расходы и плановые статьи`}
+          actions={<div className="flex flex-wrap items-center gap-2 text-sm">
+            {lookbackChips}
+            <span className="mx-2 text-faint">|</span>
+            {HORIZONS.map((h) => <Link key={h} href={href0({ h: String(h) })} className={`rounded-md border px-3 py-1.5 ${h === mf.horizon ? "border-accent bg-accent-soft text-accent" : "border-border hover:bg-surface-hover"}`} data-horizon={h}>{h} мес.</Link>)}
+          </div>} />
+        {views(true)}
+        <MonthsView f={mf} sites={sites} dealOpts={{ sites: opts.sites, advertisers: opts.advertisers, placements: opts.placements }} />
+      </>
+    );
+  }
   const month = /^\d{4}-(0[1-9]|1[0-2])$/.test(sp.month ?? "") && sp.month! <= today.slice(0, 7) ? sp.month! : today.slice(0, 7);
   const f = await monthForecast(today, n, month);
   const { projection: pr, prev } = f;
@@ -38,12 +74,12 @@ export default async function Forecast({ searchParams }: { searchParams: Promise
     <>
       <PageHeader title="Прогноз" sub={`${monthLabel(month)}: что уже есть и чем закончится месяц при текущей динамике`}
         actions={<div className="flex flex-wrap items-center gap-2 text-sm">
-          <span className="text-muted">Динамика по последним</span>
-          {LOOKBACKS.map((k) => <Link key={k} href={href({ n: String(k) })} className={`rounded-md border px-3 py-1.5 ${k === n ? "border-accent bg-accent-soft text-accent" : "border-border hover:bg-surface-hover"}`}>{k} дн.</Link>)}
+          {lookbackChips}
           <span className="mx-2 text-faint">|</span>
           <Link href={href({ month: shiftMonth(month, -1) })} className="rounded-md border border-border px-3 py-1.5 hover:bg-surface-hover">← {monthLabel(shiftMonth(month, -1))}</Link>
           {!isCurrent && <Link href={href({ month: undefined })} className="rounded-md border border-border px-3 py-1.5 hover:bg-surface-hover">Текущий месяц</Link>}
         </div>} />
+      {views(false)}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 min-[1800px]:grid-cols-6">
         <KpiCard label={isCurrent ? "Прогноз выручки" : "Выручка за месяц"} value={pr.projected?.revenue ?? null} format="money" color="#3B82F6"
           sub={isCurrent ? `факт ${fmtMoney(pr.actual.revenue)} за ${pr.actual.days} дн. + ${fmtMoney(pr.rate.revenue)}/день × ${pr.daysLeft}` : undefined}

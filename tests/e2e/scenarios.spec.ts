@@ -234,6 +234,52 @@ test("forecast: the month is drawn day by day, the pace switch changes the URL, 
   await expect(page.locator("tr[data-kind=forecast]")).toHaveCount(0); // a finished month has no forecast rows
 });
 
+test("forecast months ahead: horizon, a planned line and a future deal land in their month, the scenario saves", async ({ page }) => {
+  const now = new Date();
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 7);
+  await login(page, "/forecast");
+  await page.locator("a[data-view=months]").click();
+  await expect(page).toHaveURL(/view=months/);
+  const table = page.getByTestId("forecast-months");
+  await expect(table.locator("tbody tr")).toHaveCount(7); // this month + 6 by default
+  await page.locator("a[data-horizon='3']").click();
+  await expect(page).toHaveURL(/h=3/);
+  await expect(table.locator("tbody tr")).toHaveCount(4);
+  // A planned line on next month: it shows in the month's details and in the row's «Статьи».
+  await page.getByRole("button", { name: "Добавить статью" }).click();
+  await page.locator("input[name=month]").fill(next);
+  await page.locator("input[name=title]").fill("E2E новый сайт");
+  await page.locator("input[name=amount]").fill("5000");
+  await page.getByRole("button", { name: "Сохранить" }).last().click();
+  await expect(page.getByText("Статья сохранена")).toBeVisible();
+  await expect(page.locator(`details[data-month='${next}']`)).toContainText("E2E новый сайт");
+  await expect(table.locator(`tr[data-month='${next}']`)).toContainText("5");
+  // A deal that starts next month: created from the plan, it is counted in that month (an estimate until it accrues).
+  await page.getByRole("button", { name: "Новый дил" }).click();
+  await page.locator("input[name=advertiser]").fill("E2E Future");
+  await page.locator("input[name=title]").fill("E2E будущий баннер");
+  await page.locator("input[name=price]").fill("0.5");
+  await page.getByRole("checkbox", { name: "japan-tube.demo" }).check();
+  await expect(page.locator("input[name=startsAt]")).toHaveValue(`${next}-01`);
+  await page.getByRole("button", { name: "Создать дил" }).click();
+  await expect(page).toHaveURL(/\/deals\/[a-z0-9]+$/);
+  await page.goto("/forecast?view=months&h=3");
+  await expect(page.locator(`details[data-month='${next}']`)).toContainText("E2E будущий баннер");
+  await page.goto("/deals?status=future");
+  await expect(page.getByRole("row", { name: /E2E Future · E2E будущий баннер/ })).toBeVisible();
+  // The scenario: growth per month is saved and read back.
+  await page.goto("/forecast?view=months&h=3");
+  const sc = page.getByTestId("forecast-scenario");
+  await sc.locator("input[name=revenueGrowth]").fill("10");
+  await sc.getByRole("button", { name: "Сохранить сценарий" }).click();
+  await expect(page.getByText("Сценарий сохранён")).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("forecast-scenario").locator("input[name=revenueGrowth]")).toHaveValue("10");
+  await sc.locator("input[name=revenueGrowth]").fill("0"); // back to the default for other scenarios
+  await sc.getByRole("button", { name: "Сохранить сценарий" }).click();
+  await expect(page.getByText("Сценарий сохранён")).toBeVisible();
+});
+
 test("hypotheses: system proposals and ours apart, scope chips, own statuses Тест · В работе · Готово, the hypothesis page edits it; old /recommendations links redirect", async ({ page }) => {
   await login(page, "/recommendations");
   await expect(page).toHaveURL(/\/hypotheses/);

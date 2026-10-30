@@ -31,7 +31,9 @@ async function factSums(p: Period | null) {
 
 export async function dealsList(p: Period, status?: string) {
   const deals = await db.deal.findMany({
-    where: status === "archive" ? { status: "ENDED" } : status ? { status: status as never } : { status: { not: "ENDED" } },
+    // «Будущие»: deals that start after today — planned ahead for /forecast «На месяцы вперёд».
+    where: status === "archive" ? { status: "ENDED" } : status === "future" ? { status: { not: "ENDED" }, startsAt: { gt: new Date(`${iso(new Date())}T00:00:00Z`) } }
+      : status ? { status: status as never } : { status: { not: "ENDED" } },
     include: { advertiser: true, sites: { include: { site: true } }, places: { include: { placement: true } } }, orderBy: [{ status: "asc" }, { createdAt: "desc" }],
   });
   const sums = await factSums(p);

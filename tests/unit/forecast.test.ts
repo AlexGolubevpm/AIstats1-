@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseLookback, projectMonth } from "@/lib/forecast";
+import { dealMonthAmount, parseHorizon, parseLookback, projectMonth, projectMonths, shiftMonth, type PlanDeal } from "@/lib/forecast";
 
 const day = (date: string, revenue: number | null, cost = 0) => ({ date, revenue, cost });
 
@@ -47,3 +47,44 @@ describe("projectMonth", () => {
     expect([parseLookback("3"), parseLookback("14"), parseLookback("9"), parseLookback(undefined)]).toEqual([3, 14, 7, 7]);
   });
 });
+
+describe("months ahead (ADR 0020)", () => {
+  const deal = (over: Partial<PlanDeal>): PlanDeal => ({ id: "d", title: "D", sites: "a.test", status: "ACTIVE", basis: "FLAT_PERIOD", price: "300", billingPeriod: "MONTH", startsAt: "2026-01-01", endsAt: null, ...over });
+  const base = { current: "2026-10", rate: { rotation: 100, cost: 40 }, scenario: { revenueGrowth: 0, costGrowth: 0, includeDrafts: false }, deals: [] as PlanDeal[], opexByMonth: {}, items: [] };
+
+  it("shiftMonth crosses years; horizons are 3/6/12", () => {
+    expect(shiftMonth("2026-11", 2)).toBe("2027-01");
+    expect(shiftMonth("2026-01", -1)).toBe("2025-12");
+    expect([parseHorizon("12"), parseHorizon("5"), parseHorizon(undefined, 3)]).toEqual([12, 6, 3]);
+  });
+
+  it("dealMonthAmount: a flat month deal pays day by day inside its dates; per-load deals at their per-day revenue", () => {
+    expect(dealMonthAmount(deal({}), "2026-11")).toBeCloseTo(300, 6);
+    expect(dealMonthAmount(deal({ startsAt: "2026-11-21" }), "2026-11")).toBeCloseTo(100, 6); // 10 of 30 days
+    expect(dealMonthAmount(deal({ endsAt: "2026-10-31" }), "2026-11")).toBe(0);
+    expect(dealMonthAmount(deal({ basis: "PER_1000_LOADS", price: "1", perDay: 7 }), "2026-02")).toBeCloseTo(7 * 28, 6);
+    expect(dealMonthAmount(deal({ basis: "FLAT_DAILY", price: "5" }), "2026-12")).toBeCloseTo(5 * 31, 6);
+  });
+
+  it("projects each month: rotation and cost × days with compounding growth, deals, drafts apart, planned lines, opex carried, margin accumulated", () => {
+    const rows = projectMonths({ ...base, months: ["2026-11", "2026-12"], cumStart: 1000,
+      scenario: { revenueGrowth: 0.1, costGrowth: 0, includeDrafts: false },
+      deals: [deal({ id: "a", title: "Flat" }), deal({ id: "b", title: "Talks", status: "DRAFT", price: "600" }), deal({ id: "c", title: "CPM", basis: "CPM_OWN", price: "2", perDay: 3, estimate: true })],
+      opexByMonth: { "2026-10": 500 }, items: [{ month: "2026-12", kind: "REVENUE", amount: 1000 }, { month: "2026-12", kind: "COST", amount: 250 }] });
+    const [nov, dec] = rows;
+    expect(nov.rotation).toBeCloseTo(100 * 30 * 1.1, 6); expect(dec.rotation).toBeCloseTo(100 * 31 * 1.21, 6);
+    expect(nov.trafficCost).toBeCloseTo(40 * 30, 6);
+    expect(nov.deals).toBeCloseTo(300 + 3 * 30, 6); expect(nov.draftDeals).toBeCloseTo(600, 6);
+    expect(nov.dealLines.map((d) => [d.title, d.draft, d.estimate])).toEqual([["Talks", true, false], ["Flat", false, false], ["CPM", false, true]]);
+    expect(nov.revenue).toBeCloseTo(nov.rotation + nov.deals, 6); // the draft stays out
+    expect([nov.opex, nov.opexCarried]).toEqual([500, true]);
+    expect(dec.revenue).toBeCloseTo(dec.rotation + dec.deals + 1000, 6); expect(dec.cost).toBeCloseTo(40 * 31 + 250, 6);
+    expect(nov.margin).toBeCloseTo(nov.revenue - nov.cost - 500, 6);
+    expect(dec.cumMargin).toBeCloseTo(1000 + nov.margin + dec.margin, 6);
+    expect(nov.romi).toBeCloseTo(((nov.revenue - nov.cost) / nov.cost) * 100, 6);
+    const withDrafts = projectMonths({ ...base, months: ["2026-11"], deals: [deal({ status: "DRAFT", price: "600" })], scenario: { revenueGrowth: 0, costGrowth: 0, includeDrafts: true } });
+    expect(withDrafts[0].revenue).toBeCloseTo(100 * 30 + 600, 6);
+    expect(projectMonths({ ...base, months: ["2026-11"] })[0]).toMatchObject({ opex: 0, opexCarried: false, romi: 150 });
+  });
+});
+

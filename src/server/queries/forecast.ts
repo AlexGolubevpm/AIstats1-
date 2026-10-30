@@ -1,7 +1,8 @@
 // Forecast page: the month so far and its projection at the current pace (docs/product/03-pages.md#forecast).
 import { Prisma } from "@/generated/prisma/client";
 import { db } from "@/server/db";
-import { projectMonth, type Lookback, type Projection } from "@/lib/forecast";
+import { dealMonthAmount, projectMonth, projectMonths, shiftMonth, type Horizon, type Lookback, type PlanDeal, type PlanMonthRow, type Projection } from "@/lib/forecast";
+import { readForecastPlan, type ForecastPlan } from "@/server/services/forecast-plan";
 import { daysInMonth, flatPerDay, type BillingPeriod, type PaymentBasis } from "@/server/domain/deals";
 import { D, iso } from "./common";
 
@@ -19,6 +20,8 @@ export interface MonthForecast {
   prev: { month: string; revenue: number; cost: number; opex: number; margin: number } | null;
   /** Revenue of running flat deals on the days still ahead: known in advance, already inside the pace. */
   knownDeals: number;
+  /** Per-day pace of the rotation (AdSpyglass revenue, direct fix deals left out) and of the traffic cost — what the months ahead run at. */
+  pace: { rotation: number; cost: number; daysUsed: number };
 }
 
 export async function monthForecast(today = iso(new Date()), lookback: Lookback = 7, month = monthOf(today)): Promise<MonthForecast> {
@@ -44,6 +47,8 @@ export async function monthForecast(today = iso(new Date()), lookback: Lookback 
   const opexByDay = Object.fromEntries(opex.map((r) => [iso(r.date as Date), n(r.v)]));
   const input = days.map((r) => ({ date: iso(r.date as Date), revenue: n(r.revenue), cost: n(r.cost), complete: n(r.asg) > 0 && srcDay.has(iso(r.date as Date)) }));
   const projection = projectMonth({ month, today, lookback, days: input, opexByDay });
+  // The months ahead take the rotation alone: direct deals are added there by their own dates (ADR 0020).
+  const rot = projectMonth({ month, today, lookback, days: days.map((r, k) => ({ ...input[k], revenue: n(r.asg) })) }).rate;
 
   const bySite = new Map<string, { domain: string; days: { date: string; revenue: number; cost: number; complete: boolean }[] }>();
   for (const r of perSite) {
@@ -73,5 +78,74 @@ export async function monthForecast(today = iso(new Date()), lookback: Lookback 
       knownDeals += flatPerDay(deal.paymentBasis as PaymentBasis, deal.price.toString(), deal.billingPeriod as BillingPeriod, termDays, d.date).toNumber();
     }
   }
-  return { projection, sites, prev, knownDeals };
+  return { projection, sites, prev, knownDeals, pace: { rotation: rot.revenue, cost: rot.cost, daysUsed: rot.daysUsed } };
+}
+
+export interface CurrentMonthRow { month: string; revenue: number; cost: number; opex: number; margin: number; romi: number | null; actualRevenue: number; upcomingDeals: number; itemsRevenue: number; itemsCost: number; cumMargin: number }
+export interface MonthsForecast {
+  plan: ForecastPlan; horizon: Horizon; lookback: Lookback;
+  pace: MonthForecast["pace"];
+  current: CurrentMonthRow | null;
+  months: PlanMonthRow[];
+  items: { id: string; month: string; kind: "REVENUE" | "COST"; title: string; amount: number; siteId: string | null; domain: string | null; note: string | null }[];
+}
+
+/**
+ * The plan for the months ahead (ADR 0020): this month as /forecast projects it (plus deals that start
+ * later this month and this month's planned lines), then `horizon` months at the rotation and cost pace
+ * grown by the scenario, fix deals by their dates, operating expenses as entered (else carried), planned lines.
+ */
+export async function monthsForecast(today = iso(new Date()), lookback: Lookback = 7, horizon?: Horizon): Promise<MonthsForecast> {
+  const plan = await readForecastPlan(db);
+  const h = horizon ?? plan.horizon;
+  const cur = monthOf(today);
+  const months = Array.from({ length: h }, (_, k) => shiftMonth(cur, k + 1));
+  const endMonth = months[months.length - 1];
+  const lastDay = addDays(`${shiftMonth(endMonth, 1)}-01`, -1);
+  const winFrom = addDays(today, -lookback), winTo = addDays(today, -1);
+  const [f, dealRows, opexRows, itemRows] = await Promise.all([
+    monthForecast(today, lookback, cur),
+    db.deal.findMany({ where: { billedVia: "DIRECT", status: { in: ["ACTIVE", "DRAFT"] }, startsAt: { lte: D(lastDay) }, OR: [{ endsAt: null }, { endsAt: { gte: D(today) } }] },
+      include: { sites: { include: { site: { select: { domain: true } } } } } }),
+    db.$queryRaw<Raw[]>`SELECT to_char(month, 'YYYY-MM') m, SUM(amount)::float8 v FROM "OpexEntry"
+      WHERE month <= ${D(`${endMonth}-01`)} AND ("siteId" IS NULL OR "siteId" IN ${LIVE}) GROUP BY 1`,
+    db.planItem.findMany({ where: { month: { gte: D(`${cur}-01`), lte: D(`${endMonth}-01`) } }, include: { site: { select: { domain: true } } }, orderBy: [{ month: "asc" }, { createdAt: "asc" }] }),
+  ]);
+  // Per-load and CPM deals have no fixed sum: their recent accruals per day, else price × their sites' loads (or impressions) per day.
+  const ids = dealRows.map((d) => d.id);
+  const [accrued, siteLoads] = ids.length ? await Promise.all([
+    db.$queryRaw<Raw[]>`SELECT "dealId" id, SUM(revenue)::float8 revenue, COUNT(DISTINCT date)::int days FROM "FactFixDeal"
+      WHERE "dealId" IN (${Prisma.join(ids)}) AND date BETWEEN ${D(winFrom)} AND ${D(winTo)} GROUP BY 1`,
+    db.$queryRaw<Raw[]>`SELECT site_id, SUM(page_loads)::float8 loads, SUM(imps_own)::float8 imps, COUNT(DISTINCT date)::int days FROM v_site_geo_daily
+      WHERE date BETWEEN ${D(winFrom)} AND ${D(winTo)} AND site_id IN ${LIVE} GROUP BY 1`,
+  ]) : [[], []];
+  const acc = new Map(accrued.map((r) => [String(r.id), n(r.revenue) / Math.max(1, n(r.days))]));
+  const load = new Map(siteLoads.map((r) => [String(r.site_id), { loads: n(r.loads) / Math.max(1, n(r.days)), imps: n(r.imps) / Math.max(1, n(r.days)) }]));
+  const deals: PlanDeal[] = dealRows.map((d) => {
+    const flat = d.paymentBasis === "FLAT_DAILY" || d.paymentBasis === "FLAT_PERIOD";
+    const base = { id: d.id, title: d.title, sites: d.sites.map((s) => s.site.domain).join(", "), status: d.status as "ACTIVE" | "DRAFT", basis: d.paymentBasis as PaymentBasis,
+      price: d.price.toString(), billingPeriod: d.billingPeriod as BillingPeriod, startsAt: iso(d.startsAt), endsAt: d.endsAt ? iso(d.endsAt) : null };
+    if (flat) return base;
+    if (acc.has(d.id)) return { ...base, perDay: acc.get(d.id)! };
+    const volume = d.sites.reduce((a, s) => a + (d.paymentBasis === "PER_1000_LOADS" ? load.get(s.siteId)?.loads ?? 0 : load.get(s.siteId)?.imps ?? 0), 0);
+    return { ...base, perDay: (Number(d.price) * volume) / 1000, estimate: true };
+  });
+  const opexByMonth = Object.fromEntries(opexRows.map((r) => [String(r.m), n(r.v)]));
+  const items = itemRows.map((x) => ({ id: x.id, month: iso(x.month).slice(0, 7), kind: x.kind as "REVENUE" | "COST", title: x.title, amount: Number(x.amount), siteId: x.siteId, domain: x.site?.domain ?? null, note: x.note }));
+
+  // This month: the /forecast projection already holds the running deals (in its pace); add the ones that start after today and this month's lines.
+  const p = f.projection.projected;
+  let current: CurrentMonthRow | null = null;
+  if (p) {
+    const upcoming = deals.filter((d) => d.startsAt > today && (d.status === "ACTIVE" || plan.includeDrafts)).reduce((a, d) => a + dealMonthAmount(d, cur), 0);
+    const itemsRevenue = items.filter((x) => x.month === cur && x.kind === "REVENUE").reduce((a, x) => a + x.amount, 0);
+    const itemsCost = items.filter((x) => x.month === cur && x.kind === "COST").reduce((a, x) => a + x.amount, 0);
+    const revenue = p.revenue + upcoming + itemsRevenue, cost = p.cost + itemsCost, margin = revenue - cost - p.opex;
+    current = { month: cur, revenue, cost, opex: p.opex, margin, romi: cost ? ((revenue - cost) / cost) * 100 : null, actualRevenue: f.projection.actual.revenue,
+      upcomingDeals: upcoming, itemsRevenue, itemsCost, cumMargin: margin };
+  }
+  const rows = f.pace.daysUsed
+    ? projectMonths({ months, current: cur, rate: { rotation: f.pace.rotation, cost: f.pace.cost }, scenario: plan, deals, opexByMonth, items, cumStart: current?.margin ?? 0 })
+    : [];
+  return { plan, horizon: h, lookback, pace: f.pace, current, months: rows, items };
 }

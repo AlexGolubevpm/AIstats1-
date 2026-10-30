@@ -47,6 +47,7 @@ model Site {
   dealSites  DealSite[]
   opex       OpexEntry[]
   hypotheses Hypothesis[]
+  planItems  PlanItem[]
 
   @@index([status])
 }
@@ -433,6 +434,29 @@ model OpexEntry {
   month     DateTime     @db.Date // first day of the month
   title     String
   category  OpexCategory @default(OTHER)
+  amount    Decimal      @db.Decimal(12, 2)
+  siteId    String?
+  note      String?
+  createdAt DateTime     @default(now())
+  site      Site?        @relation(fields: [siteId], references: [id], onDelete: Cascade)
+
+  @@index([month])
+}
+
+// ---------- Plan for the months ahead (ADR 0020) ----------
+
+enum PlanItemKind {
+  REVENUE
+  COST
+}
+
+/// A planned line of a future month on /forecast «На месяцы вперёд»: a new site's revenue, a traffic
+/// purchase… Only the plan reads it; nothing is accrued to the daily facts.
+model PlanItem {
+  id        String       @id @default(cuid())
+  month     DateTime     @db.Date // first day of the month
+  kind      PlanItemKind
+  title     String
   amount    Decimal      @db.Decimal(12, 2)
   siteId    String?
   note      String?
