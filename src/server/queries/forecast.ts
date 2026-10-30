@@ -1,7 +1,7 @@
 // Forecast page: the month so far and its projection at the current pace (docs/product/03-pages.md#forecast).
 import { Prisma } from "@/generated/prisma/client";
 import { db } from "@/server/db";
-import { dealMonthAmount, planItemMonths, projectMonth, projectMonths, shiftMonth, type PlanItemKind, type Horizon, type Lookback, type PlanDeal, type PlanMonthRow, type Projection } from "@/lib/forecast";
+import { dealMonthAmount, planItemMonths, projectMonth, projectMonths, shiftMonth, type MonthOverrides, type PlanItemKind, type Horizon, type Lookback, type PlanDeal, type PlanMonthRow, type Projection } from "@/lib/forecast";
 import { readForecastPlan, type ForecastPlan } from "@/server/services/forecast-plan";
 import { daysInMonth, flatPerDay, type BillingPeriod, type PaymentBasis } from "@/server/domain/deals";
 import { D, iso } from "./common";
@@ -20,8 +20,13 @@ export interface MonthForecast {
   prev: { month: string; revenue: number; cost: number; opex: number; margin: number } | null;
   /** Revenue of running flat deals on the days still ahead: known in advance, already inside the pace. */
   knownDeals: number;
-  /** Per-day pace of the rotation (AdSpyglass revenue, direct fix deals left out) and of the traffic cost — what the months ahead run at. */
+  /** Per-day pace of the rotation (AdSpyglass revenue, direct fix deals left out) and of the traffic cost over the last complete days. */
   pace: { rotation: number; cost: number; daysUsed: number };
+  /**
+   * This month per day as /forecast projects it — the facts so far plus the pace for the days ahead, over the days
+   * with data and the days ahead (a day without data is a hole, not a zero): what the next month starts from (ADR 0020).
+   */
+  monthRate: { rotation: number; cost: number };
 }
 
 export async function monthForecast(today = iso(new Date()), lookback: Lookback = 7, month = monthOf(today)): Promise<MonthForecast> {
@@ -78,7 +83,12 @@ export async function monthForecast(today = iso(new Date()), lookback: Lookback 
       knownDeals += flatPerDay(deal.paymentBasis as PaymentBasis, deal.price.toString(), deal.billingPeriod as BillingPeriod, termDays, d.date).toNumber();
     }
   }
-  return { projection, sites, prev, knownDeals, pace: { rotation: rot.revenue, cost: rot.cost, daysUsed: rot.daysUsed } };
+  const actualAsg = days.filter((r) => { const d = iso(r.date as Date); return d >= first && d < today; }).reduce((a, r) => a + n(r.asg), 0);
+  const span = projection.actual.days + projection.daysLeft;
+  const monthRate = span && rot.daysUsed
+    ? { rotation: (actualAsg + rot.revenue * projection.daysLeft) / span, cost: (projection.actual.cost + rot.cost * projection.daysLeft) / span }
+    : { rotation: rot.revenue, cost: rot.cost };
+  return { projection, sites, prev, knownDeals, pace: { rotation: rot.revenue, cost: rot.cost, daysUsed: rot.daysUsed }, monthRate };
 }
 
 export interface CurrentMonthRow {
@@ -96,6 +106,7 @@ export interface PlanItemRow {
 export interface MonthsForecast {
   plan: ForecastPlan; horizon: Horizon; lookback: Lookback;
   pace: MonthForecast["pace"];
+  monthRate: MonthForecast["monthRate"];
   current: CurrentMonthRow | null;
   months: PlanMonthRow[];
   items: PlanItemRow[];
@@ -114,7 +125,7 @@ export async function monthsForecast(today = iso(new Date()), lookback: Lookback
   const endMonth = months[months.length - 1];
   const lastDay = addDays(`${shiftMonth(endMonth, 1)}-01`, -1);
   const winFrom = addDays(today, -lookback), winTo = addDays(today, -1);
-  const [f, dealRows, opexRows, itemRows] = await Promise.all([
+  const [f, dealRows, opexRows, itemRows, overrideRows] = await Promise.all([
     monthForecast(today, lookback, cur),
     db.deal.findMany({ where: { billedVia: "DIRECT", status: { in: ["ACTIVE", "DRAFT"] }, startsAt: { lte: D(lastDay) }, OR: [{ endsAt: null }, { endsAt: { gte: D(today) } }] },
       include: { sites: { include: { site: { select: { domain: true } } } } } }),
@@ -123,7 +134,10 @@ export async function monthsForecast(today = iso(new Date()), lookback: Lookback
     // Lines starting in the view, and repeating ones that started earlier and still run.
     db.planItem.findMany({ where: { month: { lte: D(`${endMonth}-01`) }, OR: [{ month: { gte: D(`${cur}-01`) } }, { recurring: true, OR: [{ untilMonth: null }, { untilMonth: { gte: D(`${cur}-01`) } }] }] },
       include: { site: { select: { domain: true } }, hypothesis: { select: { title: true } } }, orderBy: [{ month: "asc" }, { createdAt: "asc" }] }),
+    db.planMonthOverride.findMany({ where: { month: { gte: D(`${months[0]}-01`), lte: D(`${endMonth}-01`) } } }),
   ]);
+  const overrides: MonthOverrides = {};
+  for (const o of overrideRows) (overrides[iso(o.month).slice(0, 7)] ??= {})[o.line] = Number(o.amount);
   // Per-load and CPM deals have no fixed sum: their recent accruals per day, else price × their sites' loads (or impressions) per day.
   const ids = dealRows.map((d) => d.id);
   const [accrued, siteLoads] = ids.length ? await Promise.all([
@@ -164,7 +178,7 @@ export async function monthsForecast(today = iso(new Date()), lookback: Lookback
       upcomingDeals: upcoming, itemsRevenue, itemsCost, itemsSaving, cumMargin: margin, baseMargin: p.margin };
   }
   const rows = f.pace.daysUsed
-    ? projectMonths({ months, current: cur, rate: { rotation: f.pace.rotation, cost: f.pace.cost }, scenario: plan, deals, opexByMonth, items: perMonth, cumStart: current?.margin ?? 0, cumBaseStart: current?.baseMargin ?? 0 })
+    ? projectMonths({ months, current: cur, base: f.monthRate, scenario: plan, deals, opexByMonth, items: perMonth, overrides, cumStart: current?.margin ?? 0, cumBaseStart: current?.baseMargin ?? 0 })
     : [];
-  return { plan, horizon: h, lookback, pace: f.pace, current, months: rows, items };
+  return { plan, horizon: h, lookback, pace: f.pace, monthRate: f.monthRate, current, months: rows, items };
 }

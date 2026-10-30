@@ -71,3 +71,65 @@ export async function deletePlanItem(db: PrismaClient, id: string): Promise<void
   await db.planItem.delete({ where: { id } });
   await db.auditLog.create({ data: { entity: "PlanItem", entityId: id, field: "deleted", before: `${x.month.toISOString().slice(0, 7)} · ${x.kind} · ${x.title} · ${String(x.amount)}`, after: null } });
 }
+
+// ---------- The month chain (ADR 0020, 2026-10-30) ----------
+
+export const LINE_LABEL: Record<string, string> = { rotation: "Ротация ASG", traffic_cost: "Расход на трафик" };
+
+/**
+ * A future month's own figures: `{ line → amount | null }`, null = no edit (the month carries the one before).
+ * Only months after the current one: the current month is data. Each change is a line in the audit log.
+ */
+export async function savePlanMonth(db: PrismaClient, month: string, lines: Record<string, string | null>, today = new Date().toISOString().slice(0, 10)): Promise<number> {
+  if (!MONTH.test(month)) throw new RuleError("month", "Укажите месяц", "month");
+  if (month <= today.slice(0, 7)) throw new RuleError("month", "Править можно месяцы после текущего — текущий месяц это данные", "month");
+  const date = new Date(`${month}-01T00:00:00Z`);
+  const existing = new Map((await db.planMonthOverride.findMany({ where: { month: date } })).map((o) => [o.line, o]));
+  let changed = 0;
+  for (const [line, raw] of Object.entries(lines)) {
+    if (line !== "rotation" && line !== "traffic_cost" && !line.startsWith("deal:")) throw new RuleError("line", "Неизвестная строка плана");
+    if (line.startsWith("deal:") && !(await db.deal.findUnique({ where: { id: line.slice(5) } }))) throw new RuleError("line", "Дил не найден");
+    const before = existing.get(line);
+    if (raw == null || raw === "") {
+      if (!before) continue;
+      await db.planMonthOverride.delete({ where: { id: before.id } });
+      await db.auditLog.create({ data: { entity: "PlanMonth", entityId: month, field: line, before: before.amount.toString(), after: null, reason: "по умолчанию" } });
+      changed++;
+      continue;
+    }
+    const v = parseDecimal(raw);
+    if (!v.isFinite() || v.lt(0)) throw new RuleError(line, "Сумма — число не меньше нуля", line);
+    if (before && before.amount.equals(v.toDecimalPlaces(2))) continue;
+    await db.planMonthOverride.upsert({ where: { month_line: { month: date, line } }, create: { month: date, line, amount: v.toFixed(2) }, update: { amount: v.toFixed(2) } });
+    await db.auditLog.create({ data: { entity: "PlanMonth", entityId: month, field: line, before: before?.amount.toString() ?? null, after: v.toFixed(2) } });
+    changed++;
+  }
+  return changed;
+}
+
+/** Back to «как прошлый месяц» for every line of the month. */
+export async function resetPlanMonth(db: PrismaClient, month: string): Promise<number> {
+  const date = new Date(`${month}-01T00:00:00Z`);
+  const rows = await db.planMonthOverride.findMany({ where: { month: date } });
+  if (!rows.length) return 0;
+  await db.planMonthOverride.deleteMany({ where: { month: date } });
+  await db.auditLog.createMany({ data: rows.map((o) => ({ entity: "PlanMonth", entityId: month, field: o.line, before: o.amount.toString(), after: null, reason: "сброс месяца" })) });
+  return rows.length;
+}
+
+/**
+ * «Скопировать опер. расходы из прошлого месяца»: the entries of the last month that has any, copied onto `month`
+ * (which must have none yet) — then the month owns them and can be edited line by line.
+ */
+export async function copyOpexToMonth(db: PrismaClient, month: string, today = new Date().toISOString().slice(0, 10)): Promise<{ from: string; count: number }> {
+  if (!MONTH.test(month)) throw new RuleError("month", "Укажите месяц", "month");
+  if (month < today.slice(0, 7)) throw new RuleError("month", "Копировать можно в текущий месяц или вперёд", "month");
+  const date = new Date(`${month}-01T00:00:00Z`);
+  if (await db.opexEntry.count({ where: { month: date } })) throw new RuleError("month", "На этот месяц расходы уже внесены — правьте их по одному", "month");
+  const last = await db.opexEntry.findFirst({ where: { month: { lt: date } }, orderBy: { month: "desc" } });
+  if (!last) throw new RuleError("month", "Нет месяца с внесёнными расходами, чтобы скопировать", "month");
+  const src = await db.opexEntry.findMany({ where: { month: last.month } });
+  await db.opexEntry.createMany({ data: src.map((e) => ({ month: date, title: e.title, category: e.category, amount: e.amount, siteId: e.siteId, note: e.note })) });
+  await db.auditLog.create({ data: { entity: "PlanMonth", entityId: month, field: "opex", before: null, after: `скопировано ${src.length} из ${last.month.toISOString().slice(0, 7)}` } });
+  return { from: last.month.toISOString().slice(0, 7), count: src.length };
+}

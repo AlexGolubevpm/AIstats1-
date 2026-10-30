@@ -39,6 +39,14 @@ export default async function Forecast({ searchParams }: { searchParams: Promise
       monthsForecast(today, n, sp.h ? parseHorizon(sp.h) : undefined), dealFormOptions(),
       db.site.findMany({ where: { status: { not: "ARCHIVED" } }, orderBy: { domain: "asc" }, select: { id: true, domain: true } }),
     ]);
+    // The month panel: `?m=` among the months ahead, else the first of them; its own opex entries, or the month they are carried from.
+    const selected = mf.months.find((x) => x.month === sp.m)?.month ?? mf.months[0]?.month ?? null;
+    const selDate = selected ? new Date(`${selected}-01T00:00:00Z`) : null;
+    const [opex, carried] = selDate ? await Promise.all([
+      db.opexEntry.findMany({ where: { month: selDate }, orderBy: { createdAt: "asc" } }),
+      db.opexEntry.findFirst({ where: { month: { lt: selDate } }, orderBy: { month: "desc" }, select: { month: true } }),
+    ]) : [[], null];
+    const opexFrom = !opex.length && carried ? carried.month.toISOString().slice(0, 7) : null;
     return (
       <>
         <PageHeader title="Прогноз" sub={`План на ${mf.horizon} мес. вперёд: темп ротации и расхода, фикс-дилы по датам, опер. расходы и плановые статьи`}
@@ -48,7 +56,8 @@ export default async function Forecast({ searchParams }: { searchParams: Promise
             {HORIZONS.map((h) => <Link key={h} href={href0({ h: String(h) })} className={`rounded-md border px-3 py-1.5 ${h === mf.horizon ? "border-accent bg-accent-soft text-accent" : "border-border hover:bg-surface-hover"}`} data-horizon={h}>{h} мес.</Link>)}
           </div>} />
         {views(true)}
-        <MonthsView f={mf} sites={sites} dealOpts={{ sites: opts.sites, advertisers: opts.advertisers, placements: opts.placements }} />
+        <MonthsView f={mf} sites={sites} dealOpts={{ sites: opts.sites, advertisers: opts.advertisers, placements: opts.placements }} href={href0}
+          selected={selected} opexFrom={opexFrom} opex={opex.map((e) => ({ id: e.id, title: e.title, category: e.category, amount: Number(e.amount), siteId: e.siteId, note: e.note }))} />
       </>
     );
   }

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dealMonthAmount, parseHorizon, parseLookback, planItemMonths, projectMonth, projectMonths, shiftMonth, type PlanDeal } from "@/lib/forecast";
+import { dealActiveDays, dealLine, dealMonthAmount, parseHorizon, parseLookback, planItemMonths, projectMonth, projectMonths, shiftMonth, type PlanDeal } from "@/lib/forecast";
 
 const day = (date: string, revenue: number | null, cost = 0) => ({ date, revenue, cost });
 
@@ -50,7 +50,7 @@ describe("projectMonth", () => {
 
 describe("months ahead (ADR 0020)", () => {
   const deal = (over: Partial<PlanDeal>): PlanDeal => ({ id: "d", title: "D", sites: "a.test", status: "ACTIVE", basis: "FLAT_PERIOD", price: "300", billingPeriod: "MONTH", startsAt: "2026-01-01", endsAt: null, ...over });
-  const base = { current: "2026-10", rate: { rotation: 100, cost: 40 }, scenario: { revenueGrowth: 0, costGrowth: 0, includeDrafts: false }, deals: [] as PlanDeal[], opexByMonth: {}, items: [] };
+  const base = { current: "2026-10", base: { rotation: 100, cost: 40 }, scenario: { revenueGrowth: 0, costGrowth: 0, includeDrafts: false }, deals: [] as PlanDeal[], opexByMonth: {}, items: [] };
 
   it("shiftMonth crosses years; horizons are 3/6/12", () => {
     expect(shiftMonth("2026-11", 2)).toBe("2027-01");
@@ -98,7 +98,7 @@ describe("planned lines over months and the base (ADR 0020 addendum)", () => {
   });
 
   it("a saving lowers the cost (never below zero); the base margin is AdSpyglass alone: no deals, no lines", () => {
-    const [nov] = projectMonths({ current: "2026-10", months: ["2026-11"], rate: { rotation: 100, cost: 40 }, scenario: { revenueGrowth: 0, costGrowth: 0, includeDrafts: false },
+    const [nov] = projectMonths({ current: "2026-10", months: ["2026-11"], base: { rotation: 100, cost: 40 }, scenario: { revenueGrowth: 0, costGrowth: 0, includeDrafts: false },
       deals: [{ id: "a", title: "Flat", sites: "", status: "ACTIVE", basis: "FLAT_PERIOD", price: "300", billingPeriod: "MONTH", startsAt: "2026-01-01", endsAt: null }],
       opexByMonth: { "2026-11": 100 }, items: [{ month: "2026-11", kind: "SAVING", amount: 200 }, { month: "2026-11", kind: "REVENUE", amount: 50 }], cumBaseStart: 10 });
     expect(nov.itemsSaving).toBe(200);
@@ -106,9 +106,47 @@ describe("planned lines over months and the base (ADR 0020 addendum)", () => {
     expect(nov.margin).toBeCloseTo(100 * 30 + 300 + 50 - (40 * 30 - 200) - 100, 6);
     expect(nov.baseMargin).toBeCloseTo(100 * 30 - 40 * 30 - 100, 6);
     expect(nov.cumBaseMargin).toBeCloseTo(10 + nov.baseMargin, 6);
-    const [big] = projectMonths({ current: "2026-10", months: ["2026-11"], rate: { rotation: 1, cost: 1 }, scenario: { revenueGrowth: 0, costGrowth: 0, includeDrafts: false },
+    const [big] = projectMonths({ current: "2026-10", months: ["2026-11"], base: { rotation: 1, cost: 1 }, scenario: { revenueGrowth: 0, costGrowth: 0, includeDrafts: false },
       deals: [], opexByMonth: {}, items: [{ month: "2026-11", kind: "SAVING", amount: 1000 }] });
     expect(big.cost).toBe(0);
+  });
+});
+
+describe("the month chain (ADR 0020, 2026-10-30)", () => {
+  const scenario = { revenueGrowth: 0, costGrowth: 0, includeDrafts: false };
+  const months = ["2026-11", "2026-12", "2027-01"];
+  const flat = (over: Partial<PlanDeal> = {}): PlanDeal => ({ id: "f", title: "Flat", sites: "a", status: "ACTIVE", basis: "FLAT_PERIOD", price: "310", billingPeriod: "MONTH", startsAt: "2026-01-01", endsAt: null, ...over });
+
+  it("without edits each month is the one before per day × its days; an edit sets the month and the next months carry its rate", () => {
+    const plain = projectMonths({ current: "2026-10", months, base: { rotation: 100, cost: 40 }, scenario, deals: [], opexByMonth: {}, items: [] });
+    expect(plain.map((m) => m.rotation)).toEqual([3000, 3100, 3100]);
+    const rows = projectMonths({ current: "2026-10", months, base: { rotation: 100, cost: 40 }, scenario, deals: [], opexByMonth: {}, items: [],
+      overrides: { "2026-11": { rotation: 6000 }, "2027-01": { traffic_cost: 0 } } });
+    const [nov, dec, jan] = rows;
+    expect([nov.rotation, nov.edited.rotation, nov.defaults.rotation]).toEqual([6000, true, 3000]);
+    expect([dec.rotation, dec.edited.rotation, dec.defaults.rotation]).toEqual([6200, false, 6200]); // $200/day × 31
+    expect(jan.trafficCost).toBe(0); expect(jan.defaults.trafficCost).toBeCloseTo(40 * 31, 6);
+    const grown = projectMonths({ current: "2026-10", months, base: { rotation: 100, cost: 40 }, scenario: { ...scenario, revenueGrowth: 0.1 }, deals: [], opexByMonth: {}, items: [],
+      overrides: { "2026-11": { rotation: 3000 } } });
+    expect(grown[1].rotation).toBeCloseTo(100 * 1.1 * 31, 6); // growth goes on from the edited month
+  });
+
+  it("deals follow the contract until edited, then carry the edited rate over the days they run; «не будет» (0) carries too", () => {
+    expect(dealActiveDays({ startsAt: "2026-12-10", endsAt: null }, "2026-12")).toBe(22);
+    expect(dealActiveDays({ startsAt: "2026-01-01", endsAt: "2026-11-15" }, "2026-12")).toBe(0);
+    const d = flat(), p = flat({ id: "p", title: "Per load", basis: "PER_1000_LOADS", price: "1", perDay: 5, estimate: true, startsAt: "2026-12-16" });
+    const rows = projectMonths({ current: "2026-10", months, base: { rotation: 0, cost: 0 }, scenario, deals: [d, p], opexByMonth: {}, items: [],
+      overrides: { "2026-11": { [dealLine("f")]: 600 }, "2027-01": { [dealLine("p")]: 0 } } });
+    const line = (k: number, id: string) => rows[k].dealLines.find((x) => x.id === id);
+    expect(line(0, "f")).toMatchObject({ amount: 600, edited: true, defaultAmount: 310, source: "contract" });
+    expect(line(1, "f")).toMatchObject({ amount: 620, edited: false, source: "carried" }); // $20/day × 31
+    expect(line(0, "p")).toBeUndefined();
+    expect(line(1, "p")).toMatchObject({ amount: 80, estimate: true, source: "contract" }); // 16 days × $5
+    expect(line(2, "p")).toMatchObject({ amount: 0, edited: true });
+    const after = projectMonths({ current: "2026-10", months: [...months, "2027-02"], base: { rotation: 0, cost: 0 }, scenario, deals: [p], opexByMonth: {}, items: [],
+      overrides: { "2027-01": { [dealLine("p")]: 0 } } });
+    expect(after[3].dealLines.find((x) => x.id === "p")).toMatchObject({ amount: 0, edited: false, source: "carried" });
+    expect(after[3].deals).toBe(0);
   });
 });
 

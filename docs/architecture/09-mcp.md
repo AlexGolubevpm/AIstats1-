@@ -30,7 +30,7 @@ Claude ──HTTPS + Bearer──► caddy ──► web /api/mcp
 | `get_alerts` | `level?`, `bundle?`, `site?` | Активные алерты с контекстом и ссылками на UI |
 | `get_deals` | `status?`, `advertiser?`, `date_from?`, `date_to?` | Дилы: места (`places`), прогноз, выставлено, подтверждено, остаток, множитель |
 | `get_hypotheses` | `status?` (по умолчанию `PROPOSED`; у своих гипотез — `TESTING`, `ACCEPTED`, `DONE`, `REJECTED`), `bundle?`, `site?`, `scope?` | Гипотезы: источник, уровень, разрез, текст, ожидаемый эффект $/мес, метрика, база и итог, ссылка |
-| `get_forecast` | `horizon?` (3 \| 6 \| 12, по умолчанию из сценария), `lookback?` (3 \| 7 \| 14) | План на месяцы вперёд, как на `/forecast` «На месяцы вперёд» ([ADR 0020](../adr/0020-months-ahead-plan.md)): сценарий, темп в день, текущий месяц и строки месяцев — ротация, фикс-дилы (с разбивкой), черновики, статьи (`plan_revenue`, `plan_cost`, `plan_saving`), выручка, расход, опер. (`opex_carried`), маржа, маржа базы только по ASG (`base_margin`), ROMI, накопленная маржа |
+| `get_forecast` | `horizon?` (3 \| 6 \| 12, по умолчанию из сценария), `lookback?` (3 \| 7 \| 14) | План на месяцы вперёд, как на `/forecast` «На месяцы вперёд» ([ADR 0020](../adr/0020-months-ahead-plan.md)): сценарий, темп в день, текущий месяц и строки месяцев — ротация, фикс-дилы (с разбивкой), черновики, статьи (`plan_revenue`, `plan_cost`, `plan_saving`), выручка, расход, опер. (`opex_carried`), маржа, маржа базы только по ASG (`base_margin`), ROMI, накопленная маржа; флаги правок месяца (`edited`), у дилов — `default_amount` и `edited`; опорная ставка текущего месяца — `month_rate_per_day` |
 
 `get_deals` добавлен к спецификации вместе с разделом фикс-дилов; `get_hypotheses` — вместе с гипотезами (ADR 0013).
 

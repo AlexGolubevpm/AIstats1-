@@ -473,6 +473,19 @@ model PlanItem {
   @@index([hypothesisId])
 }
 
+/// A month's own figure for one line of the plan (ADR 0020, month chain): `rotation`, `traffic_cost` or
+/// `deal:<id>` → the month's amount. Without it the month carries the month before; the next months carry it.
+model PlanMonthOverride {
+  id        String   @id @default(cuid())
+  month     DateTime @db.Date // first day of the month
+  line      String
+  amount    Decimal  @db.Decimal(12, 2)
+  note      String?
+  updatedAt DateTime @updatedAt
+
+  @@unique([month, line])
+}
+
 // ---------- Fixed deals ----------
 
 model Advertiser {

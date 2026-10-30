@@ -3,7 +3,7 @@ import { revalidatePath } from "next/cache";
 import { parseHorizon } from "@/lib/forecast";
 import { db } from "@/server/db";
 import { requireSession } from "@/server/session";
-import { deletePlanItem, saveForecastPlan, savePlanItem } from "@/server/services/forecast-plan";
+import { copyOpexToMonth, deletePlanItem, resetPlanMonth, saveForecastPlan, savePlanItem, savePlanMonth } from "@/server/services/forecast-plan";
 import { guarded, money, opt, str, type ActionResult } from "./result";
 
 const touched = () => revalidatePath("/forecast");
@@ -38,4 +38,30 @@ export async function savePlanItemAction(_: ActionResult, f: FormData): Promise<
 export async function deletePlanItemAction(_: ActionResult, f: FormData): Promise<ActionResult> {
   await requireSession();
   return guarded(async () => { await deletePlanItem(db, str(f, "id")); touched(); revalidatePath("/hypotheses/[id]", "page"); return { ok: true, message: "Статья удалена" }; });
+}
+
+/** The month panel form: one field per line (`line:<key>`); an empty field is «по умолчанию» (carried from the month before). */
+export async function savePlanMonthAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const lines: Record<string, string | null> = {};
+    for (const [k, v] of f.entries()) if (k.startsWith("line:")) lines[k.slice(5)] = money(f, k) || null;
+    const n = await savePlanMonth(db, str(f, "month"), lines);
+    touched();
+    return { ok: true, message: n ? "Месяц сохранён — следующие месяцы берут его цифры" : "Изменений нет" };
+  });
+}
+
+export async function resetPlanMonthAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => { await resetPlanMonth(db, str(f, "month")); touched(); return { ok: true, message: "Месяц как прошлый" }; });
+}
+
+export async function copyOpexAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const r = await copyOpexToMonth(db, str(f, "month"));
+    touched(); revalidatePath("/finance");
+    return { ok: true, message: `Скопировано ${r.count} ${r.count === 1 ? "расход" : "расходов"} из ${r.from}` };
+  });
 }
