@@ -26,29 +26,39 @@ export function ScenarioForm({ plan }: { plan: ForecastPlan }) {
   );
 }
 
-export interface PlanItemValues { id?: string; month: string; kind: string; title: string; amount: number; siteId: string | null; note: string | null }
+export interface PlanItemValues {
+  id?: string; month: string; kind: string; title: string; amount: number | null; siteId: string | null; note: string | null;
+  recurring?: boolean; untilMonth?: string | null; hypothesisId?: string | null;
+}
 
-/** Add or edit a planned line of a month: a new site's revenue, a traffic purchase… */
-export function PlanItemButton({ sites, values, defaultMonth, minMonth, label = "Добавить статью" }: {
-  sites: { id: string; domain: string }[]; values?: PlanItemValues; defaultMonth: string; minMonth: string; label?: string;
+/** Add or edit a planned line: a revenue gain, a new cost or a cost cut, in one month or every month from it; optionally the hypothesis behind it. */
+export function PlanItemButton({ sites, values, defaultMonth, minMonth, label = "Добавить статью", variant }: {
+  sites: { id: string; domain: string }[]; values?: PlanItemValues; defaultMonth: string; minMonth: string; label?: string; variant?: "primary" | "secondary" | "ghost";
 }) {
   const [open, setOpen] = useState(false);
+  const [recurring, setRecurring] = useState(values?.recurring ?? false);
+  const editing = Boolean(values?.id);
   return (
     <>
-      <Button size="sm" variant={values ? "ghost" : "secondary"} onClick={() => setOpen(true)}>{label}</Button>
-      <Sheet open={open} onOpenChange={setOpen} title={values ? "Изменить статью" : "Плановая статья"}
-        description="Доход или расход, который вы ожидаете в месяце и которого нет в темпе: новый сайт, закупка трафика, разовый платёж. Попадает только в план, в факты не пишется.">
+      <Button size="sm" variant={variant ?? (editing ? "ghost" : "secondary")} onClick={() => setOpen(true)}>{label}</Button>
+      <Sheet open={open} onOpenChange={setOpen} title={editing ? "Изменить статью" : "Плановая статья"}
+        description="То, чего нет в темпе: рост выручки (новый сайт, гипотеза), новый расход, экономия расходов (срезать источник). С какого месяца и сколько в месяц; «каждый месяц» — повторять до конца плана или до месяца «по». Только план, в факты не пишется.">
         <ActionForm action={savePlanItemAction} submit="Сохранить" onDone={() => setOpen(false)} cancel={() => setOpen(false)}>
           {values?.id && <input type="hidden" name="id" value={values.id} />}
+          {values?.hypothesisId && <input type="hidden" name="hypothesisId" value={values.hypothesisId} />}
           <div className="grid gap-3 sm:grid-cols-2">
-            <FormField name="month" label="Месяц"><Input type="month" name="month" min={minMonth} defaultValue={values?.month ?? defaultMonth} required /></FormField>
-            <FormField name="kind" label="Тип">
+            <FormField name="month" label="С месяца"><Input type="month" name="month" min={minMonth} defaultValue={values?.month ?? defaultMonth} required /></FormField>
+            <FormField name="kind" label="Что это">
               <Select name="kind" defaultValue={values?.kind ?? "REVENUE"}>{PLAN_ITEM_KINDS.map((k) => <option key={k} value={k}>{PLAN_ITEM_LABEL[k]}</option>)}</Select>
             </FormField>
           </div>
-          <FormField name="title" label="Что"><Input name="title" defaultValue={values?.title} placeholder="Новый сайт в бандле JAV" required /></FormField>
           <div className="grid gap-3 sm:grid-cols-2">
-            <FormField name="amount" label="Сумма за месяц, $"><Input name="amount" inputMode="decimal" defaultValue={values ? values.amount.toFixed(2) : ""} required className="num" /></FormField>
+            <label className="flex h-9 items-center gap-2 text-sm"><input type="checkbox" name="recurring" value="1" checked={recurring} onChange={(e) => setRecurring(e.target.checked)} /> каждый месяц</label>
+            {recurring && <FormField name="untilMonth" label="По" hint="Пусто — до конца плана"><Input type="month" name="untilMonth" min={minMonth} defaultValue={values?.untilMonth ?? ""} /></FormField>}
+          </div>
+          <FormField name="title" label="Название"><Input name="title" defaultValue={values?.title} placeholder="Новый сайт в бандле JAV" required /></FormField>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <FormField name="amount" label="Сумма в месяц, $"><Input name="amount" inputMode="decimal" defaultValue={values?.amount != null ? values.amount.toFixed(2) : ""} required className="num" /></FormField>
             <FormField name="siteId" label="Сайт" hint="Пусто — вся сеть">
               <Select name="siteId" defaultValue={values?.siteId ?? ""}><option value="">Вся сеть</option>{sites.map((s) => <option key={s.id} value={s.id}>{s.domain}</option>)}</Select>
             </FormField>

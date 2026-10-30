@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dealMonthAmount, parseHorizon, parseLookback, projectMonth, projectMonths, shiftMonth, type PlanDeal } from "@/lib/forecast";
+import { dealMonthAmount, parseHorizon, parseLookback, planItemMonths, projectMonth, projectMonths, shiftMonth, type PlanDeal } from "@/lib/forecast";
 
 const day = (date: string, revenue: number | null, cost = 0) => ({ date, revenue, cost });
 
@@ -85,6 +85,30 @@ describe("months ahead (ADR 0020)", () => {
     const withDrafts = projectMonths({ ...base, months: ["2026-11"], deals: [deal({ status: "DRAFT", price: "600" })], scenario: { revenueGrowth: 0, costGrowth: 0, includeDrafts: true } });
     expect(withDrafts[0].revenue).toBeCloseTo(100 * 30 + 600, 6);
     expect(projectMonths({ ...base, months: ["2026-11"] })[0]).toMatchObject({ opex: 0, opexCarried: false, romi: 150 });
+  });
+});
+
+describe("planned lines over months and the base (ADR 0020 addendum)", () => {
+  const months = ["2026-11", "2026-12", "2027-01", "2027-02"];
+  it("planItemMonths: one month, every month from a start, every month up to «по»", () => {
+    expect(planItemMonths({ month: "2026-12", recurring: false, until: null }, months)).toEqual(["2026-12"]);
+    expect(planItemMonths({ month: "2026-12", recurring: true, until: null }, months)).toEqual(["2026-12", "2027-01", "2027-02"]);
+    expect(planItemMonths({ month: "2026-10", recurring: true, until: "2026-12" }, months)).toEqual(["2026-11", "2026-12"]); // started before the view
+    expect(planItemMonths({ month: "2027-05", recurring: true, until: null }, months)).toEqual([]);
+  });
+
+  it("a saving lowers the cost (never below zero); the base margin is AdSpyglass alone: no deals, no lines", () => {
+    const [nov] = projectMonths({ current: "2026-10", months: ["2026-11"], rate: { rotation: 100, cost: 40 }, scenario: { revenueGrowth: 0, costGrowth: 0, includeDrafts: false },
+      deals: [{ id: "a", title: "Flat", sites: "", status: "ACTIVE", basis: "FLAT_PERIOD", price: "300", billingPeriod: "MONTH", startsAt: "2026-01-01", endsAt: null }],
+      opexByMonth: { "2026-11": 100 }, items: [{ month: "2026-11", kind: "SAVING", amount: 200 }, { month: "2026-11", kind: "REVENUE", amount: 50 }], cumBaseStart: 10 });
+    expect(nov.itemsSaving).toBe(200);
+    expect(nov.cost).toBeCloseTo(40 * 30 - 200, 6);
+    expect(nov.margin).toBeCloseTo(100 * 30 + 300 + 50 - (40 * 30 - 200) - 100, 6);
+    expect(nov.baseMargin).toBeCloseTo(100 * 30 - 40 * 30 - 100, 6);
+    expect(nov.cumBaseMargin).toBeCloseTo(10 + nov.baseMargin, 6);
+    const [big] = projectMonths({ current: "2026-10", months: ["2026-11"], rate: { rotation: 1, cost: 1 }, scenario: { revenueGrowth: 0, costGrowth: 0, includeDrafts: false },
+      deals: [], opexByMonth: {}, items: [{ month: "2026-11", kind: "SAVING", amount: 1000 }] });
+    expect(big.cost).toBe(0);
   });
 });
 

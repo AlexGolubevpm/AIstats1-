@@ -26,13 +26,16 @@ export async function saveForecastPlanAction(_: ActionResult, f: FormData): Prom
 export async function savePlanItemAction(_: ActionResult, f: FormData): Promise<ActionResult> {
   await requireSession();
   return guarded(async () => {
-    await savePlanItem(db, { month: str(f, "month"), kind: str(f, "kind"), title: str(f, "title"), amount: money(f, "amount"), siteId: opt(f, "siteId"), note: opt(f, "note") }, opt(f, "id") ?? undefined);
+    const hypothesisId = opt(f, "hypothesisId");
+    await savePlanItem(db, { month: str(f, "month"), kind: str(f, "kind"), title: str(f, "title"), amount: money(f, "amount"), siteId: opt(f, "siteId"), note: opt(f, "note"),
+      recurring: f.get("recurring") === "1", untilMonth: opt(f, "untilMonth"), hypothesisId }, opt(f, "id") ?? undefined);
     touched();
+    if (hypothesisId) revalidatePath(`/hypotheses/${hypothesisId}`);
     return { ok: true, message: "Статья сохранена" };
   });
 }
 
 export async function deletePlanItemAction(_: ActionResult, f: FormData): Promise<ActionResult> {
   await requireSession();
-  return guarded(async () => { await deletePlanItem(db, str(f, "id")); touched(); return { ok: true, message: "Статья удалена" }; });
+  return guarded(async () => { await deletePlanItem(db, str(f, "id")); touched(); revalidatePath("/hypotheses/[id]", "page"); return { ok: true, message: "Статья удалена" }; });
 }

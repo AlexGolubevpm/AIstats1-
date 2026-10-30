@@ -11,6 +11,10 @@ import { METRIC_LABEL, OWN_STATUS_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATUS_LABEL
 import { hypothesisDetail } from "@/server/queries/hypotheses";
 import { EditHypothesisForm, HypothesisActions, OwnStatusSwitch } from "../client";
 import { fmtMetric, metricDelta } from "../format";
+import { DeletePlanItem, PlanItemButton } from "../../forecast/plan";
+import { monthLabel } from "../../forecast/months";
+import { PLAN_ITEM_LABEL } from "@/server/services/forecast-plan";
+import { shiftMonth } from "@/lib/forecast";
 
 const FIELD_LABEL: Record<string, string> = {
   status: "статус", title: "заголовок", hypothesis: "гипотеза", bundleId: "бандл", siteId: "сайт", format: "формат", countryCode: "гео",
@@ -36,6 +40,8 @@ export default async function HypothesisPage({ params }: { params: Promise<{ id:
     v == null || v === "" ? "—" : field === "status" ? statusName(v) : field === "siteId" || field === "bundleId" ? name.get(v) ?? v
       : field === "format" ? FORMAT_LABEL[v] ?? v : field === "metric" ? METRIC_LABEL[v as Metric] ?? v : v;
   const evidence = h.ruleKey ? evidenceLine(h.ruleKey, h.evidence) : null;
+  const thisMonth = new Date().toISOString().slice(0, 7), nextMonth = shiftMonth(thisMonth, 1);
+  const costMetric = metric === "cost_per_1k" || metric === "cost_share";
   const fact = (label: string, v: ReactNode) => <div><dt className="text-xs text-muted">{label}</dt><dd className="num mt-0.5 text-sm">{v}</dd></div>;
 
   return (
@@ -63,6 +69,29 @@ export default async function HypothesisPage({ params }: { params: Promise<{ id:
         <EditHypothesisForm id={h.id} own={own} note={h.resultNote}
           values={{ title: h.title, hypothesis: h.hypothesis, bundleId: h.bundleId, siteId: h.siteId, format: h.format, countryCode: h.countryCode, impactMonth: h.impactMonth == null ? null : String(Number(h.impactMonth)), metric: h.metric }}
           bundles={bundles.map((b) => ({ id: b.id, title: b.title }))} sites={sites.map((s) => ({ id: s.id, domain: s.domain, bundleIds: s.bundles.map((b) => b.bundleId) }))} formats={Object.keys(FORMAT_LABEL)} />
+      </Section>
+
+      <Section title="В плане на месяцы вперёд" sub="Что эта гипотеза даст экономике: рост выручки или экономия расходов с какого месяца — учитывается в /forecast «На месяцы вперёд»"
+        actions={<PlanItemButton sites={sites.map((s) => ({ id: s.id, domain: s.domain }))} defaultMonth={nextMonth} minMonth={thisMonth} label="Добавить в план" variant="primary"
+          values={{ month: nextMonth, kind: costMetric ? "SAVING" : "REVENUE", title: h.title, amount: Number(h.impactMonth ?? 0) > 0 ? Number(h.impactMonth) : null, siteId: h.siteId, note: null, recurring: true, untilMonth: null, hypothesisId: h.id }} />}>
+        {h.planItems.length === 0 ? <p className="py-2 text-sm text-muted">Пока не в плане</p> : (
+          <ul className="num divide-y divide-border text-[13px]" data-testid="hypothesis-plan">
+            {h.planItems.map((x) => {
+              const m = x.month.toISOString().slice(0, 7), until = x.untilMonth ? x.untilMonth.toISOString().slice(0, 7) : null;
+              return (
+                <li key={x.id} className="flex flex-wrap items-center gap-x-3 py-2">
+                  <span>{PLAN_ITEM_LABEL[x.kind]}</span>
+                  <span className="text-muted">{x.recurring ? `каждый месяц с ${monthLabel(m)}${until ? ` по ${monthLabel(until)}` : ""}` : monthLabel(m)}</span>
+                  <span className="ml-auto font-medium">{x.kind === "COST" ? "−" : "+"}{fmtMoney(Number(x.amount))}/мес</span>
+                  <PlanItemButton sites={sites.map((s) => ({ id: s.id, domain: s.domain }))} defaultMonth={m} minMonth={[m, thisMonth].sort()[0]} label="Изменить"
+                    values={{ id: x.id, month: m, kind: x.kind, title: x.title, amount: Number(x.amount), siteId: x.siteId, note: x.note, recurring: x.recurring, untilMonth: until, hypothesisId: h.id }} />
+                  <DeletePlanItem id={x.id} />
+                </li>
+              );
+            })}
+          </ul>
+        )}
+        <p className="mt-2 text-xs"><Link href="/forecast?view=months" className="text-accent hover:underline">Открыть план на месяцы →</Link></p>
       </Section>
 
       <Section title="История">

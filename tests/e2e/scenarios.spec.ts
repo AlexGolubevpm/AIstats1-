@@ -280,6 +280,37 @@ test("forecast months ahead: horizon, a planned line and a future deal land in t
   await expect(page.getByText("Сценарий сохранён")).toBeVisible();
 });
 
+test("plan effects: a hypothesis goes into the plan as a monthly cost cut and shows in the months ahead next to the AdSpyglass-only base", async ({ page }) => {
+  await login(page, "/hypotheses");
+  await page.getByRole("button", { name: "Новая гипотеза" }).click();
+  await page.locator("select[name=siteId]").selectOption({ label: "japan-tube.demo" });
+  await page.locator("input[name=title]").fill("E2E срезать дорогой источник");
+  await page.locator("textarea[name=hypothesis]").fill("Если отключить дорогой источник, то расход упадёт на $700 в месяц");
+  await page.locator("input[name=impactMonth]").fill("700");
+  await page.locator("select[name=metric]").selectOption("cost_per_1k");
+  await page.getByRole("button", { name: "Добавить" }).click();
+  await expect(page.getByText(/Гипотеза добавлена/)).toBeVisible();
+  await page.locator("a[data-kind=own]").click();
+  await page.locator("li[data-scope]", { hasText: "E2E срезать дорогой источник" }).locator("a[data-open]").click();
+  await page.getByRole("button", { name: "Добавить в план" }).click();
+  // Prefilled from the hypothesis: a cost cut of its effect, every month from next one.
+  await expect(page.locator("select[name=kind]")).toHaveValue("SAVING");
+  await expect(page.locator("input[name=amount]")).toHaveValue("700.00");
+  await expect(page.locator("input[name=recurring]")).toBeChecked();
+  await page.getByRole("button", { name: "Сохранить" }).last().click();
+  await expect(page.getByText("Статья сохранена")).toBeVisible();
+  await expect(page.getByTestId("hypothesis-plan")).toContainText("Экономия расходов");
+  await page.getByRole("link", { name: "Открыть план на месяцы →" }).click();
+  await expect(page).toHaveURL(/view=months/);
+  const now = new Date();
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 7);
+  await expect(page.locator(`details[data-month='${next}']`)).toContainText("гипотеза: E2E срезать дорогой источник");
+  await expect(page.locator(`tr[data-month='${next}'] td[data-base]`)).toBeVisible(); // the base column sits next to the plan
+  await expect(page.getByText("База: только ASG")).toBeVisible();
+  // Planning a deal for a given future month right from that month.
+  await expect(page.locator(`details[data-month='${next}']`).getByRole("button", { name: /^Дил с / })).toBeVisible();
+});
+
 test("hypotheses: system proposals and ours apart, scope chips, own statuses Тест · В работе · Готово, the hypothesis page edits it; old /recommendations links redirect", async ({ page }) => {
   await login(page, "/recommendations");
   await expect(page).toHaveURL(/\/hypotheses/);

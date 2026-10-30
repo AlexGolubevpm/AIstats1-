@@ -94,11 +94,20 @@ export function dealMonthAmount(deal: PlanDeal, month: string): number {
 }
 
 export interface PlanScenario { revenueGrowth: number; costGrowth: number; includeDrafts: boolean }
+export type PlanItemKind = "REVENUE" | "COST" | "SAVING";
+
+/** The months a planned line applies to among `months`: its start month, or every month from it (up to `until`) when it repeats. */
+export function planItemMonths(item: { month: string; recurring: boolean; until: string | null }, months: string[]): string[] {
+  if (!item.recurring) return months.filter((m) => m === item.month);
+  return months.filter((m) => m >= item.month && (!item.until || m <= item.until));
+}
 export interface PlanMonthRow {
   month: string; days: number;
-  rotation: number; deals: number; draftDeals: number; itemsRevenue: number; itemsCost: number;
+  rotation: number; deals: number; draftDeals: number; itemsRevenue: number; itemsCost: number; itemsSaving: number;
   revenue: number; trafficCost: number; cost: number; opex: number; opexCarried: boolean;
   margin: number; romi: number | null; cumMargin: number;
+  /** The base: AdSpyglass alone at its pace — no direct deals, no planned lines; what the month brings if nothing new is done. */
+  baseMargin: number; cumBaseMargin: number;
   dealLines: { id: string; title: string; sites: string; amount: number; draft: boolean; estimate: boolean }[];
 }
 
@@ -110,9 +119,9 @@ export interface PlanMonthRow {
  */
 export function projectMonths(i: {
   months: string[]; current: string; rate: { rotation: number; cost: number }; scenario: PlanScenario;
-  deals: PlanDeal[]; opexByMonth: Record<string, number>; items: { month: string; kind: "REVENUE" | "COST"; amount: number }[]; cumStart?: number;
+  deals: PlanDeal[]; opexByMonth: Record<string, number>; items: { month: string; kind: PlanItemKind; amount: number }[]; cumStart?: number; cumBaseStart?: number;
 }): PlanMonthRow[] {
-  let cum = i.cumStart ?? 0;
+  let cum = i.cumStart ?? 0, cumBase = i.cumBaseStart ?? 0;
   const known = Object.keys(i.opexByMonth).filter((m) => i.opexByMonth[m] > 0).sort();
   return i.months.map((month) => {
     const days = daysInMonth(`${month}-01`);
@@ -125,15 +134,17 @@ export function projectMonths(i: {
     const draftDeals = dealLines.filter((d) => d.draft).reduce((a, d) => a + d.amount, 0);
     const itemsRevenue = i.items.filter((x) => x.month === month && x.kind === "REVENUE").reduce((a, x) => a + x.amount, 0);
     const itemsCost = i.items.filter((x) => x.month === month && x.kind === "COST").reduce((a, x) => a + x.amount, 0);
+    const itemsSaving = i.items.filter((x) => x.month === month && x.kind === "SAVING").reduce((a, x) => a + x.amount, 0);
     const entered = i.opexByMonth[month] ?? 0;
     const carriedFrom = entered > 0 ? null : known.filter((m) => m < month).pop() ?? null;
     const opex = entered > 0 ? entered : carriedFrom ? i.opexByMonth[carriedFrom] : 0;
     const revenue = rotation + deals + (i.scenario.includeDrafts ? draftDeals : 0) + itemsRevenue;
-    const cost = trafficCost + itemsCost;
+    const cost = Math.max(0, trafficCost + itemsCost - itemsSaving);
     const margin = revenue - cost - opex;
-    cum += margin;
-    return { month, days, rotation, deals, draftDeals, itemsRevenue, itemsCost, revenue, trafficCost, cost, opex, opexCarried: carriedFrom != null, margin,
-      romi: cost ? ((revenue - cost) / cost) * 100 : null, cumMargin: cum, dealLines };
+    const baseMargin = rotation - trafficCost - opex;
+    cum += margin; cumBase += baseMargin;
+    return { month, days, rotation, deals, draftDeals, itemsRevenue, itemsCost, itemsSaving, revenue, trafficCost, cost, opex, opexCarried: carriedFrom != null, margin,
+      romi: cost ? ((revenue - cost) / cost) * 100 : null, cumMargin: cum, baseMargin, cumBaseMargin: cumBase, dealLines };
   });
 }
 
