@@ -5,7 +5,7 @@ import { requireSession } from "@/server/session";
 import { deleteOpex, saveOpex } from "@/server/services/opex";
 import { guarded, money, opt, str, type ActionResult } from "./result";
 
-const touched = () => { revalidatePath("/finance"); revalidatePath("/"); };
+const touched = () => { revalidatePath("/finance"); revalidatePath("/"); revalidatePath("/forecast"); };
 
 export async function saveOpexAction(_: ActionResult, f: FormData): Promise<ActionResult> {
   await requireSession();

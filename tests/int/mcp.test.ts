@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { buildNetwork } from "@tests/factories/network";
 import { POST } from "@/app/api/mcp/route";
 import { issueMcpToken } from "@/server/auth";
-import { getAlerts, getDeals, getNetworkMatrix, getPnl, getZones, queryTool } from "@/server/mcp/tools";
+import { getAlerts, getDeals, getForecast, getNetworkMatrix, getPnl, getZones, queryTool } from "@/server/mcp/tools";
 import { geoTable } from "@/server/queries/reports";
 import { resetDb, testDb } from "./helpers";
 
@@ -58,6 +58,10 @@ describe("MCP tools", () => {
     expect(await getAlerts({ site: "one.test" })).toHaveLength(1);
     const deals = await getDeals({ ...P });
     expect(deals.map((d) => d.deal).sort()).toEqual(["Own popunder", "Sponsor banner"]);
+    // The plan ahead from the real today: the factory's days are long past, so no pace and no months — but the shape is there.
+    const fc = await getForecast({ horizon: 3 });
+    expect(fc.scenario).toMatchObject({ horizon: 3, revenue_growth_pct: 0, include_drafts: false });
+    expect(fc.pace_per_day.days_used).toBe(0); expect(fc.months).toEqual([]);
   });
 });
 
@@ -78,7 +82,7 @@ describe("MCP route", () => {
     expect(init.status).toBe(200);
     expect((await init.json()).result.instructions).toContain("rev_per_1k_loads");
     const list = await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" }, token)).json();
-    expect(list.result.tools.map((t: { name: string }) => t.name).sort()).toEqual(["get_alerts", "get_deals", "get_hypotheses", "get_network_matrix", "get_pnl", "get_zones", "query"]);
+    expect(list.result.tools.map((t: { name: string }) => t.name).sort()).toEqual(["get_alerts", "get_deals", "get_forecast", "get_hypotheses", "get_network_matrix", "get_pnl", "get_zones", "query"]);
     expect(list.result.tools.find((t: { name: string }) => t.name === "query").description).toContain("v_site_geo_daily(");
     const call = await (await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "query", arguments: { sql: 'SELECT * FROM "Site"' } } }, token)).json();
     expect(call.result.isError).toBe(true);

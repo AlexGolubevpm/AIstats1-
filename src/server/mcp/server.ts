@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { db } from "@/server/db";
 import { MCP_VIEWS, SqlRejected } from "./sql-guard";
-import { getAlerts, getDeals, getHypotheses, getNetworkMatrix, getPnl, getZones, queryTool, ToolError } from "./tools";
+import { getAlerts, getDeals, getForecast, getHypotheses, getNetworkMatrix, getPnl, getZones, queryTool, ToolError } from "./tools";
 
 export const INSTRUCTIONS = `TubeStat — маржа по сети тьюб-сайтов. Только чтение. Все деньги в USD.
 Правила анализа:
@@ -78,6 +78,11 @@ export async function createMcpServer(): Promise<McpServer> {
     inputSchema: { status: z.enum(["ACTIVE", "PAUSED", "ENDED", "DRAFT"]).optional(), advertiser: z.string().optional(), date_from: date.optional(), date_to: date.optional() },
     annotations: ro,
   }, wrap("get_deals", getDeals));
+  server.registerTool("get_forecast", {
+    description: "План на месяцы вперёд, как на /forecast «На месяцы вперёд»: текущий месяц (факт + темп) и следующие месяцы — ротация по темпу последних полных дней с ростом сценария, прямые фикс-дилы по датам (черновики отдельно), плановые статьи, расход, опер. расходы (если на месяц не внесены — повтор последнего месяца, opex_carried), маржа и накопленная маржа.",
+    inputSchema: { horizon: z.union([z.literal(3), z.literal(6), z.literal(12)]).optional().describe("месяцев вперёд, по умолчанию из сценария"), lookback: z.union([z.literal(3), z.literal(7), z.literal(14)]).optional().describe("дней для темпа, по умолчанию 7") },
+    annotations: ro,
+  }, wrap("get_forecast", getForecast));
   server.registerTool("get_hypotheses", {
     description: "Гипотезы: что могло бы заработать больше или перестать терять — предложенные системой (ночные правила по дневной аналитике и алерты), из алертов и свои. Статус, ожидаемый эффект $/мес, метрика проверки, база и итог. По умолчанию — предложенные.",
     inputSchema: { status: z.enum(["PROPOSED", "TESTING", "ACCEPTED", "DONE", "REJECTED", "EXPIRED"]).optional(), bundle: z.string().optional().describe("слаг бандла"), site: z.string().optional().describe("домен"),

@@ -36,6 +36,7 @@ export async function saveDealAction(_: ActionResult, f: FormData): Promise<Acti
   if (r.error) return r;
   revalidatePath("/deals");
   revalidatePath("/inventory"); // the Formats tab lists every deal
+  revalidatePath("/forecast"); // the months ahead count deals by their dates
   if (!str(f, "id")) redirect(`/deals/${id}`);
   revalidatePath(`/deals/${id}`);
   return { ok: true, message: "Условия сохранены, прогноз пересчитан" };

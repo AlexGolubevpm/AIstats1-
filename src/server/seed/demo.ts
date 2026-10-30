@@ -35,7 +35,7 @@ export async function isDemo(db: PrismaClient): Promise<boolean> {
 /** Removes every non-reference row. Used before loading demo data and by "Удалить демо-данные". */
 export async function clearData(db: PrismaClient): Promise<void> {
   const tables = ["FactRevenueGeo", "FactRevenueZone", "FactTraffic", "FactCost", "FactFixDeal", "DealPeriod", "DealSite", "Deal", "Advertiser",
-    "Zone", "BundleSite", "Bundle", "Site", "CostRate", "Alert", "Hypothesis", "IngestRun", "ImportBatch", "AuditLog", "AsgPayout", "UnresolvedAlias"];
+    "Zone", "BundleSite", "Bundle", "Site", "CostRate", "Alert", "Hypothesis", "IngestRun", "ImportBatch", "AuditLog", "AsgPayout", "UnresolvedAlias", "PlanItem"];
   await db.$executeRawUnsafe(`TRUNCATE ${tables.map((t) => `"${t}"`).join(", ")} CASCADE`);
   await db.appSetting.deleteMany({ where: { key: { in: ["demo_data", "asg_unknown_sites"] } } });
 }
@@ -75,7 +75,7 @@ export async function seedDemo(db: PrismaClient, opts: { days?: number; today?: 
     zoneIds.set(s.id, list);
   }
 
-  const geo: object[] = [], zone: object[] = [], traffic: object[] = [];
+  const geo: object[] = [], zone: object[] = [], traffic: object[] = [], sources: object[] = [];
   for (let k = days; k >= 1; k--) {
     const date = new Date(`${addDays(today, -k)}T00:00:00Z`);
     const season = 1 + 0.15 * Math.sin(k / 5) + (k < 10 ? 0.05 : 0);
@@ -100,6 +100,9 @@ export async function seedDemo(db: PrismaClient, opts: { days?: number; today?: 
           siteRevenue += revenue; siteLoads += l;
         }
       }
+      // The traffic-source cut: what makes a day complete for the forecast pace. Revenue 0 — the cost comes from the CPU rates
+      // below, not from a revenue share (tubecrown's revShare would otherwise bill the site's whole revenue again).
+      sources.push({ date, siteId: s.id, sourceSlug: "tubecrown", pageLoads: siteLoads, impsOwn: 0, clicks: 0, revenueReported: "0" });
       for (const z of zoneIds.get(s.id)!) {
         const imps = Math.round(siteLoads * (z.format === "POPUNDER" ? 0.35 : z.format === "BANNER" ? 1.6 : 0.7));
         zone.push({ date, siteId: s.id, zoneId: z.id, format: z.format, pageLoads: siteLoads, impsOwn: imps, impsNetwork: Math.round(imps * 0.95),
@@ -111,6 +114,7 @@ export async function seedDemo(db: PrismaClient, opts: { days?: number; today?: 
   for (let i = 0; i < geo.length; i += 5000) await db.factRevenueGeo.createMany({ data: geo.slice(i, i + 5000) as never });
   for (let i = 0; i < zone.length; i += 5000) await db.factRevenueZone.createMany({ data: zone.slice(i, i + 5000) as never });
   for (let i = 0; i < traffic.length; i += 5000) await db.factTraffic.createMany({ data: traffic.slice(i, i + 5000) as never });
+  for (let i = 0; i < sources.length; i += 5000) await db.factTrafficSource.createMany({ data: sources.slice(i, i + 5000) as never });
 
   // Cost rates: global CPU plus per-site overrides for over-paying sites; IN/BR bought too expensive.
   const from = new Date(`${addDays(today, -days - 1)}T00:00:00Z`);

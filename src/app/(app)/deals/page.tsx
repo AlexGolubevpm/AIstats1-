@@ -59,7 +59,7 @@ async function DealsTab({ sp, p, q }: { sp: Record<string, string | undefined>; 
       forecast: d.startsAt > p.to ? [{ label: `начнётся ${fmtDate(d.startsAt)}`, tone: "neutral" as const }] : d.endsAt && d.endsAt < p.from ? [{ label: "закончился до периода", tone: "neutral" as const }] : [],
     },
   }));
-  const statuses = [["", "Текущие"], ["ACTIVE", "Активные"], ["PAUSED", "На паузе"], ["DRAFT", "Черновики"], ["archive", "Архив"]];
+  const statuses = [["", "Текущие"], ["ACTIVE", "Активные"], ["PAUSED", "На паузе"], ["DRAFT", "Черновики"], ["future", "Будущие"], ["archive", "Архив"]];
   const advertisers = [...new Set(deals.map((d) => d.advertiser))].sort();
   return (
     <Section title="Все дилы" actions={
