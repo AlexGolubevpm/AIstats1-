@@ -164,8 +164,11 @@ const TAB_WHERE: Record<HypothesisTab, Prisma.HypothesisWhereInput> = {
 export async function hypothesisDetail(id: string) {
   const h = await db.hypothesis.findUnique({ where: { id }, include: { site: { select: { id: true, domain: true } }, bundle: { select: { id: true, title: true, slug: true } } } });
   if (!h) return null;
-  const history = await db.auditLog.findMany({ where: { entity: "Hypothesis", entityId: id }, orderBy: { at: "desc" }, take: 100 });
-  return { ...h, history };
+  const [history, planItems] = await Promise.all([
+    db.auditLog.findMany({ where: { entity: "Hypothesis", entityId: id }, orderBy: { at: "desc" }, take: 100 }),
+    db.planItem.findMany({ where: { hypothesisId: id }, orderBy: { month: "asc" } }),
+  ]);
+  return { ...h, history, planItems };
 }
 
 /** The page list: by tab, scope, bundle (a bundle's hypotheses are its own plus those of its sites), one site or a list of sites. */

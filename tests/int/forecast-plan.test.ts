@@ -108,4 +108,24 @@ describe("months ahead (ADR 0020)", () => {
     expect(f.current!.upcomingDeals).toBeCloseTo((300 * 6) / 30, 6);
     expect(f.current!.revenue).toBeCloseTo(128 + 64 * 9 + 60, 6); // $128 actual + $64 × 9 days ahead (today included) + the new deal
   });
+
+  it("a cost cut from a hypothesis, every month from next one up to «по»; a repeating line that already runs keeps its start when edited; the base ignores lines and direct deals", async () => {
+    const hyp = await db.hypothesis.create({ data: { source: "MANUAL", status: "TESTING", scope: "site", siteId: "s1", title: "Срезать дорогой источник", hypothesis: "Если отключить источник, то расход упадёт", impactMonth: "400", metric: "cost_per_1k" } });
+    const id = await savePlanItem(db, { month: "2026-10", kind: "SAVING", title: "Срезать источник", amount: "400", recurring: true, untilMonth: "2026-11", hypothesisId: hyp.id }, undefined, TODAY);
+    await expect(savePlanItem(db, { month: "2026-11", kind: "SAVING", title: "x", amount: "1", recurring: true, untilMonth: "2026-10" }, undefined, TODAY)).rejects.toMatchObject({ field: "untilMonth" });
+    await expect(savePlanItem(db, { month: "2026-11", kind: "SAVING", title: "x", amount: "1", hypothesisId: "nope" }, undefined, TODAY)).rejects.toMatchObject({ field: "hypothesisId" });
+    let f = await monthsForecast(TODAY, 7, 3);
+    const [oct, nov, dec] = f.months;
+    expect([oct.itemsSaving, nov.itemsSaving, dec.itemsSaving]).toEqual([400, 400, 0]);
+    expect(oct.cost).toBeCloseTo(oct.trafficCost - 400, 6);
+    expect(oct.baseMargin).toBeCloseTo(oct.rotation - oct.trafficCost - oct.opex, 6); // no saving, no direct deal in the base
+    expect(oct.margin - oct.baseMargin).toBeCloseTo(oct.deals + 400, 6);
+    expect(f.items[0]).toMatchObject({ hypothesisId: hyp.id, hypothesis: "Срезать дорогой источник", months: ["2026-10", "2026-11"] });
+    expect((await db.planItem.findMany({ where: { hypothesisId: hyp.id } })).length).toBe(1);
+    // A month later the line still runs; editing the amount keeps its October start.
+    await savePlanItem(db, { month: "2026-10", kind: "SAVING", title: "Срезать источник", amount: "500", recurring: true, untilMonth: "2026-11", hypothesisId: hyp.id }, id, "2026-11-05");
+    f = await monthsForecast(TODAY, 7, 3);
+    expect(f.months[1].itemsSaving).toBe(500);
+    await expect(savePlanItem(db, { month: "2026-09", kind: "SAVING", title: "Срезать источник", amount: "500" }, id, "2026-11-05")).rejects.toMatchObject({ field: "month" });
+  });
 });

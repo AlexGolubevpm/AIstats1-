@@ -1,7 +1,7 @@
 // Forecast page: the month so far and its projection at the current pace (docs/product/03-pages.md#forecast).
 import { Prisma } from "@/generated/prisma/client";
 import { db } from "@/server/db";
-import { dealMonthAmount, projectMonth, projectMonths, shiftMonth, type Horizon, type Lookback, type PlanDeal, type PlanMonthRow, type Projection } from "@/lib/forecast";
+import { dealMonthAmount, planItemMonths, projectMonth, projectMonths, shiftMonth, type PlanItemKind, type Horizon, type Lookback, type PlanDeal, type PlanMonthRow, type Projection } from "@/lib/forecast";
 import { readForecastPlan, type ForecastPlan } from "@/server/services/forecast-plan";
 import { daysInMonth, flatPerDay, type BillingPeriod, type PaymentBasis } from "@/server/domain/deals";
 import { D, iso } from "./common";
@@ -81,13 +81,24 @@ export async function monthForecast(today = iso(new Date()), lookback: Lookback 
   return { projection, sites, prev, knownDeals, pace: { rotation: rot.revenue, cost: rot.cost, daysUsed: rot.daysUsed } };
 }
 
-export interface CurrentMonthRow { month: string; revenue: number; cost: number; opex: number; margin: number; romi: number | null; actualRevenue: number; upcomingDeals: number; itemsRevenue: number; itemsCost: number; cumMargin: number }
+export interface CurrentMonthRow {
+  month: string; revenue: number; cost: number; opex: number; margin: number; romi: number | null; actualRevenue: number; upcomingDeals: number;
+  itemsRevenue: number; itemsCost: number; itemsSaving: number; cumMargin: number;
+  /** The month as /forecast projects it (the deals running now are inside its pace), without new deals and planned lines. */
+  baseMargin: number;
+}
+export interface PlanItemRow {
+  id: string; month: string; recurring: boolean; untilMonth: string | null; kind: PlanItemKind; title: string; amount: number;
+  siteId: string | null; domain: string | null; hypothesisId: string | null; hypothesis: string | null; note: string | null;
+  /** Months of this view the line applies to. */
+  months: string[];
+}
 export interface MonthsForecast {
   plan: ForecastPlan; horizon: Horizon; lookback: Lookback;
   pace: MonthForecast["pace"];
   current: CurrentMonthRow | null;
   months: PlanMonthRow[];
-  items: { id: string; month: string; kind: "REVENUE" | "COST"; title: string; amount: number; siteId: string | null; domain: string | null; note: string | null }[];
+  items: PlanItemRow[];
 }
 
 /**
@@ -109,7 +120,9 @@ export async function monthsForecast(today = iso(new Date()), lookback: Lookback
       include: { sites: { include: { site: { select: { domain: true } } } } } }),
     db.$queryRaw<Raw[]>`SELECT to_char(month, 'YYYY-MM') m, SUM(amount)::float8 v FROM "OpexEntry"
       WHERE month <= ${D(`${endMonth}-01`)} AND ("siteId" IS NULL OR "siteId" IN ${LIVE}) GROUP BY 1`,
-    db.planItem.findMany({ where: { month: { gte: D(`${cur}-01`), lte: D(`${endMonth}-01`) } }, include: { site: { select: { domain: true } } }, orderBy: [{ month: "asc" }, { createdAt: "asc" }] }),
+    // Lines starting in the view, and repeating ones that started earlier and still run.
+    db.planItem.findMany({ where: { month: { lte: D(`${endMonth}-01`) }, OR: [{ month: { gte: D(`${cur}-01`) } }, { recurring: true, OR: [{ untilMonth: null }, { untilMonth: { gte: D(`${cur}-01`) } }] }] },
+      include: { site: { select: { domain: true } }, hypothesis: { select: { title: true } } }, orderBy: [{ month: "asc" }, { createdAt: "asc" }] }),
   ]);
   // Per-load and CPM deals have no fixed sum: their recent accruals per day, else price × their sites' loads (or impressions) per day.
   const ids = dealRows.map((d) => d.id);
@@ -131,21 +144,27 @@ export async function monthsForecast(today = iso(new Date()), lookback: Lookback
     return { ...base, perDay: (Number(d.price) * volume) / 1000, estimate: true };
   });
   const opexByMonth = Object.fromEntries(opexRows.map((r) => [String(r.m), n(r.v)]));
-  const items = itemRows.map((x) => ({ id: x.id, month: iso(x.month).slice(0, 7), kind: x.kind as "REVENUE" | "COST", title: x.title, amount: Number(x.amount), siteId: x.siteId, domain: x.site?.domain ?? null, note: x.note }));
+  const viewMonths = [cur, ...months];
+  const items: PlanItemRow[] = itemRows.map((x) => {
+    const row = { month: iso(x.month).slice(0, 7), recurring: x.recurring, until: x.untilMonth ? iso(x.untilMonth).slice(0, 7) : null };
+    return { id: x.id, month: row.month, recurring: x.recurring, untilMonth: row.until, kind: x.kind as PlanItemKind, title: x.title, amount: Number(x.amount), siteId: x.siteId,
+      domain: x.site?.domain ?? null, hypothesisId: x.hypothesisId, hypothesis: x.hypothesis?.title ?? null, note: x.note, months: planItemMonths(row, viewMonths) };
+  });
+  const perMonth = items.flatMap((x) => x.months.map((month) => ({ month, kind: x.kind, amount: x.amount })));
+  const sumOf = (month: string, kind: PlanItemKind) => perMonth.filter((x) => x.month === month && x.kind === kind).reduce((a, x) => a + x.amount, 0);
 
   // This month: the /forecast projection already holds the running deals (in its pace); add the ones that start after today and this month's lines.
   const p = f.projection.projected;
   let current: CurrentMonthRow | null = null;
   if (p) {
     const upcoming = deals.filter((d) => d.startsAt > today && (d.status === "ACTIVE" || plan.includeDrafts)).reduce((a, d) => a + dealMonthAmount(d, cur), 0);
-    const itemsRevenue = items.filter((x) => x.month === cur && x.kind === "REVENUE").reduce((a, x) => a + x.amount, 0);
-    const itemsCost = items.filter((x) => x.month === cur && x.kind === "COST").reduce((a, x) => a + x.amount, 0);
-    const revenue = p.revenue + upcoming + itemsRevenue, cost = p.cost + itemsCost, margin = revenue - cost - p.opex;
+    const itemsRevenue = sumOf(cur, "REVENUE"), itemsCost = sumOf(cur, "COST"), itemsSaving = sumOf(cur, "SAVING");
+    const revenue = p.revenue + upcoming + itemsRevenue, cost = Math.max(0, p.cost + itemsCost - itemsSaving), margin = revenue - cost - p.opex;
     current = { month: cur, revenue, cost, opex: p.opex, margin, romi: cost ? ((revenue - cost) / cost) * 100 : null, actualRevenue: f.projection.actual.revenue,
-      upcomingDeals: upcoming, itemsRevenue, itemsCost, cumMargin: margin };
+      upcomingDeals: upcoming, itemsRevenue, itemsCost, itemsSaving, cumMargin: margin, baseMargin: p.margin };
   }
   const rows = f.pace.daysUsed
-    ? projectMonths({ months, current: cur, rate: { rotation: f.pace.rotation, cost: f.pace.cost }, scenario: plan, deals, opexByMonth, items, cumStart: current?.margin ?? 0 })
+    ? projectMonths({ months, current: cur, rate: { rotation: f.pace.rotation, cost: f.pace.cost }, scenario: plan, deals, opexByMonth, items: perMonth, cumStart: current?.margin ?? 0, cumBaseStart: current?.baseMargin ?? 0 })
     : [];
   return { plan, horizon: h, lookback, pace: f.pace, current, months: rows, items };
 }

@@ -151,8 +151,8 @@ export async function getForecast(a: { horizon?: number; lookback?: number }) {
   return {
     scenario: { horizon: f.horizon, revenue_growth_pct: f.plan.revenueGrowth * 100, cost_growth_pct: f.plan.costGrowth * 100, include_drafts: f.plan.includeDrafts },
     pace_per_day: { rotation: r(f.pace.rotation), traffic_cost: r(f.pace.cost), days_used: f.pace.daysUsed },
-    current: f.current && { month: f.current.month, revenue: r(f.current.revenue), cost: r(f.current.cost), opex: r(f.current.opex), margin: r(f.current.margin), actual_revenue: r(f.current.actualRevenue) },
-    months: f.months.map((m) => ({ month: m.month, rotation: r(m.rotation), fix_deals: r(m.deals), draft_deals: r(m.draftDeals), plan_revenue: r(m.itemsRevenue), plan_cost: r(m.itemsCost),
+    current: f.current && { month: f.current.month, revenue: r(f.current.revenue), cost: r(f.current.cost), opex: r(f.current.opex), margin: r(f.current.margin), base_margin: r(f.current.baseMargin), actual_revenue: r(f.current.actualRevenue) },
+    months: f.months.map((m) => ({ month: m.month, rotation: r(m.rotation), fix_deals: r(m.deals), draft_deals: r(m.draftDeals), plan_revenue: r(m.itemsRevenue), plan_cost: r(m.itemsCost), plan_saving: r(m.itemsSaving), base_margin: r(m.baseMargin),
       revenue: r(m.revenue), traffic_cost: r(m.trafficCost), cost: r(m.cost), opex: r(m.opex), opex_carried: m.opexCarried, margin: r(m.margin), romi: m.romi == null ? null : r(m.romi), cum_margin: r(m.cumMargin),
       deals: m.dealLines.map((d) => ({ id: d.id, title: d.title, sites: d.sites, amount: r(d.amount), draft: d.draft, estimate: d.estimate })) })),
   };

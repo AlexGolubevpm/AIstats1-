@@ -448,22 +448,29 @@ model OpexEntry {
 enum PlanItemKind {
   REVENUE
   COST
+  SAVING // a cost cut: lowers the month's cost (e.g. a hypothesis that trims a traffic source)
 }
 
 /// A planned line of a future month on /forecast «На месяцы вперёд»: a new site's revenue, a traffic
 /// purchase… Only the plan reads it; nothing is accrued to the daily facts.
 model PlanItem {
-  id        String       @id @default(cuid())
-  month     DateTime     @db.Date // first day of the month
-  kind      PlanItemKind
-  title     String
-  amount    Decimal      @db.Decimal(12, 2)
-  siteId    String?
-  note      String?
-  createdAt DateTime     @default(now())
-  site      Site?        @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  id           String       @id @default(cuid())
+  month        DateTime     @db.Date // first day of the first month it applies to
+  /// Repeats every month from `month`: up to `untilMonth` (inclusive) or, without it, to the end of any horizon.
+  recurring    Boolean      @default(false)
+  untilMonth   DateTime?    @db.Date
+  kind         PlanItemKind
+  title        String
+  amount       Decimal      @db.Decimal(12, 2) // per month
+  siteId       String?
+  hypothesisId String?
+  note         String?
+  createdAt    DateTime     @default(now())
+  site         Site?        @relation(fields: [siteId], references: [id], onDelete: Cascade)
+  hypothesis   Hypothesis?  @relation(fields: [hypothesisId], references: [id], onDelete: SetNull)
 
   @@index([month])
+  @@index([hypothesisId])
 }
 
 // ---------- Fixed deals ----------
@@ -768,6 +775,7 @@ model Hypothesis {
   createdAt   DateTime         @default(now())
   site        Site?            @relation(fields: [siteId], references: [id], onDelete: SetNull)
   bundle      Bundle?          @relation(fields: [bundleId], references: [id], onDelete: SetNull)
+  planItems   PlanItem[]
 
   @@unique([ruleKey, objectKey])
   @@index([status, level])
