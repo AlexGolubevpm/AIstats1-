@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { dealActiveDays, dealLine, dealMonthAmount, parseHorizon, parseLookback, planItemMonths, projectMonth, projectMonths, shiftMonth, type PlanDeal } from "@/lib/forecast";
+import { applyWhatIfs, whatIfEffect, dealActiveDays, dealLine, dealMonthAmount, parseHorizon, parseLookback, planItemMonths, projectMonth, projectMonths, shiftMonth, type PlanDeal } from "@/lib/forecast";
 
 const day = (date: string, revenue: number | null, cost = 0) => ({ date, revenue, cost });
 
@@ -147,6 +147,21 @@ describe("the month chain (ADR 0020, 2026-10-30)", () => {
       overrides: { "2027-01": { [dealLine("p")]: 0 } } });
     expect(after[3].dealLines.find((x) => x.id === "p")).toMatchObject({ amount: 0, edited: false, source: "carried" });
     expect(after[3].deals).toBe(0);
+  });
+});
+
+describe("«Что если»", () => {
+  it("a cost cut is current − target, a revenue line target − current; only active changes count, from their month on", () => {
+    expect(whatIfEffect({ kind: "OPEX", current: 7000, target: 3000 })).toBe(4000);
+    expect(whatIfEffect({ kind: "REVENUE", current: 1000, target: 1500 })).toBe(500);
+    expect(whatIfEffect({ kind: "TRAFFIC_SOURCE", current: 100, target: 300 })).toBe(-200);
+    const rows = applyWhatIfs([{ month: "2026-11", margin: 1000 }, { month: "2026-12", margin: 1000 }, { month: "2027-01", margin: -500 }], [
+      { id: "h", kind: "OPEX", current: 7000, target: 3000, fromMonth: "2026-12", active: true },
+      { id: "x", kind: "REVENUE", current: 0, target: 999, fromMonth: "2026-11", active: false },
+    ]);
+    expect(rows.map((r) => r.effect)).toEqual([0, 4000, 4000]);
+    expect(rows.map((r) => r.marginWith)).toEqual([1000, 5000, 3500]);
+    expect([rows[2].cumMargin, rows[2].cumWith]).toEqual([1500, 9500]);
   });
 });
 

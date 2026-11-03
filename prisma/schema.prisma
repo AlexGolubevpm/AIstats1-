@@ -487,6 +487,30 @@ model PlanMonthOverride {
   @@unique([month, line])
 }
 
+enum WhatIfKind {
+  OPEX // an operating expense category (ref = HOSTING, SALARY…)
+  TRAFFIC_SOURCE // a traffic source's cost (ref = source slug)
+  TRAFFIC_COST // all traffic cost
+  REVENUE // a revenue line raised
+  OTHER_COST
+}
+
+/// «Что если» on /forecast (ADR 0020, 2026-11-03): an optimisation to weigh — «хостинг $7 000 → $3 000» — shown
+/// next to the plan, never in the plan or the facts unless moved there (then planItemId points at the plan line).
+model WhatIf {
+  id         String     @id @default(cuid())
+  title      String
+  kind       WhatIfKind
+  ref        String?
+  current    Decimal    @db.Decimal(12, 2) // per month, now
+  target     Decimal    @db.Decimal(12, 2) // per month, after the change
+  fromMonth  DateTime   @db.Date
+  active     Boolean    @default(true)
+  planItemId String?
+  note       String?
+  createdAt  DateTime   @default(now())
+}
+
 // ---------- Fixed deals ----------
 
 model Advertiser {

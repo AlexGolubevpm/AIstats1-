@@ -9,7 +9,7 @@ import { cn } from "@/lib/cn";
 import { HORIZONS, LOOKBACKS, parseHorizon, parseLookback, shiftMonth } from "@/lib/forecast";
 import { db } from "@/server/db";
 import { dealFormOptions } from "@/server/queries/deal-form";
-import { monthForecast, monthsForecast } from "@/server/queries/forecast";
+import { monthForecast, monthsForecast, whatIfOptions } from "@/server/queries/forecast";
 import { MonthsView, monthLabel } from "./months";
 
 export default async function Forecast({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
@@ -47,6 +47,7 @@ export default async function Forecast({ searchParams }: { searchParams: Promise
       db.opexEntry.findFirst({ where: { month: { lt: selDate } }, orderBy: { month: "desc" }, select: { month: true } }),
     ]) : [[], null];
     const opexFrom = !opex.length && carried ? carried.month.toISOString().slice(0, 7) : null;
+    const [whatIfs, whatIfOpts] = await Promise.all([db.whatIf.findMany({ orderBy: { createdAt: "asc" } }), whatIfOptions(today, mf.monthRate.cost)]);
     return (
       <>
         <PageHeader title="Прогноз" sub={`План на ${mf.horizon} мес. вперёд: темп ротации и расхода, фикс-дилы по датам, опер. расходы и плановые статьи`}
@@ -57,6 +58,7 @@ export default async function Forecast({ searchParams }: { searchParams: Promise
           </div>} />
         {views(true)}
         <MonthsView f={mf} sites={sites} dealOpts={{ sites: opts.sites, advertisers: opts.advertisers, placements: opts.placements }} href={href0}
+          whatIfOptions={whatIfOpts} whatIfs={whatIfs.map((w) => ({ id: w.id, title: w.title, kind: w.kind, current: Number(w.current), target: Number(w.target), fromMonth: w.fromMonth.toISOString().slice(0, 7), active: w.active, inPlan: Boolean(w.planItemId) }))}
           selected={selected} opexFrom={opexFrom} opex={opex.map((e) => ({ id: e.id, title: e.title, category: e.category, amount: Number(e.amount), siteId: e.siteId, note: e.note }))} />
       </>
     );

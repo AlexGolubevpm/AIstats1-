@@ -8,6 +8,10 @@ import { fmtMoney } from "@/lib/format";
 import type { MonthsForecast } from "@/server/queries/forecast";
 import { PLAN_ITEM_LABEL } from "@/server/services/forecast-plan";
 import { DeleteOpex, OpexButton } from "../finance/opex";
+import { applyWhatIfs, whatIfEffect, type WhatIfKind } from "@/lib/forecast";
+import type { WhatIfOption } from "@/server/queries/forecast";
+import { WHAT_IF_LABEL } from "@/server/services/what-if";
+import { WhatIfButton, WhatIfControls } from "./what-if";
 import { CopyOpex, DeletePlanItem, PlanItemButton, PlanMonthForm, ResetMonth, ScenarioForm, type MonthLine } from "./plan";
 
 const MONTHS = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
@@ -18,12 +22,15 @@ const money = (v: number) => fmtMoney(v);
 type DealOpts = Parameters<typeof DealFormButton>[0];
 
 /** /forecast «На месяцы вперёд»: this month as projected, then the horizon month by month (ADR 0020). */
+export interface WhatIfRow { id: string; title: string; kind: WhatIfKind; current: number; target: number; fromMonth: string; active: boolean; inPlan: boolean }
+
 export interface MonthOpex { id: string; title: string; category: string; amount: number; siteId: string | null; note: string | null }
 
-export function MonthsView({ f, sites, dealOpts, selected, opex, opexFrom, href }: {
+export function MonthsView({ f, sites, dealOpts, selected, opex, opexFrom, href, whatIfs, whatIfOptions }: {
   f: MonthsForecast; sites: { id: string; domain: string }[]; dealOpts: Pick<DealOpts, "sites" | "advertisers" | "placements">;
   /** The month the panel opens; its own opex entries; the month its opex is carried from when it has none. */
   selected: string | null; opex: MonthOpex[]; opexFrom: string | null; href: (over: Record<string, string | undefined>) => string;
+  whatIfs: WhatIfRow[]; whatIfOptions: WhatIfOption[];
 }) {
   const { current: c, months } = f;
   const all = [...(c ? [{ month: c.month, revenue: c.revenue, cost: c.cost, opex: c.opex, margin: c.margin, cumMargin: c.cumMargin }] : []), ...months];
@@ -49,6 +56,8 @@ export function MonthsView({ f, sites, dealOpts, selected, opex, opexFrom, href 
       sub: `${d.sites}${d.source === "contract" ? (d.estimate ? " · оценка по загрузкам сайтов" : " · по договору") : ` · как ${prevLabel}`}`,
       link: { href: `/deals/${d.id}?copy=${sel.month}`, label: "копия на новый срок" } })),
   ] : [];
+  const wi = applyWhatIfs(all.map((r) => ({ month: r.month, margin: r.margin })), whatIfs);
+  const wiTotal = wi.reduce((a, r) => a + r.effect, 0);
   const growth = (v: number) => (v ? `${v > 0 ? "+" : ""}${Math.round(v * 1000) / 10}%/мес` : "без роста");
   const th = "h-8 text-right font-medium";
 
@@ -120,6 +129,51 @@ export function MonthsView({ f, sites, dealOpts, selected, opex, opexFrom, href 
           </table>
         </div>
         <p className="mt-3 text-xs text-faint">Клик по месяцу открывает его ниже: по умолчанию месяц — как предыдущий, правки переходят в следующие (точка — месяц поправлен). Будущие месяцы — прогноз. «Маржа базы» — только ASG по темпу последних дней, без фикс-дилов и статей: что будет, если ничего нового не делать. Статьи — рост выручки − новые расходы + экономия. * опер. расходы на месяц не внесены — повторён последний месяц с записями. ROMI — на расход.</p>
+      </Section>
+
+      <Section title="Что если" sub="Песочница оптимизаций: «хостинг $7 000 → $3 000» — и сразу видно, какой станет маржа. В план и в статистику не попадает; понравилось — «В план», и вариант станет статьёй плана"
+        actions={<WhatIfButton options={whatIfOptions} defaultMonth={next} minMonth={c?.month ?? next} />}>
+        <div data-testid="what-if">
+          {whatIfs.length === 0 ? <p className="py-2 text-sm text-muted">Вариантов пока нет — добавьте, что можно сократить или поднять</p> : (
+            <ul className="num -mx-5 divide-y divide-border/60 text-[13px]">
+              {whatIfs.map((w) => {
+                const e = whatIfEffect(w);
+                return (
+                  <li key={w.id} className={cn("flex flex-wrap items-center gap-x-3 gap-y-1 px-5 py-2", !w.active && "text-muted")} data-what-if={w.id}>
+                    <span className="font-medium">{w.title}</span>
+                    <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">{WHAT_IF_LABEL[w.kind]}</span>
+                    <span>{money(w.current)} → {money(w.target)}/мес</span>
+                    <span className="text-xs text-muted">с {monthLabel(w.fromMonth)}</span>
+                    {w.inPlan && <span className="rounded bg-accent-soft px-1.5 py-0.5 text-[11px] text-accent">в плане</span>}
+                    {!w.active && !w.inPlan && <span className="text-[11px]">выключен</span>}
+                    <span className={cn("ml-auto font-medium", e >= 0 ? "text-positive" : "text-negative")}>{e >= 0 ? "+" : "−"}{money(Math.abs(e))}/мес</span>
+                    <WhatIfControls id={w.id} active={w.active} inPlan={w.inPlan} />
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {whatIfs.some((w) => w.active) && (
+            <>
+              <p className="mt-3 text-sm">Если сделать включённые варианты: <span className={cn("num font-semibold", wiTotal >= 0 ? "text-positive" : "text-negative")}>{wiTotal >= 0 ? "+" : "−"}{money(Math.abs(wiTotal))}</span> маржи за {all.length} мес., к концу — <span className="num font-semibold">{money(wi[wi.length - 1]?.cumWith ?? 0)}</span> вместо {money(wi[wi.length - 1]?.cumMargin ?? 0)}</p>
+              <div className="-mx-5 mt-2 overflow-x-auto">
+                <table className="num w-full text-[12px]" data-testid="what-if-table">
+                  <thead><tr className="border-b border-border text-xs text-muted">
+                    <th className="h-8 pl-5 text-left font-medium">Месяц</th><th className={th}>Маржа плана</th><th className={th}>Эффект</th><th className={th}>Маржа «если»</th>
+                    <th className={th}>Накоплено план</th><th className={cn(th, "pr-5")}>Накоплено «если»</th></tr></thead>
+                  <tbody>{wi.map((r) => (
+                    <tr key={r.month} className="h-8 border-b border-border/60" data-month={r.month}>
+                      <td className="pl-5">{monthLabel(r.month)}</td><td className="text-right text-muted">{money(r.margin)}</td>
+                      <td className={cn("text-right", r.effect > 0 ? "text-positive" : r.effect < 0 ? "text-negative" : "text-faint")}>{r.effect ? `${r.effect > 0 ? "+" : "−"}${money(Math.abs(r.effect))}` : "—"}</td>
+                      <td className={cn("text-right font-medium", r.marginWith < 0 && "text-negative")}>{money(r.marginWith)}</td>
+                      <td className="text-right text-muted">{money(r.cumMargin)}</td><td className="pr-5 text-right font-medium">{money(r.cumWith)}</td>
+                    </tr>
+                  ))}</tbody>
+                </table>
+              </div>
+            </>
+          )}
+        </div>
       </Section>
 
       {sel && (

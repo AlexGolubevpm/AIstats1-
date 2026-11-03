@@ -4,6 +4,7 @@ import { parseHorizon } from "@/lib/forecast";
 import { db } from "@/server/db";
 import { requireSession } from "@/server/session";
 import { copyOpexToMonth, deletePlanItem, resetPlanMonth, saveForecastPlan, savePlanItem, savePlanMonth } from "@/server/services/forecast-plan";
+import { deleteWhatIf, saveWhatIf, toggleWhatIf, whatIfToPlan } from "@/server/services/what-if";
 import { guarded, money, opt, str, type ActionResult } from "./result";
 
 const touched = () => revalidatePath("/forecast");
@@ -65,3 +66,28 @@ export async function copyOpexAction(_: ActionResult, f: FormData): Promise<Acti
     return { ok: true, message: `Скопировано ${r.count} ${r.count === 1 ? "расход" : "расходов"} из ${r.from}` };
   });
 }
+
+export async function saveWhatIfAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    await saveWhatIf(db, { title: str(f, "title"), kind: str(f, "kind"), ref: opt(f, "ref"), current: money(f, "current"), target: money(f, "target"), fromMonth: str(f, "fromMonth") }, opt(f, "id") ?? undefined);
+    touched();
+    return { ok: true, message: "Вариант посчитан — в план не попал" };
+  });
+}
+
+export async function toggleWhatIfAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => { await toggleWhatIf(db, str(f, "id"), str(f, "active") === "1"); touched(); return { ok: true, message: str(f, "active") === "1" ? "Вариант включён" : "Вариант выключен" }; });
+}
+
+export async function deleteWhatIfAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => { await deleteWhatIf(db, str(f, "id")); touched(); return { ok: true, message: "Вариант удалён" }; });
+}
+
+export async function whatIfToPlanAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => { await whatIfToPlan(db, str(f, "id")); touched(); return { ok: true, message: "Перенесено в план как статья — каждый месяц" }; });
+}
+

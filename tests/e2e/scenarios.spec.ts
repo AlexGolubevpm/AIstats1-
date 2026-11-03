@@ -596,3 +596,26 @@ test("tasks: add a card in «Бэклог», fill it like a Notion page, drag it
   await page.goto("/settings/team");
   await expect(page.getByTestId("team").locator("input[name=name]")).toHaveValue("Даниил");
 });
+
+test("what if: a cost cut weighed next to the plan — the margin «если» shows the effect, the plan stays as is until «В план»", async ({ page }) => {
+  await login(page, "/forecast?view=months&h=3");
+  const block = page.getByTestId("what-if");
+  await page.getByRole("button", { name: "Добавить вариант" }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByTestId("what-if-pick").selectOption({ index: 1 }); // the first thing that costs money now
+  await expect(dialog.locator("input[name=current]")).not.toHaveValue("");
+  await dialog.locator("input[name=title]").fill("E2E срезать расход");
+  await dialog.locator("input[name=target]").fill("0");
+  await dialog.getByRole("button", { name: "Посчитать" }).click();
+  await expect(page.getByText(/Вариант посчитан/)).toBeVisible();
+  await expect(block.locator("[data-what-if]", { hasText: "E2E срезать расход" })).toContainText("+$");
+  await expect(page.getByTestId("what-if-table")).toBeVisible();
+  await expect(page.getByText(/Если сделать включённые варианты/)).toBeVisible();
+  // Switched off it stops counting; «В план» turns it into a planned line.
+  await block.locator("[data-what-if]", { hasText: "E2E срезать расход" }).getByRole("button", { name: "Выключить" }).click();
+  await expect(page.getByTestId("what-if-table")).toHaveCount(0);
+  await block.locator("[data-what-if]", { hasText: "E2E срезать расход" }).getByRole("button", { name: "В план" }).click();
+  await expect(page.getByText(/Перенесено в план/)).toBeVisible();
+  await expect(block.locator("[data-what-if]", { hasText: "E2E срезать расход" })).toContainText("в плане");
+  await expect(page.locator("[data-item]", { hasText: "E2E срезать расход" })).toBeVisible(); // now a line of the month panel
+});
