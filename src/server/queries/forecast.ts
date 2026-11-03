@@ -182,3 +182,27 @@ export async function monthsForecast(today = iso(new Date()), lookback: Lookback
     : [];
   return { plan, horizon: h, lookback, pace: f.pace, monthRate: f.monthRate, current, months: rows, items };
 }
+
+export interface WhatIfOption { kind: "OPEX" | "TRAFFIC_SOURCE" | "TRAFFIC_COST"; ref: string | null; label: string; current: number }
+
+/**
+ * What «Что если» offers to change, with what it costs now per month: operating expense categories (the last month that
+ * has entries, up to next month — what the plan carries), each traffic source over the last 30 days, all traffic cost
+ * at this month's rate × 30.
+ */
+export async function whatIfOptions(today: string, trafficPerDay: number): Promise<WhatIfOption[]> {
+  const next = `${shiftMonth(monthOf(today), 1)}-01`;
+  const last = await db.opexEntry.findFirst({ where: { month: { lte: D(next) } }, orderBy: { month: "desc" }, select: { month: true } });
+  const [opex, sources] = await Promise.all([
+    last ? db.opexEntry.groupBy({ by: ["category"], _sum: { amount: true }, where: { month: last.month } }) : Promise.resolve([]),
+    db.$queryRaw<Raw[]>`SELECT c."sourceSlug" slug, COALESCE(cs.title, c."sourceSlug") title, SUM(c.cost)::float8 cost FROM "FactCost" c LEFT JOIN "CostSource" cs ON cs.slug = c."sourceSlug"
+      WHERE c.date BETWEEN ${D(addDays(today, -30))} AND ${D(addDays(today, -1))} GROUP BY 1, 2 HAVING SUM(c.cost) > 0 ORDER BY 3 DESC`,
+  ]);
+  const { OPEX_LABEL } = await import("@/server/services/opex");
+  return [
+    ...opex.map((o) => ({ kind: "OPEX" as const, ref: o.category, label: `Опер.: ${OPEX_LABEL[o.category as keyof typeof OPEX_LABEL] ?? o.category}`, current: Number(o._sum.amount ?? 0) })),
+    ...sources.map((s) => ({ kind: "TRAFFIC_SOURCE" as const, ref: String(s.slug), label: `Трафик: ${String(s.title)}`, current: Math.round(n(s.cost) * 100) / 100 })),
+    { kind: "TRAFFIC_COST" as const, ref: null, label: "Весь расход на трафик", current: Math.round(trafficPerDay * 30 * 100) / 100 },
+  ];
+}
+

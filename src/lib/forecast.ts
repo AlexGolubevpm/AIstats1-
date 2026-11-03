@@ -183,3 +183,25 @@ export function projectMonths(i: {
   });
 }
 
+
+// ---------- «Что если» (ADR 0020, 2026-11-03) ----------
+
+export type WhatIfKind = "OPEX" | "TRAFFIC_SOURCE" | "TRAFFIC_COST" | "REVENUE" | "OTHER_COST";
+export interface WhatIfInput { id: string; kind: WhatIfKind; current: number; target: number; fromMonth: string; active: boolean }
+
+/** What a change brings a month: a cost cut is current − target, a revenue line target − current (negative = it costs). */
+export const whatIfEffect = (w: Pick<WhatIfInput, "kind" | "current" | "target">) => (w.kind === "REVENUE" ? w.target - w.current : w.current - w.target);
+
+/**
+ * The plan's margin next to the margin «если сделать»: every active change counts from its month on. Nothing here
+ * touches the plan — it is the same rows with the effects added, to weigh what is worth optimising.
+ */
+export function applyWhatIfs(rows: { month: string; margin: number }[], items: WhatIfInput[], cumStart = 0) {
+  let cum = cumStart, cumWith = cumStart;
+  return rows.map((r) => {
+    const lines = items.filter((w) => w.active && w.fromMonth <= r.month).map((w) => ({ id: w.id, effect: whatIfEffect(w) }));
+    const effect = lines.reduce((a, l) => a + l.effect, 0);
+    cum += r.margin; cumWith += r.margin + effect;
+    return { month: r.month, margin: r.margin, effect, marginWith: r.margin + effect, cumMargin: cum, cumWith, lines };
+  });
+}

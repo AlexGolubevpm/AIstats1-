@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { D1, D2, buildNetwork } from "@tests/factories/network";
 import { RuleError } from "@/server/domain/errors";
-import { monthsForecast } from "@/server/queries/forecast";
+import { monthsForecast, whatIfOptions } from "@/server/queries/forecast";
+import { saveWhatIf, whatIfToPlan } from "@/server/services/what-if";
 import { copyOpexToMonth, deletePlanItem, readForecastPlan, resetPlanMonth, saveForecastPlan, savePlanItem, savePlanMonth } from "@/server/services/forecast-plan";
 import { saveOpex } from "@/server/services/opex";
 import { resetDb, testDb } from "./helpers";
@@ -158,5 +159,24 @@ describe("months ahead (ADR 0020)", () => {
     await expect(copyOpexToMonth(db, "2026-11", TODAY)).rejects.toMatchObject({ field: "month" });
     const [oct, nov] = (await monthsForecast(TODAY, 7, 3)).months;
     expect([oct.opex, oct.opexCarried, nov.opex, nov.opexCarried]).toEqual([1500, true, 1500, false]);
+  });
+
+  it("«Что если»: options carry what things cost now; a variant never touches the plan until «В план», which makes it a monthly line and stops it counting", async () => {
+    await saveOpex(db, { month: "2026-10", title: "Servers", category: "HOSTING", amount: "7000" });
+    const opts = await whatIfOptions(TODAY, 51);
+    expect(opts.find((o) => o.kind === "OPEX")).toMatchObject({ ref: "HOSTING", current: 7000 });
+    expect(opts.find((o) => o.kind === "TRAFFIC_SOURCE")).toMatchObject({ ref: "tubecrown" });
+    expect(opts.find((o) => o.kind === "TRAFFIC_COST")).toMatchObject({ current: 51 * 30 });
+    await expect(saveWhatIf(db, { title: "", kind: "OPEX", ref: "HOSTING", current: "7000", target: "7000", fromMonth: "2026-11" })).rejects.toMatchObject({ field: "target" });
+    const id = await saveWhatIf(db, { title: "", kind: "OPEX", ref: "HOSTING", current: "7000", target: "3000", fromMonth: "2026-11" });
+    expect((await db.whatIf.findUniqueOrThrow({ where: { id } })).title).toBe("Опер. расход · HOSTING");
+    const before = await monthsForecast(TODAY, 7, 3);
+    expect(before.items).toEqual([]); // the plan does not see it
+    const planItemId = await whatIfToPlan(db, id, TODAY);
+    expect(await db.planItem.findUniqueOrThrow({ where: { id: planItemId } })).toMatchObject({ kind: "SAVING", recurring: true });
+    expect(await db.whatIf.findUniqueOrThrow({ where: { id } })).toMatchObject({ active: false, planItemId });
+    const after = await monthsForecast(TODAY, 7, 3);
+    expect(after.months[1].itemsSaving).toBe(4000);
+    await expect(whatIfToPlan(db, id, TODAY)).rejects.toBeInstanceOf(RuleError);
   });
 });
