@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input, Select, Textarea } from "@/components/ui/input";
 import { Sheet } from "@/components/ui/sheet";
 import { FORMAT_LABEL } from "@/components/pages/columns";
+import { taskFromHypothesisAction } from "@/server/actions/tasks";
 import { createHypothesisAction, hypothesisFromAlertAction, hypothesisStatusAction, ownHypothesisStatusAction, updateHypothesisAction } from "@/server/actions/hypotheses";
 import { METRIC_LABEL, METRICS, OWN_STATUS_LABEL, OWN_STATUSES } from "@/server/domain/hypotheses";
 
@@ -120,3 +121,13 @@ export function ToHypothesisButton({ alertId, exists }: { alertId: string; exist
   if (exists) return <Link href="/hypotheses" className="text-xs text-accent hover:underline">в гипотезах</Link>;
   return <Button size="sm" variant="ghost" disabled={pending} onClick={() => start(() => hypothesisFromAlertAction(alertId))}>В гипотезу</Button>;
 }
+
+/** «Создать задачу» on a hypothesis page: a card in the board's «Бэклог» with the hypothesis's site, format, effect and what it moves. */
+export function TaskFromHypothesis({ hypothesisId }: { hypothesisId: string }) {
+  return (
+    <ActionForm action={taskFromHypothesisAction} submit="Создать задачу" className="inline" submitVariant="primary" submitSize="sm">
+      <input type="hidden" name="hypothesisId" value={hypothesisId} />
+    </ActionForm>
+  );
+}
+

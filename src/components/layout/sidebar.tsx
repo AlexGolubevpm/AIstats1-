@@ -4,7 +4,7 @@
 // 2 h, red when the last run failed.
 import {
   ArrowLeftRight, BarChart3, ChevronDown, ChevronsLeft, ChevronsRight, CircleDollarSign, Globe, LayoutDashboard, Layers, LogOut, Menu, Moon, Settings,
-  FlaskConical, LayoutGrid, Sun, TrendingUp, TriangleAlert, X,
+  FlaskConical, KanbanSquare, LayoutGrid, Sun, TrendingUp, TriangleAlert, X,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -17,7 +17,7 @@ import { logoutAction } from "@/server/actions/auth";
 
 export interface SidebarProps {
   bundles: { slug: string; title: string; color: string }[];
-  counts: { alerts: number; deals: number; hypotheses: number };
+  counts: { alerts: number; deals: number; hypotheses: number; tasks: number };
   freshness: { source: string; label: string; lastOk: string | null; failed: boolean }[];
   mcpConnected: boolean;
 }
@@ -33,6 +33,7 @@ const NAV = [
   { href: "/inventory", label: "Форматы", icon: LayoutGrid },
   { href: "/alerts", label: "Алерты", icon: TriangleAlert, count: "alerts" as const },
   { href: "/hypotheses", label: "Гипотезы", icon: FlaskConical, count: "hypotheses" as const },
+  { href: "/tasks", label: "Задачи", icon: KanbanSquare, count: "tasks" as const },
 ];
 
 export function Sidebar({ bundles, counts, freshness, mcpConnected }: SidebarProps) {

@@ -48,6 +48,7 @@ model Site {
   opex       OpexEntry[]
   hypotheses Hypothesis[]
   planItems  PlanItem[]
+  tasks      Task[]
 
   @@index([status])
 }
@@ -493,6 +494,7 @@ model Advertiser {
   name    String  @unique
   contact String?
   deals   Deal[]
+  tasks   Task[]
 }
 
 enum PaymentBasis {
@@ -789,6 +791,7 @@ model Hypothesis {
   site        Site?            @relation(fields: [siteId], references: [id], onDelete: SetNull)
   bundle      Bundle?          @relation(fields: [bundleId], references: [id], onDelete: SetNull)
   planItems   PlanItem[]
+  tasks       Task[]
 
   @@unique([ruleKey, objectKey])
   @@index([status, level])
@@ -831,3 +834,65 @@ model AppSetting {
   value     String
   updatedAt DateTime @updatedAt
 }
+
+// ---------- Tasks: the team's board (ADR 0021) ----------
+
+enum TaskStatus {
+  BACKLOG
+  PLANNED
+  IN_PROGRESS
+  TESTING
+  DONE
+}
+
+enum TaskImpact {
+  REVENUE
+  COST
+  MARGIN
+  TRAFFIC
+  QUALITY
+  OTHER
+}
+
+enum TaskPriority {
+  LOW
+  NORMAL
+  HIGH
+}
+
+/// A card on /tasks: what to do, who, what it moves (revenue, cost…) and where (site, format, advertiser).
+model Task {
+  id           String       @id @default(cuid())
+  title        String
+  description  String?
+  status       TaskStatus   @default(BACKLOG)
+  /// Order inside its column: a card dropped between two takes the midpoint of theirs.
+  position     Float        @default(0)
+  assignee     String?
+  impact       TaskImpact?
+  impactMonth  Decimal?     @db.Decimal(12, 2)
+  priority     TaskPriority @default(NORMAL)
+  advertiserId String?
+  format       AdFormat?
+  siteId       String?
+  hypothesisId String?
+  startDate    DateTime?    @db.Date
+  dueDate      DateTime?    @db.Date
+  doneAt       DateTime?
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  advertiser   Advertiser?  @relation(fields: [advertiserId], references: [id], onDelete: SetNull)
+  site         Site?        @relation(fields: [siteId], references: [id], onDelete: SetNull)
+  hypothesis   Hypothesis?  @relation(fields: [hypothesisId], references: [id], onDelete: SetNull)
+
+  @@index([status, position])
+  @@index([assignee])
+}
+
+/// The names tasks are assigned to: there are no user accounts, only people on the team.
+model TeamMember {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  createdAt DateTime @default(now())
+}
+
