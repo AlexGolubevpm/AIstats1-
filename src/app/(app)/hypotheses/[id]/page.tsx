@@ -9,7 +9,9 @@ import { fmtDate, fmtMoney } from "@/lib/format";
 import { db } from "@/server/db";
 import { METRIC_LABEL, OWN_STATUS_LABEL, SCOPE_LABEL, SOURCE_LABEL, STATUS_LABEL, evidenceLine, type HypScope, type Metric, type OwnStatus } from "@/server/domain/hypotheses";
 import { hypothesisDetail } from "@/server/queries/hypotheses";
-import { EditHypothesisForm, HypothesisActions, OwnStatusSwitch } from "../client";
+import { EditHypothesisForm, HypothesisActions, OwnStatusSwitch, TaskFromHypothesis } from "../client";
+import { tasksOfHypothesis } from "@/server/queries/tasks";
+import { TASK_STATUS_LABEL, type TaskStatus } from "@/server/domain/tasks";
 import { fmtMetric, metricDelta } from "../format";
 import { DeletePlanItem, PlanItemButton } from "../../forecast/plan";
 import { monthLabel } from "../../forecast/months";
@@ -30,6 +32,7 @@ export default async function HypothesisPage({ params }: { params: Promise<{ id:
     db.site.findMany({ where: { status: { not: "ARCHIVED" } }, orderBy: { domain: "asc" }, include: { bundles: true } }),
   ]);
   if (!h) notFound();
+  const tasks = await tasksOfHypothesis(h.id);
   const own = h.source === "MANUAL";
   const metric = h.metric as Metric | null;
   const base = h.baseline == null ? null : Number(h.baseline), res = h.result == null ? null : Number(h.result);
@@ -92,6 +95,20 @@ export default async function HypothesisPage({ params }: { params: Promise<{ id:
           </ul>
         )}
         <p className="mt-2 text-xs"><Link href="/forecast?view=months" className="text-accent hover:underline">Открыть план на месяцы →</Link></p>
+      </Section>
+
+      <Section title="Задачи" sub="Работа по гипотезе на борде /tasks" actions={<TaskFromHypothesis hypothesisId={h.id} />}>
+        {tasks.length === 0 ? <p className="py-2 text-sm text-muted">Задач пока нет</p> : (
+          <ul className="divide-y divide-border text-[13px]" data-testid="hypothesis-tasks">
+            {tasks.map((x) => (
+              <li key={x.id} className="flex flex-wrap items-center gap-x-3 py-2">
+                <Link href={`/tasks?task=${x.id}`} className="font-medium hover:text-accent">{x.title}</Link>
+                <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">{TASK_STATUS_LABEL[x.status as TaskStatus]}</span>
+                {x.assignee && <span className="text-xs text-muted">{x.assignee}</span>}
+              </li>
+            ))}
+          </ul>
+        )}
       </Section>
 
       <Section title="История">

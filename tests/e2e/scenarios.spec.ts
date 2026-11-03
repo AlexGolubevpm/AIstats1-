@@ -538,3 +538,61 @@ test("deal copy: «Копировать на новый срок» fills the nex
   await expect(page.getByText("скопирован на новый срок")).toBeVisible();
   await expect(page.getByText("копия на новый срок").first()).toBeVisible(); // the source's end, with its reason
 });
+
+test("tasks: add a card in «Бэклог», fill it like a Notion page, drag it to «В работе», filter by assignee and period, finish it", async ({ page }) => {
+  const now = new Date();
+  const mid = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 15)).toISOString().slice(0, 10);
+  await login(page, "/tasks");
+  await expect(page.getByRole("heading", { name: "Задачи", exact: true })).toBeVisible();
+  const backlog = page.locator("[data-column=BACKLOG]");
+  await page.locator("[data-quick-add=BACKLOG]").click();
+  await backlog.locator("input[name=title]").fill("E2E поднять флор баннеров");
+  await backlog.getByRole("button", { name: "Добавить" }).click();
+  await expect(backlog.locator("[data-task]", { hasText: "E2E поднять флор баннеров" })).toBeVisible();
+  // Open the card: every field, a new assignee joins the team.
+  await backlog.locator("[data-task]", { hasText: "E2E поднять флор баннеров" }).getByRole("link").click();
+  await expect(page).toHaveURL(/task=/);
+  const panel = page.getByTestId("task-panel");
+  await panel.locator("input[name=assignee]").fill("Даниил");
+  await panel.locator("select[name=impact]").selectOption("REVENUE");
+  await panel.locator("select[name=siteId]").selectOption({ label: "japan-tube.demo" });
+  await panel.locator("select[name=format]").selectOption("BANNER");
+  await panel.locator("input[name=advertiser]").fill("Sakura Media");
+  await panel.locator("input[name=impactMonth]").fill("400");
+  await panel.locator("input[name=dueDate]").fill(mid);
+  await panel.getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText("Задача сохранена")).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("task-history")).toContainText("исполнитель");
+  await page.getByTestId("task-panel").getByRole("button", { name: "Закрыть" }).click();
+  await expect(page).not.toHaveURL(/task=/);
+  // Drag to «В работе».
+  const card = page.locator("[data-column=BACKLOG] [data-task]", { hasText: "E2E поднять флор баннеров" });
+  await card.dragTo(page.locator("[data-column=IN_PROGRESS]"));
+  await expect(page.locator("[data-column=IN_PROGRESS] [data-task]", { hasText: "E2E поднять флор баннеров" })).toBeVisible();
+  await page.reload();
+  const inWork = page.locator("[data-column=IN_PROGRESS] [data-task]", { hasText: "E2E поднять флор баннеров" });
+  await expect(inWork).toContainText("Выручка");
+  await expect(inWork).toContainText("japan-tube.demo");
+  await expect(inWork).toContainText("Д"); // the assignee's initials
+  // Filters and periods.
+  await page.locator("select[data-filter=assignee]").selectOption("Даниил");
+  await expect(page).toHaveURL(/assignee=/);
+  await expect(page.locator("[data-task]")).toHaveCount(1);
+  await page.locator("a[data-period=month]").click();
+  await expect(page.locator("[data-task]", { hasText: "E2E поднять флор баннеров" })).toBeVisible();
+  await page.locator("a[data-period=next_month]").click();
+  await expect(page.locator("[data-task]")).toHaveCount(0);
+  await page.locator("a[data-view=periods]").click();
+  await expect(page.getByTestId("task-periods-view")).toBeVisible();
+  // Finish it from its panel; the team page lists the new name.
+  await page.goto("/tasks");
+  await page.locator("[data-task]", { hasText: "E2E поднять флор баннеров" }).getByRole("link").click();
+  await page.getByTestId("task-panel").locator("select[name=status]").selectOption("DONE");
+  await page.getByTestId("task-panel").getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText("Задача сохранена")).toBeVisible();
+  await page.goto("/tasks");
+  await expect(page.locator("[data-column=DONE] [data-task]", { hasText: "E2E поднять флор баннеров" })).toBeVisible();
+  await page.goto("/settings/team");
+  await expect(page.getByTestId("team").locator("input[name=name]")).toHaveValue("Даниил");
+});

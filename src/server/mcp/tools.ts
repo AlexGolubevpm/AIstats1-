@@ -6,6 +6,8 @@ import { db as appDb } from "@/server/db";
 import { bundleSiteIds } from "@/server/queries/common";
 import { dealsList } from "@/server/queries/deals";
 import { monthsForecast } from "@/server/queries/forecast";
+import { taskBoard } from "@/server/queries/tasks";
+import { TASK_STATUSES } from "@/server/domain/tasks";
 import { parseHorizon, parseLookback } from "@/lib/forecast";
 import { bundlesTable, devicesTable, formatsTable, geoTable, networksTable, sitesTable, zonesTable } from "@/server/queries/reports";
 import { guardSql, MAX_ROWS } from "./sql-guard";
@@ -157,5 +159,16 @@ export async function getForecast(a: { horizon?: number; lookback?: number }) {
       revenue: r(m.revenue), traffic_cost: r(m.trafficCost), cost: r(m.cost), opex: r(m.opex), opex_carried: m.opexCarried, margin: r(m.margin), romi: m.romi == null ? null : r(m.romi), cum_margin: r(m.cumMargin),
       deals: m.dealLines.map((d) => ({ id: d.id, title: d.title, sites: d.sites, amount: r(d.amount), default_amount: r(d.defaultAmount), edited: d.edited, draft: d.draft, estimate: d.estimate })) })),
   };
+}
+
+/** The team's board (ADR 0021): tasks by column with who, what it moves and where; read only. */
+export async function getTasks(a: { status?: string; assignee?: string; site?: string; period?: string }) {
+  const siteId = a.site ? (await appDb.site.findUnique({ where: { domain: a.site } }))?.id ?? "-" : null;
+  const board = await taskBoard({ assignee: a.assignee ?? null, siteId, period: a.period ?? null });
+  return TASK_STATUSES.filter((s) => !a.status || s === a.status).flatMap((s) => board[s].map((t) => ({
+    id: t.id, status: t.status, title: t.title, assignee: t.assignee, impact: t.impact, impact_month: t.impactMonth, priority: t.priority,
+    site: t.site?.domain ?? null, format: t.format, advertiser: t.advertiser?.name ?? null, hypothesis: t.hypothesis?.title ?? null,
+    start_date: t.startDate, due_date: t.dueDate, done_at: t.doneAt,
+  })));
 }
 

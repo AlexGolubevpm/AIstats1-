@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { db } from "@/server/db";
 import { MCP_VIEWS, SqlRejected } from "./sql-guard";
-import { getAlerts, getDeals, getForecast, getHypotheses, getNetworkMatrix, getPnl, getZones, queryTool, ToolError } from "./tools";
+import { getAlerts, getDeals, getForecast, getHypotheses, getTasks, getNetworkMatrix, getPnl, getZones, queryTool, ToolError } from "./tools";
 
 export const INSTRUCTIONS = `TubeStat — маржа по сети тьюб-сайтов. Только чтение. Все деньги в USD.
 Правила анализа:
@@ -83,6 +83,12 @@ export async function createMcpServer(): Promise<McpServer> {
     inputSchema: { horizon: z.union([z.literal(3), z.literal(6), z.literal(12)]).optional().describe("месяцев вперёд, по умолчанию из сценария"), lookback: z.union([z.literal(3), z.literal(7), z.literal(14)]).optional().describe("дней для темпа, по умолчанию 7") },
     annotations: ro,
   }, wrap("get_forecast", getForecast));
+  server.registerTool("get_tasks", {
+    description: "Задачи команды с борды /tasks: колонка (BACKLOG, PLANNED, IN_PROGRESS, TESTING, DONE), исполнитель, на что влияет (REVENUE, COST, MARGIN, TRAFFIC, QUALITY, OTHER), эффект $/мес, сайт, формат, рекламодатель, гипотеза, сроки. period — week, month, next_month или YYYY-MM: задачи, чьи сроки с ним пересекаются.",
+    inputSchema: { status: z.enum(["BACKLOG", "PLANNED", "IN_PROGRESS", "TESTING", "DONE"]).optional(), assignee: z.string().optional().describe("имя исполнителя"),
+      site: z.string().optional().describe("домен"), period: z.string().optional() },
+    annotations: ro,
+  }, wrap("get_tasks", getTasks));
   server.registerTool("get_hypotheses", {
     description: "Гипотезы: что могло бы заработать больше или перестать терять — предложенные системой (ночные правила по дневной аналитике и алерты), из алертов и свои. Статус, ожидаемый эффект $/мес, метрика проверки, база и итог. По умолчанию — предложенные.",
     inputSchema: { status: z.enum(["PROPOSED", "TESTING", "ACCEPTED", "DONE", "REJECTED", "EXPIRED"]).optional(), bundle: z.string().optional().describe("слаг бандла"), site: z.string().optional().describe("домен"),
