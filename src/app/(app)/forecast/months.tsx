@@ -46,7 +46,8 @@ export function MonthsView({ f, sites, dealOpts, selected, opex, opexFrom, href 
     { key: "rotation", label: "Ротация ASG", defaultAmount: sel.defaults.rotation, value: sel.edited.rotation ? sel.rotation : null },
     { key: "traffic_cost", label: "Расход на трафик", defaultAmount: sel.defaults.trafficCost, value: sel.edited.trafficCost ? sel.trafficCost : null },
     ...sel.dealLines.map((d) => ({ key: `deal:${d.id}`, label: `${d.title}${d.draft ? " · черновик" : ""}`, deal: true, defaultAmount: d.defaultAmount, value: d.edited ? d.amount : null,
-      sub: `${d.sites}${d.source === "contract" ? (d.estimate ? " · оценка по загрузкам сайтов" : " · по договору") : ` · как ${prevLabel}`}` })),
+      sub: `${d.sites}${d.source === "contract" ? (d.estimate ? " · оценка по загрузкам сайтов" : " · по договору") : ` · как ${prevLabel}`}`,
+      link: { href: `/deals/${d.id}?copy=${sel.month}`, label: "копия на новый срок" } })),
   ] : [];
   const growth = (v: number) => (v ? `${v > 0 ? "+" : ""}${Math.round(v * 1000) / 10}%/мес` : "без роста");
   const th = "h-8 text-right font-medium";

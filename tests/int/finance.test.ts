@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { buildNetwork } from "@tests/factories/network";
 import { applyPayout, payoutDiff, reapplyPayouts, recordAsgPayout } from "@/server/services/finance";
 import { writeGeo } from "@/server/ingest/adspyglass/ingest";
-import { saveDeal, deleteDeal, setDealStatus } from "@/server/services/deals";
+import { checkDealCopy, linkDealCopy, saveDeal, deleteDeal, setDealStatus } from "@/server/services/deals";
 import { resetDb, testDb } from "./helpers";
 
 const db = testDb();
@@ -89,3 +89,39 @@ describe("payouts survive a re-ingest", () => {
     expect(await applyPayout(db, "2026-08")).toBe(false); // no payout for August
   });
 });
+
+describe("copy of a deal on a new term", () => {
+  const base = { title: "Header flat", advertiser: "CopyAdv", format: "BANNER", paymentBasis: "FLAT_PERIOD" as const, price: "300",
+    siteIds: ["s1"], geoScope: [], geoExclude: false, startsAt: "2026-09-01", endsAt: "2026-09-30" as string | null, billingPeriod: "MONTH" as const, paymentTermsDays: 30,
+    counterSource: "ASG_ZONE" as const, billedVia: "DIRECT" as const };
+
+  it("a source with an end stays as it is; both histories link the two", async () => {
+    const src = await saveDeal(db, base);
+    await checkDealCopy(db, src, "2026-10-01", true);
+    const copy = await saveDeal(db, { ...base, startsAt: "2026-10-01", endsAt: "2026-10-31" });
+    expect(await linkDealCopy(db, src, copy, true, "2026-11-03")).toEqual({ endedAt: null });
+    expect((await db.deal.findUniqueOrThrow({ where: { id: src } })).endsAt?.toISOString().slice(0, 10)).toBe("2026-09-30");
+    const c = await db.deal.findUniqueOrThrow({ where: { id: copy }, include: { sites: true } });
+    expect([c.title, c.price.toString(), c.paymentBasis, c.sites.map((s) => s.siteId)]).toEqual(["Header flat", "300", "FLAT_PERIOD", ["s1"]]);
+    expect((await db.auditLog.findFirstOrThrow({ where: { entityId: copy, field: "copiedFrom" } })).reason).toBe(src);
+    expect((await db.auditLog.findFirstOrThrow({ where: { entityId: src, field: "copiedTo" } })).reason).toBe(copy);
+  });
+
+  it("an open-ended source ends the day before the copy when asked, its facts after that go; without the tick both run; a copy starting first is refused", async () => {
+    const src = await saveDeal(db, { ...base, endsAt: null });
+    await db.factFixDeal.create({ data: { date: new Date("2026-10-05T00:00:00Z"), dealId: src, siteId: "s1", countryCode: "US", pageLoads: 1, impsOwn: 1, revenue: "10", revenueState: "FORECAST" } });
+    const copy = await saveDeal(db, { ...base, endsAt: null, startsAt: "2026-10-01" });
+    expect(await linkDealCopy(db, src, copy, true, "2026-11-03")).toEqual({ endedAt: "2026-09-30" });
+    expect((await db.deal.findUniqueOrThrow({ where: { id: src } })).endsAt?.toISOString().slice(0, 10)).toBe("2026-09-30");
+    expect(await db.factFixDeal.count({ where: { dealId: src, date: { gt: new Date("2026-09-30T00:00:00Z") } } })).toBe(0);
+    expect(await db.auditLog.findFirst({ where: { entityId: src, field: "endsAt", reason: "копия на новый срок" } })).not.toBeNull();
+
+    const other = await saveDeal(db, { ...base, title: "Other", endsAt: null });
+    const kept = await saveDeal(db, { ...base, title: "Other", endsAt: null, startsAt: "2026-11-01" });
+    await linkDealCopy(db, other, kept, false, "2026-11-03");
+    expect((await db.deal.findUniqueOrThrow({ where: { id: other } })).endsAt).toBeNull();
+    await expect(checkDealCopy(db, other, "2026-09-01", true)).rejects.toMatchObject({ field: "startsAt" });
+    await expect(checkDealCopy(db, "nope", "2026-11-01", true)).rejects.toMatchObject({ field: "copyOf" });
+  });
+});
+

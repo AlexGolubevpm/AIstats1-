@@ -5,7 +5,7 @@ import { parseGeoInput, type BillingPeriod, type DealInput, type PaymentBasis } 
 import { db } from "@/server/db";
 import { requireSession } from "@/server/session";
 import {
-  calculatePeriodAmount, correctPeriod, deleteDeal, enterPeriod, markDisputed, recordPayment, reforecastAll, saveDeal, setDealStatus, type EnterPeriodInput,
+  calculatePeriodAmount, checkDealCopy, correctPeriod, deleteDeal, enterPeriod, linkDealCopy, markDisputed, recordPayment, reforecastAll, saveDeal, setDealStatus, type EnterPeriodInput,
 } from "@/server/services/deals";
 import { guarded, int, money, opt, str, type ActionResult } from "./result";
 
@@ -31,12 +31,17 @@ export async function saveDealAction(_: ActionResult, f: FormData): Promise<Acti
   await requireSession();
   let id = str(f, "id") || undefined;
   const r = await guarded(async () => {
+    // «Копировать на новый срок»: link the two and, when asked, end the source the day before the copy starts.
+    const copyOf = str(f, "id") ? null : opt(f, "copyOf");
+    if (copyOf) await checkDealCopy(db, copyOf, str(f, "startsAt"), f.get("endSource") === "1");
     id = await saveDeal(db, await dealInput(f), id, opt(f, "reason"));
+    if (copyOf) await linkDealCopy(db, copyOf, id, f.get("endSource") === "1");
   });
   if (r.error) return r;
   revalidatePath("/deals");
   revalidatePath("/inventory"); // the Formats tab lists every deal
   revalidatePath("/forecast"); // the months ahead count deals by their dates
+  if (opt(f, "copyOf")) revalidatePath(`/deals/${opt(f, "copyOf")}`);
   if (!str(f, "id")) redirect(`/deals/${id}`);
   revalidatePath(`/deals/${id}`);
   return { ok: true, message: "Условия сохранены, прогноз пересчитан" };

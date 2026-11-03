@@ -2,7 +2,7 @@ import Decimal from "decimal.js";
 import { describe, expect, it } from "vitest";
 import {
   DealRuleError, calcAmount, checkInvoiceAmount, closedPeriods, daysInMonth, distribute, effectiveAmount, flatPerDay, flatPeriodDays, inGeoScope, isFlat,
-  periodsOverlap, revenueStateOf, statusAfterPayment, weightOf,
+  nextTerm, periodsOverlap, revenueStateOf, statusAfterPayment, weightOf,
 } from "@/server/domain/deals";
 
 describe("calcAmount", () => {
@@ -144,3 +144,17 @@ describe("flat deals", () => {
     expect(isFlat("FLAT_PERIOD") && isFlat("FLAT_DAILY") && !isFlat("CPM_OWN")).toBe(true);
   });
 });
+
+describe("nextTerm — the term of a copy", () => {
+  it("whole calendar months move by as many months; other terms keep their length; open-ended starts next month; a month can be asked for", () => {
+    expect(nextTerm("2026-10-01", "2026-10-31", "2026-11-03")).toEqual({ startsAt: "2026-11-01", endsAt: "2026-11-30" });
+    expect(nextTerm("2026-10-01", "2026-12-31", "2026-11-03")).toEqual({ startsAt: "2027-01-01", endsAt: "2027-03-31" }); // a quarter → the next
+    expect(nextTerm("2026-12-01", "2026-12-31", "2026-11-03")).toEqual({ startsAt: "2027-01-01", endsAt: "2027-01-31" });
+    expect(nextTerm("2026-01-01", "2026-01-31", "2026-11-03")).toEqual({ startsAt: "2026-02-01", endsAt: "2026-02-28" });
+    expect(nextTerm("2026-10-15", "2026-11-14", "2026-11-03")).toEqual({ startsAt: "2026-11-15", endsAt: "2026-12-15" }); // 31 days
+    expect(nextTerm("2026-09-01", null, "2026-11-03")).toEqual({ startsAt: "2026-12-01", endsAt: null });
+    expect(nextTerm("2026-10-01", "2026-10-31", "2026-11-03", "2027-02")).toEqual({ startsAt: "2027-02-01", endsAt: "2027-02-28" });
+    expect(nextTerm("2026-10-10", "2026-10-19", "2026-11-03", "2027-02")).toEqual({ startsAt: "2027-02-01", endsAt: "2027-02-10" });
+  });
+});
+

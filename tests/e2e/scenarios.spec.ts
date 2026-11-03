@@ -514,3 +514,27 @@ test("tiers: the settings page changes a country's tier with an audit line, the 
   await expect(page.getByTestId("deal-tiers")).toBeVisible();
   await expect(page.getByTestId("deal-tiers").locator("input[name=geoTiers]")).toHaveCount(5);
 });
+
+test("deal copy: «Копировать на новый срок» fills the next term, ends an open-ended source the day before, links both", async ({ page }) => {
+  const now = new Date();
+  const next = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1)).toISOString().slice(0, 10);
+  await login(page, "/deals");
+  await page.getByRole("row", { name: /JP спонсорский баннер/ }).first().getByRole("link").first().click();
+  await expect(page).toHaveURL(/\/deals\/[a-z0-9]+$/);
+  const source = page.url();
+  await page.getByRole("button", { name: "Копировать на новый срок" }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog.getByText("Копия дила на новый срок")).toBeVisible();
+  await expect(dialog.locator("input[name=title]")).toHaveValue("JP спонсорский баннер");
+  await expect(dialog.locator("input[name=startsAt]")).toHaveValue(next); // open-ended: from the 1st of next month
+  await expect(dialog.getByTestId("end-source").locator("input")).toBeChecked();
+  await dialog.locator("input[name=price]").fill("0.9");
+  await dialog.getByRole("button", { name: "Создать копию" }).click();
+  await page.waitForURL((u) => /\/deals\/[a-z0-9]+$/.test(u.pathname) && u.toString() !== source); // the new deal opens
+  await expect(page.getByText("копия дила")).toBeVisible();
+  await page.goto("/deals?status=future");
+  await expect(page.getByRole("row", { name: /JP спонсорский баннер/ })).toBeVisible();
+  await page.goto(source);
+  await expect(page.getByText("скопирован на новый срок")).toBeVisible();
+  await expect(page.getByText("копия на новый срок").first()).toBeVisible(); // the source's end, with its reason
+});
