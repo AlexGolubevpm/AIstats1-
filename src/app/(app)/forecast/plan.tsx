@@ -1,4 +1,5 @@
 "use client";
+import Link from "next/link";
 import { useState } from "react";
 import { ActionForm, FormField } from "@/components/forms/action-form";
 import { Button } from "@/components/ui/button";
@@ -78,7 +79,7 @@ export function DeletePlanItem({ id }: { id: string }) {
   );
 }
 
-export interface MonthLine { key: string; label: string; sub?: string; defaultAmount: number; value: number | null; deal?: boolean }
+export interface MonthLine { key: string; label: string; sub?: string; defaultAmount: number; value: number | null; deal?: boolean; link?: { href: string; label: string } }
 
 const usd = (v: number) => `$${v.toLocaleString("ru-RU", { maximumFractionDigits: 0 })}`;
 
@@ -97,7 +98,7 @@ export function PlanMonthForm({ month, prevLabel, lines }: { month: string; prev
             <div key={l.key} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-1 py-2" data-line={l.key}>
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-medium">{l.label}</div>
-                <div className="num text-xs text-muted">по умолчанию {usd(l.defaultAmount)} — {l.sub ?? `как ${prevLabel}`}</div>
+                <div className="num text-xs text-muted">по умолчанию {usd(l.defaultAmount)} — {l.sub ?? `как ${prevLabel}`}{l.link && <> · <Link href={l.link.href} className="text-accent hover:underline">{l.link.label}</Link></>}</div>
               </div>
               <Input name={`line:${l.key}`} inputMode="decimal" className="num w-36" placeholder={usd(l.defaultAmount)} value={vals[l.key]}
                 onChange={(e) => setVals({ ...vals, [l.key]: e.target.value })} aria-label={l.label} />

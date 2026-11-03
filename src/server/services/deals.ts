@@ -383,3 +383,33 @@ export async function deleteDeal(db: PrismaClient, id: string): Promise<void> {
   if (deal.status !== "DRAFT" || entered) throw new DealRuleError("delete", "Удалить можно только черновик без внесённых периодов — завершите дил");
   await db.deal.delete({ where: { id } });
 }
+
+/** Before a copy is saved: ending the source the day before the copy needs the copy to start after the source does. */
+export async function checkDealCopy(db: PrismaClient, sourceId: string, startsAt: string, endSource: boolean): Promise<void> {
+  const src = await db.deal.findUnique({ where: { id: sourceId } });
+  if (!src) throw new DealRuleError("copyOf", "Исходный дил не найден", "copyOf");
+  if (endSource && (!src.endsAt || isoOf(src.endsAt) >= startsAt) && startsAt <= isoOf(src.startsAt))
+    throw new DealRuleError("startsAt", "Копия начинается не позже исходного — исходный нечем закончить. Сдвиньте начало или снимите галочку", "startsAt");
+}
+
+/**
+ * After a copy of a deal is created (deals «Копировать на новый срок»): both histories say so, and when asked the
+ * source ends the day before the copy starts, so the two never bill the same place twice. The source keeps its
+ * periods and payments; facts after its new end go with the next reconcile, run here at once.
+ */
+export async function linkDealCopy(db: PrismaClient, sourceId: string, copyId: string, endSource: boolean, today = isoOf(new Date())): Promise<{ endedAt: string | null }> {
+  const [src, copy] = await Promise.all([db.deal.findUniqueOrThrow({ where: { id: sourceId } }), db.deal.findUniqueOrThrow({ where: { id: copyId } })]);
+  await db.auditLog.createMany({ data: [
+    { entity: "Deal", entityId: copyId, field: "copiedFrom", after: `${src.title} (${isoOf(src.startsAt)} — ${src.endsAt ? isoOf(src.endsAt) : "бессрочно"})`, reason: sourceId },
+    { entity: "Deal", entityId: sourceId, field: "copiedTo", after: `${copy.title} (${isoOf(copy.startsAt)} — ${copy.endsAt ? isoOf(copy.endsAt) : "бессрочно"})`, reason: copyId },
+  ] });
+  const newEnd = addDaysIso(isoOf(copy.startsAt), -1);
+  if (!endSource || (src.endsAt && isoOf(src.endsAt) <= newEnd)) return { endedAt: null };
+  if (newEnd < isoOf(src.startsAt)) throw new DealRuleError("startsAt", "Копия начинается раньше исходного дила — исходный нечем закончить", "startsAt");
+  await db.deal.update({ where: { id: sourceId }, data: { endsAt: d(newEnd) } });
+  await db.auditLog.create({ data: { entity: "Deal", entityId: sourceId, field: "endsAt", before: src.endsAt ? isoOf(src.endsAt) : null, after: newEnd, reason: "копия на новый срок" } });
+  const deal = await db.deal.findUniqueOrThrow({ where: { id: sourceId }, include: { sites: true } });
+  await reconcileDealFacts(db, deal, today);
+  return { endedAt: newEnd };
+}
+

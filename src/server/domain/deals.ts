@@ -29,6 +29,26 @@ export function daysInMonth(date: string): number {
   return new Date(Date.UTC(+date.slice(0, 4), +date.slice(5, 7), 0)).getUTCDate();
 }
 
+const DAY_MS = 86_400_000;
+const plusDays = (s: string, n: number) => new Date(Date.parse(`${s}T00:00:00Z`) + n * DAY_MS).toISOString().slice(0, 10);
+const plusMonths = (m: string, k: number) => new Date(Date.UTC(+m.slice(0, 4), +m.slice(5, 7) - 1 + k, 1)).toISOString().slice(0, 7);
+const lastOf = (m: string) => `${m}-${String(daysInMonth(`${m}-01`)).padStart(2, "0")}`;
+
+/**
+ * The term of a copy of a deal (deals «Копировать на новый срок»): right after the source ends; a term of whole
+ * calendar months moves by as many months (October → November, a quarter → the next quarter), any other term keeps
+ * its length in days. An open-ended deal is copied from the 1st of next month, open-ended. `into` — a month the copy
+ * must start in (from the plan's month panel).
+ */
+export function nextTerm(start: string, end: string | null, today: string, into?: string): { startsAt: string; endsAt: string | null } {
+  const whole = end != null && start.endsWith("-01") && end === lastOf(end.slice(0, 7));
+  const months = end ? (+end.slice(0, 4) - +start.slice(0, 4)) * 12 + (+end.slice(5, 7) - +start.slice(5, 7)) + 1 : 0;
+  const length = end ? Math.round((Date.parse(`${end}T00:00:00Z`) - Date.parse(`${start}T00:00:00Z`)) / DAY_MS) + 1 : 0;
+  const startsAt = into ? `${into}-01` : end ? plusDays(end, 1) : `${plusMonths(today.slice(0, 7), 1)}-01`;
+  if (!end) return { startsAt, endsAt: null };
+  return { startsAt, endsAt: whole && startsAt.endsWith("-01") ? lastOf(plusMonths(startsAt.slice(0, 7), months - 1)) : plusDays(startsAt, length - 1) };
+}
+
 /**
  * Days a FLAT_PERIOD price covers: a month is the calendar month of `date` (September 30, October
  * 31 — so September of a $1000 deal is exactly $1000, ADR 0007), a week 7, a term its own length.

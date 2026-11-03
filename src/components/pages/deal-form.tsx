@@ -17,10 +17,12 @@ export interface DealFormValues {
 }
 const BASIS = [["PER_1000_LOADS", "За 1000 загрузок"], ["CPM_ADVERTISER", "CPM по счётчику рекламодателя"], ["CPM_OWN", "CPM по нашему счётчику"], ["FLAT_DAILY", "Флэт в сутки"], ["FLAT_PERIOD", "Флэт за период"]];
 
-export function DealFormButton({ sites, advertisers, placements = [], values = {}, label, variant = "primary", autoOpen = false }: {
+export function DealFormButton({ sites, advertisers, placements = [], values = {}, label, variant = "primary", autoOpen = false, copyOf }: {
   sites: DealFormSite[]; advertisers: string[]; placements?: { slug: string; title: string }[]; values?: DealFormValues; label: string; variant?: "primary" | "secondary";
   /** Opens the form at once (a link from the Formats grid with a place pre-selected). */
   autoOpen?: boolean;
+  /** «Копировать на новый срок»: a new deal with the source's terms; the source may end the day before the copy starts. */
+  copyOf?: { id: string; title: string; startsAt: string; endsAt: string | null };
 }) {
   const [open, setOpen] = useState(false);
   useEffect(() => { if (autoOpen) setOpen(true); }, [autoOpen]);
@@ -31,13 +33,18 @@ export function DealFormButton({ sites, advertisers, placements = [], values = {
   const [q, setQ] = useState("");
   const [basis, setBasis] = useState(values.paymentBasis ?? "PER_1000_LOADS");
   const edit = Boolean(values.id);
+  const [startsAt, setStartsAt] = useState(values.startsAt ?? new Date().toISOString().slice(0, 10));
+  const dayBefore = (s: string) => (/^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(Date.parse(`${s}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10) : "");
+  const overlaps = copyOf ? !copyOf.endsAt || copyOf.endsAt >= startsAt : false;
+  const ru = (s: string) => (s ? `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)}` : "");
   return (
     <>
       <Button size="sm" variant={variant} onClick={() => setOpen(true)}>{label}</Button>
-      <Sheet open={open} onOpenChange={setOpen} title={edit ? "Условия дила" : "Новый дил"} width="max-w-2xl"
-        description="Сделки вне аукциона AdSpyglass: прямой код рекламодателя, спонсорский баннер, флэт за место.">
-        <ActionForm action={saveDealAction} submit={edit ? "Сохранить условия" : "Создать дил"} onDone={() => setOpen(false)} cancel={() => setOpen(false)}>
+      <Sheet open={open} onOpenChange={setOpen} title={edit ? "Условия дила" : copyOf ? "Копия дила на новый срок" : "Новый дил"} width="max-w-2xl"
+        description={copyOf ? `Те же условия, что у «${copyOf.title}» — поменяйте срок и что нужно. Исходный остаётся со своим сроком, начислениями и оплатами.` : "Сделки вне аукциона AdSpyglass: прямой код рекламодателя, спонсорский баннер, флэт за место."}>
+        <ActionForm action={saveDealAction} submit={edit ? "Сохранить условия" : copyOf ? "Создать копию" : "Создать дил"} onDone={() => setOpen(false)} cancel={() => setOpen(false)}>
           {edit && <input type="hidden" name="id" value={values.id} />}
+          {copyOf && <input type="hidden" name="copyOf" value={copyOf.id} />}
           <div className="grid gap-4 sm:grid-cols-2">
             <FormField name="advertiser" label="Рекламодатель">
               <Input name="advertiser" list="advertisers" defaultValue={values.advertiser} required autoComplete="off" />
@@ -98,7 +105,7 @@ export function DealFormButton({ sites, advertisers, placements = [], values = {
           </div>
 
           <div className="grid gap-4 sm:grid-cols-2">
-            <FormField name="startsAt" label="Начало"><Input type="date" name="startsAt" defaultValue={values.startsAt ?? new Date().toISOString().slice(0, 10)} required /></FormField>
+            <FormField name="startsAt" label="Начало"><Input type="date" name="startsAt" value={startsAt} onChange={(e) => setStartsAt(e.target.value)} required /></FormField>
             <FormField name="endsAt" label="Конец" hint="Пусто — бессрочно"><Input type="date" name="endsAt" defaultValue={values.endsAt ?? ""} /></FormField>
             <FormField name="billingPeriod" label="Период счёта">
               <Select name="billingPeriod" defaultValue={values.billingPeriod ?? "MONTH"}><option value="MONTH">Месяц</option><option value="WEEK">Неделя</option><option value="TERM">Весь срок</option></Select>
@@ -110,6 +117,12 @@ export function DealFormButton({ sites, advertisers, placements = [], values = {
               </Select>
             </FormField>
           </div>
+          {copyOf && overlaps && (
+            <label className="flex items-start gap-2 rounded-lg bg-warning-soft px-3 py-2 text-sm" data-testid="end-source">
+              <input type="checkbox" name="endSource" value="1" defaultChecked className="mt-0.5" />
+              <span>Закончить исходный дил {ru(dayBefore(startsAt))} — {copyOf.endsAt ? `сейчас он идёт до ${ru(copyOf.endsAt)}` : "сейчас он бессрочный"}, иначе оба дила начислят одно и то же место</span>
+            </label>
+          )}
           <FormField name="notes" label="Заметки, контакт"><Textarea name="notes" rows={2} defaultValue={values.notes ?? ""} /></FormField>
           {edit && values.hasPeriods && (
             <FormField name="reason" label="Причина изменения" hint="По дилу уже внесены периоды: изменение цены или модели попадёт в историю">

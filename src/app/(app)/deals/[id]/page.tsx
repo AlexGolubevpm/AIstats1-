@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { TrendChart } from "@/components/data/charts";
 import { KpiCard } from "@/components/data/kpi-card";
@@ -9,7 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Section } from "@/components/ui/card";
 import { cn } from "@/lib/cn";
 import { fmtDate, fmtInt, fmtMoney, fmtPercent } from "@/lib/format";
-import { closedPeriods, type BillingPeriod, geoScopeLabel } from "@/server/domain/deals";
+import { closedPeriods, type BillingPeriod, geoScopeLabel, nextTerm } from "@/server/domain/deals";
 import { iso } from "@/server/queries/common";
 import { dealFormOptions } from "@/server/queries/deal-form";
 import { BASIS_LABEL, dealDetail } from "@/server/queries/deals";
@@ -18,11 +19,12 @@ import { DealStatusButtons } from "./status";
 const FIELD_LABEL: Record<string, string> = {
   created: "создан", status: "статус", payment: "оплата", correction: "исправление", title: "название", format: "формат", paymentBasis: "модель оплаты",
   price: "цена", geoScope: "гео", geoTiers: "тиры", geoExclude: "гео: кроме", startsAt: "начало", endsAt: "конец", billingPeriod: "период счёта", paymentTermsDays: "срок оплаты",
-  counterSource: "счётчик", billedVia: "биллинг", notes: "заметки", places: "места на сайтах",
+  counterSource: "счётчик", billedVia: "биллинг", notes: "заметки", places: "места на сайтах", copiedFrom: "копия дила", copiedTo: "скопирован на новый срок",
 };
 
-export default async function DealPage({ params }: { params: Promise<{ id: string }> }) {
+export default async function DealPage({ params, searchParams }: { params: Promise<{ id: string }>; searchParams: Promise<Record<string, string | undefined>> }) {
   const { id } = await params;
+  const sp = await searchParams;
   const [x, opts] = await Promise.all([dealDetail(id), dealFormOptions()]);
   if (!x) notFound();
   const { deal } = x;
@@ -39,12 +41,17 @@ export default async function DealPage({ params }: { params: Promise<{ id: strin
     paymentTermsDays: deal.paymentTermsDays, counterSource: deal.counterSource, billedVia: deal.billedVia, notes: deal.notes, hasPeriods: entered.length > 0,
     placeSlugs: [...new Set(deal.places.map((p) => p.placementSlug))],
   };
+  // «Копировать на новый срок»: the next term after this one, or the month the plan asked for (`?copy=YYYY-MM`).
+  const copyTerm = nextTerm(iso(deal.startsAt), deal.endsAt ? iso(deal.endsAt) : null, iso(new Date()), /^\d{4}-(0[1-9]|1[0-2])$/.test(sp.copy ?? "") ? sp.copy : undefined);
   return (
     <>
       <PageHeader crumbs={[{ href: "/deals", label: "Фикс-дилы" }]} title={`${deal.advertiser.name} · ${deal.title}`}
         badges={<><StatusBadge status={deal.status} />{deal.billedVia === "VIA_ASG" && <Badge>через AdSpyglass</Badge>}</>}
         sub={`${[...new Set(deal.places.map((p) => p.placement.title))].sort().join(", ") || "без места"} · ${BASIS_LABEL[deal.paymentBasis]} · $${deal.price} · ${deal.sites.map((s) => s.site.domain).join(", ")}${deal.geoScope.length || deal.geoTiers.length ? ` · ${geoScopeLabel(deal)}` : ""}`}
         actions={<><DealFormButton sites={opts.sites} advertisers={opts.advertisers} placements={opts.placements} values={values} label="Редактировать условия" variant="secondary" />
+          <DealFormButton sites={opts.sites} advertisers={opts.advertisers} placements={opts.placements} label="Копировать на новый срок" variant="secondary"
+            values={{ ...values, id: undefined, hasPeriods: false, ...copyTerm }} autoOpen={sp.copy != null} key={sp.copy ?? "copy"}
+            copyOf={{ id: deal.id, title: deal.title, startsAt: iso(deal.startsAt), endsAt: deal.endsAt ? iso(deal.endsAt) : null }} />
           <DealStatusButtons id={deal.id} status={deal.status} title={deal.title} /></>} />
 
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 2xl:grid-cols-6">
@@ -127,7 +134,8 @@ export default async function DealPage({ params }: { params: Promise<{ id: strin
                 <span className="font-medium">{FIELD_LABEL[String(h.field)] ?? String(h.field)}</span>
                 {h.before != null && <span className="text-muted line-through">{String(h.before) || "—"}</span>}
                 {h.after != null && <span>{String(h.after) || "—"}</span>}
-                {h.reason != null && <span className="text-muted">· {String(h.reason)}</span>}
+                {(h.field === "copiedFrom" || h.field === "copiedTo") && h.reason ? <Link href={`/deals/${String(h.reason)}`} className="text-accent hover:underline">открыть</Link>
+                  : h.reason != null && <span className="text-muted">· {String(h.reason)}</span>}
               </li>
             ))}
           </ul>
