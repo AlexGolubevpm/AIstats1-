@@ -22,8 +22,8 @@ export const DIGEST_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18] as const;
 /** How long the digest waits for yesterday's data past the chosen hour before it goes out with a warning. */
 export const WAIT_FOR_DATA_H = 3;
 
-interface Stored { token: string; bot?: string; chatId?: string; chatTitle?: string; hour?: number; minAmount?: number; enabled?: boolean; proxy?: string }
-export interface TelegramConnection { token: string; bot: string | null; chatId: string | null; chatTitle: string | null; hour: number; minAmount: number; enabled: boolean; proxy: string | null }
+interface Stored { token: string; bot?: string; chatId?: string; chatTitle?: string; hour?: number; minAmount?: number; problemMin?: number; enabled?: boolean; proxy?: string }
+export interface TelegramConnection { token: string; bot: string | null; chatId: string | null; chatTitle: string | null; hour: number; minAmount: number; problemMin: number; enabled: boolean; proxy: string | null }
 /** What the page shows: no token, the proxy only as its kind and host (it may carry a password). */
 export type TelegramView = Omit<TelegramConnection, "token" | "proxy"> & { proxy: string | null };
 
@@ -35,7 +35,8 @@ async function readStored(db: PrismaClient): Promise<Stored | null> {
 const write = (db: PrismaClient, s: Stored) => db.appSetting.upsert({ where: { key: TELEGRAM_SETTING }, create: { key: TELEGRAM_SETTING, value: JSON.stringify(s) }, update: { value: JSON.stringify(s) } });
 
 const base = (s: Stored) => ({ bot: s.bot ?? null, chatId: s.chatId ?? null, chatTitle: s.chatTitle ?? null,
-  hour: DIGEST_HOURS.includes(s.hour as 9) ? s.hour! : 9, minAmount: s.minAmount ?? DIGEST_DEFAULTS.minAmount, enabled: s.enabled !== false });
+  hour: DIGEST_HOURS.includes(s.hour as 9) ? s.hour! : 9, minAmount: s.minAmount ?? DIGEST_DEFAULTS.minAmount,
+  problemMin: s.problemMin ?? DIGEST_DEFAULTS.problemMin, enabled: s.enabled !== false });
 
 /** What the page shows: everything but the token. */
 export async function telegramView(db: PrismaClient, cfg: Config): Promise<TelegramView | null> {
@@ -225,14 +226,16 @@ export async function checkTelegramLink(db: PrismaClient, cfg: Config, fetchImpl
 }
 
 /** Step 2: where to send, when (hour MSK), what counts as noise, on/off. */
-export async function saveTelegramSettings(db: PrismaClient, i: { chatId?: string | null; chatTitle?: string | null; hour: number; minAmount: number; enabled: boolean }): Promise<void> {
+export async function saveTelegramSettings(db: PrismaClient, i: { chatId?: string | null; chatTitle?: string | null; hour: number; minAmount: number; problemMin?: number; enabled: boolean }): Promise<void> {
   const prev = await readStored(db);
   if (!prev) throw new RuleError("token", "Сначала сохраните токен бота", "token");
   if (i.chatId && !/^-?\d{1,20}$/.test(i.chatId)) throw new RuleError("chatId", "Выберите чат из списка", "chatId");
   if (!DIGEST_HOURS.includes(i.hour as 9)) throw new RuleError("hour", "Выберите время отправки", "hour");
   if (!Number.isFinite(i.minAmount) || i.minAmount < 0 || i.minAmount > 100_000) throw new RuleError("minAmount", "Порог — сумма в долларах от 0", "minAmount");
+  const problemMin = i.problemMin ?? prev.problemMin ?? DIGEST_DEFAULTS.problemMin;
+  if (!Number.isFinite(problemMin) || problemMin < 0 || problemMin > 100_000) throw new RuleError("problemMin", "Порог проблем — долларов в день, от 0", "problemMin");
   const chatId = i.chatId || prev.chatId, chatTitle = i.chatId ? i.chatTitle || i.chatId : prev.chatTitle;
-  await write(db, { ...prev, chatId, chatTitle, hour: i.hour, minAmount: Math.round(i.minAmount), enabled: i.enabled });
+  await write(db, { ...prev, chatId, chatTitle, hour: i.hour, minAmount: Math.round(i.minAmount), problemMin: Math.round(problemMin), enabled: i.enabled });
   await db.auditLog.create({ data: { entity: "AppSetting", entityId: TELEGRAM_SETTING, field: "settings",
     before: prev.chatId ? `${prev.chatTitle ?? prev.chatId} · ${prev.hour ?? 9}:00 · ${prev.enabled === false ? "выкл" : "вкл"}` : null,
     after: `${chatTitle ?? chatId ?? "чат не выбран"} · ${i.hour}:00 · ${i.enabled ? "вкл" : "выкл"}` } });
@@ -245,8 +248,8 @@ export async function disconnectTelegram(db: PrismaClient): Promise<void> {
 }
 
 /** The digest text for a day, as it would be sent now. */
-export async function digestText(db: PrismaClient, cfg: Config, day: string, minAmount: number = DIGEST_DEFAULTS.minAmount, now = new Date()): Promise<string[]> {
-  return buildDigest(await digestData(db, day, now), { appUrl: cfg.appUrl || undefined, minAmount });
+export async function digestText(db: PrismaClient, cfg: Config, day: string, minAmount: number = DIGEST_DEFAULTS.minAmount, now = new Date(), problemMin: number = DIGEST_DEFAULTS.problemMin): Promise<string[]> {
+  return buildDigest(await digestData(db, day, now), { appUrl: cfg.appUrl || undefined, minAmount, problemMin });
 }
 
 /** Sends the digest for `day` to the chosen chat. */
@@ -255,7 +258,7 @@ export async function sendDigest(db: PrismaClient, cfg: Config, day: string, fet
   if (!conn) throw new RuleError("token", "Сначала сохраните токен бота", "token");
   if (!conn.chatId) throw new RuleError("chatId", "Выберите чат: напишите боту и нажмите «Найти чат»", "chatId");
   // Usually one message; a long day goes out as several, in order (numbers first, then the problems).
-  for (const text of await digestText(db, cfg, day, conn.minAmount, now)) {
+  for (const text of await digestText(db, cfg, day, conn.minAmount, now, conn.problemMin)) {
     await call(cfg, conn.token, "sendMessage", { chat_id: conn.chatId, text, parse_mode: "HTML", link_preview_options: { is_disabled: true } }, fetchImpl, conn.proxy);
   }
 }

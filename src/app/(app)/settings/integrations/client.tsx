@@ -271,7 +271,7 @@ export function SpeedForm({ preset, options }: { preset: string; options: { valu
   );
 }
 
-export interface TelegramBlockView { bot: string | null; chatId: string | null; chatTitle: string | null; hour: number; minAmount: number; enabled: boolean; proxy: string | null }
+export interface TelegramBlockView { bot: string | null; chatId: string | null; chatTitle: string | null; hour: number; minAmount: number; problemMin: number; enabled: boolean; proxy: string | null }
 type LinkRow = { step: string; target: string; ok: boolean; ms: number | null; detail: string };
 /** A Cloudflare Worker that forwards Bot API calls to api.telegram.org: the path /bot<token>/<method> stays as it is. */
 export const WORKER_CODE = `export default {
@@ -344,7 +344,8 @@ export function TelegramBlock({ view, hours, error = null }: { view: TelegramBlo
               <FormField name="hour" label="Время, МСК" hint="данные за вчера готовы около 08:00">
                 <Select name="hour" defaultValue={String(view.hour)}>{hours.map((h) => <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>)}</Select>
               </FormField>
-              <FormField name="minAmount" label="Порог, $" hint="изменения и просадки меньше — не показывать"><Input name="minAmount" inputMode="numeric" defaultValue={view.minAmount} className="num w-28" /></FormField>
+              <FormField name="minAmount" label="Изменения от, $" hint="сайты, сдвинувшиеся меньше, — не показывать"><Input name="minAmount" inputMode="numeric" defaultValue={view.minAmount} className="num w-28" /></FormField>
+              <FormField name="problemMin" label="Проблемы от, $/день" hint="мельче — одной ссылкой на алерты"><Input name="problemMin" inputMode="numeric" defaultValue={view.problemMin} className="num w-28" /></FormField>
               <label className="flex h-9 items-center gap-2 text-sm"><input type="checkbox" name="enabled" value="1" defaultChecked={view.enabled} data-testid="telegram-enabled" /> отправлять каждый день</label>
             </ActionForm>
           </div>

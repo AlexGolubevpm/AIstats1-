@@ -34,9 +34,7 @@ export const NETWORK_COLS: Column[] = [
   { id: "revenue", header: "Выручка", kind: "money" },
 ];
 
-export const FORMAT_LABEL: Record<string, string> = {
-  POPUNDER: "Popunder", BANNER: "Баннер", NATIVE: "Нативка", SLIDER: "Слайдер", OUTSTREAM: "Outstream", INVIDEO: "In-video", INPAGEPUSH: "In-page push", OTHER: "Другое",
-};
+export { FORMAT_LABEL } from "@/lib/labels";
 export const DEVICE_LABEL: Record<string, string> = { DESKTOP: "Десктоп", MOBILE: "Мобильные", TABLET: "Планшеты", TV: "TV", CONSOLE: "Консоли", UNKNOWN: "Не определено" };
 
 /** Maps geo query rows into table rows (country column carries its name for the flag cell). */

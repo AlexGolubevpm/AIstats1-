@@ -2,20 +2,24 @@
 // a line and in which order. Numbers come ready from SQL (src/server/queries/digest.ts); nothing here
 // adds money up, it only compares and formats. Nothing is cut to "…and N more": long lists fold into
 // an expandable quote, and a digest longer than one Telegram message goes out as several.
+import { FORMAT_LABEL } from "@/lib/labels";
 import { delta, romi } from "@/lib/metrics";
 
-export interface DigestLine { name: string; revenue: number; margin: number; avgRevenue: number }
-export interface DigestSite extends DigestLine { pageLoads: number; avgLoads: number }
+export interface DigestLine { name: string; revenue: number; margin: number; prevRevenue: number }
+export interface DigestSite extends DigestLine { pageLoads: number; prevLoads: number }
 export interface DigestAlertItem { title: string; message: string; moneyAtRisk: number; isNew: boolean }
 /** Active alerts of one rule and level: how many, how many new, the money at risk, what to do, the alerts themselves (new and costly first). */
 export interface DigestAlert { level: "CRITICAL" | "WARNING"; rule: string; count: number; newCount: number; moneyAtRisk: number; action: string; items: DigestAlertItem[] }
 export interface DigestData {
   day: string;
-  /** Days with data among the 7 before `day`: the comparison base. 0 — nothing to compare with. */
+  /** 1 when the day before `day` has data — the comparison base (the digest goes day after day); 0 — nothing to compare with. */
   baseDays: number;
   total: { revenue: number; mediated: number; direct: number; cost: number; margin: number };
-  avg: { revenue: number; cost: number; margin: number };
+  /** The day before: what every «▲ / ▼» compares with. */
+  prev: { revenue: number; cost: number; margin: number };
   bundles: DigestLine[];
+  /** AdSpyglass revenue by format (ADOK ad_type cut, zones where it is missing): fix deals are not in it. */
+  formats: { format: string; revenue: number; prevRevenue: number }[];
   /** A site sits in several bundles: bundle lines do not add up to the network total. */
   bundlesOverlap: boolean;
   sites: DigestSite[];
@@ -29,14 +33,24 @@ export interface DigestData {
 export interface DigestOptions {
   /** Public address of the app for the links; no links without it. */
   appUrl?: string;
-  /** A change or a drop smaller than this many dollars is noise. */
+  /** A change smaller than this many dollars is noise. */
   minAmount?: number;
+  /** A problem shows only when it costs at least this many dollars a day; the rest is one link to the alerts. */
+  problemMin?: number;
   /** One Telegram message holds 4 096 characters; a margin for entities. */
   maxChars?: number;
 }
 
-export const DIGEST_DEFAULTS = { minAmount: 30, maxChars: 4000 } as const;
-/** Notable change of a site against its 7-day average, in percent. */
+export const DIGEST_DEFAULTS = { minAmount: 30, problemMin: 10, maxChars: 4000 } as const;
+/** Days each alert rule counts its money at risk over (src/server/domain/alerts/rules.ts): the digest speaks in $ a day. */
+export const RISK_DAYS: Record<string, number> = {
+  loss_geo: 7, waterfall_inversion: 7, invisible_zone: 7, low_fill: 7, source_unconfigured: 7, discrepancy: 2, dead_zone: 30, deal_ending: 30,
+  overdue_payment: 1, // a debt is due at once: the whole sum counts
+};
+/** Rules shown whatever the money: while they are on, the numbers of the digest themselves are wrong. */
+export const ALWAYS_SHOWN = new Set(["ingest_down"]);
+export const perDay = (rule: string, money: number) => money / (RISK_DAYS[rule] ?? 7);
+/** Notable change of a site against the day before, in percent. */
 export const CHANGE_PCT = 20;
 /** A drop that is a problem, in percent. */
 export const DROP_PCT = 30;
@@ -69,6 +83,8 @@ export const usd = (v: number) => `${v < 0 && Math.round(v) !== 0 ? "−" : ""}$
 const signedUsd = (v: number) => `${Math.round(v) > 0 ? "+" : Math.round(v) < 0 ? "−" : ""}$${group(v)}`;
 const pct = (v: number | null) => (v == null ? "" : `${Math.round(v) > 0 ? "+" : Math.round(v) < 0 ? "−" : ""}${Math.round(Math.abs(v))}%`);
 const arrow = (v: number | null) => (v == null ? "" : Math.round(v) > 0 ? `▲ ${Math.round(v)}%` : Math.round(v) < 0 ? `▼ ${Math.round(-v)}%` : "= 0%");
+/** "15.11" — the day before `day`, the comparison base. */
+export const prevLabel = (day: string) => { const d = new Date(new Date(`${day}T00:00:00Z`).getTime() - 86_400_000); return `${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}`; };
 export const dayLabel = (day: string) => { const d = new Date(`${day}T00:00:00Z`); return `${WEEKDAY[d.getUTCDay()]}, ${d.getUTCDate()} ${MONTH[d.getUTCMonth()]}`; };
 /** "1 случай / 2 случая / 5 случаев". */
 export const plural = (n: number, one: string, few: string, many: string) => {
@@ -85,37 +101,47 @@ const bar = (share: number) => { const n = share <= 0 ? 0 : Math.max(1, Math.min
 export interface DigestProblem { icon: "🔴" | "🟡"; text: string; site?: string }
 
 /** Problems the digest finds itself, before the alerts: loading, a site that stopped, the network, bundle and site drops. */
-export function digestProblems(d: DigestData, minAmount: number = DIGEST_DEFAULTS.minAmount): DigestProblem[] {
+export function digestProblems(d: DigestData, problemMin: number = DIGEST_DEFAULTS.problemMin): DigestProblem[] {
   const out: DigestProblem[] = d.health.map((text) => ({ icon: "🔴" as const, text: esc(text) }));
   if (d.baseDays === 0) return out;
   for (const s of d.sites) {
-    if (s.pageLoads === 0 && s.avgLoads > 0 && s.avgRevenue >= minAmount) {
-      out.push({ icon: "🔴", site: s.name, text: `<b>${esc(s.name)}</b> не отдал ни одной загрузки. Обычно ${group(s.avgLoads)} загрузок и ${usd(s.avgRevenue)} в день — проверьте сайт и код ADOK.` });
+    if (s.pageLoads === 0 && s.prevLoads > 0 && s.prevRevenue >= problemMin) {
+      out.push({ icon: "🔴", site: s.name, text: `<b>${esc(s.name)}</b> не отдал ни одной загрузки. ${prevLabel(d.day)} было ${group(s.prevLoads)} загрузок и ${usd(s.prevRevenue)} — проверьте сайт и код ADOK.` });
     }
   }
-  const net = delta(d.total.revenue, d.avg.revenue, "percent");
-  if (net != null && net <= -DROP_PCT) out.push({ icon: "🔴", text: `<b>Выручка сети упала на ${Math.round(-net)}%</b>: ${usd(d.total.revenue)} вместо обычных ${usd(d.avg.revenue)} в день.` });
+  const net = delta(d.total.revenue, d.prev.revenue, "percent");
+  if (net != null && net <= -DROP_PCT && d.prev.revenue - d.total.revenue >= problemMin) out.push({ icon: "🔴", text: `<b>Выручка сети упала на ${Math.round(-net)}%</b>: ${usd(d.total.revenue)} против ${usd(d.prev.revenue)} ${prevLabel(d.day)}.` });
   const drops = [
     ...d.bundles.map((b) => ({ ...b, label: `бандл ${b.name}`, site: undefined as string | undefined })),
-    ...d.sites.filter((s) => !(s.pageLoads === 0 && s.avgLoads > 0)).map((s) => ({ ...s, label: s.name, site: s.name as string | undefined })),
-  ].map((x) => ({ ...x, diff: x.revenue - x.avgRevenue, p: delta(x.revenue, x.avgRevenue, "percent") }))
-    .filter((x) => x.p != null && x.p <= -DROP_PCT && -x.diff >= minAmount)
+    ...d.sites.filter((s) => !(s.pageLoads === 0 && s.prevLoads > 0)).map((s) => ({ ...s, label: s.name, site: s.name as string | undefined })),
+  ].map((x) => ({ ...x, diff: x.revenue - x.prevRevenue, p: delta(x.revenue, x.prevRevenue, "percent") }))
+    .filter((x) => x.p != null && x.p <= -DROP_PCT && -x.diff >= problemMin)
     .sort((a, b) => a.diff - b.diff);
-  for (const x of drops) out.push({ icon: "🟡", site: x.site, text: `<b>${esc(x.label)}</b>: выручка ${usd(x.revenue)} вместо обычных ${usd(x.avgRevenue)} (${pct(x.p)}, ${signedUsd(x.diff)}).` });
+  for (const x of drops) out.push({ icon: "🟡", site: x.site, text: `<b>${esc(x.label)}</b>: выручка ${usd(x.revenue)} против ${usd(x.prevRevenue)} ${prevLabel(d.day)} (${pct(x.p)}, ${signedUsd(x.diff)}).` });
   return out;
 }
 
-/** Alert groups that go into the digest: every critical group; warnings only when something new appeared. */
-export const digestAlertGroups = (d: DigestData) => [
-  ...d.alerts.filter((a) => a.level === "CRITICAL"),
-  ...d.alerts.filter((a) => a.level === "WARNING" && a.newCount > 0),
-];
+/**
+ * Alerts that go into the digest: worth at least `problemMin` a day (or a rule shown whatever the money),
+ * grouped as they come; `hidden` — active alerts below the bar, said as one link to the alerts page.
+ */
+export function digestAlertGroups(d: DigestData, problemMin: number = DIGEST_DEFAULTS.problemMin): { groups: (DigestAlert & { shown: DigestAlertItem[] })[]; hidden: number } {
+  let total = 0, shown = 0;
+  const groups = [];
+  for (const a of d.alerts) {
+    total += a.count;
+    const items = a.items.filter((x) => ALWAYS_SHOWN.has(a.rule) || perDay(a.rule, x.moneyAtRisk) >= problemMin);
+    shown += items.length;
+    if (items.length) groups.push({ ...a, shown: items });
+  }
+  return { groups, hidden: total - shown };
+}
 
-/** Sites that moved notably against their 7-day average and are not already listed as a problem. */
+/** Sites that moved notably against the day before and are not already listed as a problem. */
 export function digestChanges(d: DigestData, minAmount: number = DIGEST_DEFAULTS.minAmount, skip: Set<string> = new Set()) {
   if (d.baseDays === 0) return { up: [], down: [] };
   const moved = d.sites.filter((s) => !skip.has(s.name))
-    .map((s) => ({ name: s.name, diff: s.revenue - s.avgRevenue, p: delta(s.revenue, s.avgRevenue, "percent") }))
+    .map((s) => ({ name: s.name, diff: s.revenue - s.prevRevenue, p: delta(s.revenue, s.prevRevenue, "percent") }))
     .filter((x) => Math.abs(x.diff) >= minAmount && (x.p == null ? x.diff > 0 : Math.abs(x.p) >= CHANGE_PCT));
   return { up: moved.filter((x) => x.diff > 0).sort((a, b) => b.diff - a.diff), down: moved.filter((x) => x.diff < 0).sort((a, b) => a.diff - b.diff) };
 }
@@ -142,37 +168,36 @@ export function shortTitle(rule: string, t: string): string {
   return k === words.length ? tw.slice(k).join(" ") : t;
 }
 
-/** One alert group: heading, the first alerts in full, the rest folded, what to do. `detailed` = how many in full. */
-function alertBlock(a: DigestAlert, detailed: number): string {
-  const items = a.level === "WARNING" ? a.items.filter((x) => x.isNew) : a.items;
-  const total = a.level === "WARNING" ? a.newCount : a.count;
+/** One alert group: heading, the first alerts in full, the rest folded, what to do. `detailed` = how many in full. Money in $ a day. */
+function alertBlock(a: DigestAlert & { shown: DigestAlertItem[] }, detailed: number): string {
+  const items = a.shown;
+  const day = (m: number) => (a.rule === "overdue_payment" ? usd(m) : `≈${usd(perDay(a.rule, m))}/день`);
+  const sum = items.reduce((t, x) => t + x.moneyAtRisk, 0); // display only: the alerts' own estimates
+  const fresh = items.filter((x) => x.isNew).length;
   const head = [`${a.level === "CRITICAL" ? "🔴" : "🟡"} <b>${esc(RULE_LABEL[a.rule] ?? a.rule)}</b>`,
-    total > 1 ? plural(total, "случай", "случая", "случаев") : "",
-    Math.round(a.moneyAtRisk) > 0 ? `под риском ${usd(a.moneyAtRisk)}` : "",
-    a.level === "CRITICAL" && a.newCount > 0 ? (a.newCount === total ? "новое" : `новых ${a.newCount}`) : ""].filter(Boolean).join(" · ");
-  const full = (x: DigestAlertItem) => `▪️ <b>${esc(shortTitle(a.rule, x.title))}</b>${Math.round(x.moneyAtRisk) > 0 ? ` · ${usd(x.moneyAtRisk)}` : ""}\n<i>${esc(x.message)}</i>`;
-  const brief = (x: DigestAlertItem) => `▪️ ${esc(shortTitle(a.rule, x.title))}${Math.round(x.moneyAtRisk) > 0 ? ` · ${usd(x.moneyAtRisk)}` : ""}`;
+    items.length > 1 ? plural(items.length, "случай", "случая", "случаев") : "",
+    Math.round(sum) > 0 ? day(sum) : "",
+    fresh ? (fresh === items.length ? (items.length > 1 ? "все новые" : "новое") : `новых ${fresh}`) : ""].filter(Boolean).join(" · ");
+  const money = (x: DigestAlertItem) => (Math.round(x.moneyAtRisk) > 0 ? ` · ${day(x.moneyAtRisk)}` : "");
+  const full = (x: DigestAlertItem) => `▪️ <b>${esc(shortTitle(a.rule, x.title))}</b>${money(x)}\n<i>${esc(x.message)}</i>`;
+  const brief = (x: DigestAlertItem) => `▪️ ${esc(shortTitle(a.rule, x.title))}${money(x)}`;
   const L = [head, ...items.slice(0, detailed).map(full)];
   const rest = items.slice(detailed);
-  const unseen = total - items.length; // beyond what the query brought: said in words, the list is on the alerts page
-  if (rest.length || unseen > 0) {
-    const lines = [...rest.map(brief), ...(unseen > 0 ? [`и ещё ${plural(unseen, "случай", "случая", "случаев")} — на странице алертов`] : [])];
-    L.push(`<blockquote expandable>${lines.join("\n")}</blockquote>`);
-  }
+  if (rest.length) L.push(`<blockquote expandable>${rest.map(brief).join("\n")}</blockquote>`);
   if (a.action) L.push(`👉 ${esc(a.action)}`);
   return L.join("\n");
 }
 
 /** Blocks of the digest in order. Each block is whole: messages are split only between blocks. */
-function blocks(d: DigestData, o: Required<Pick<DigestOptions, "minAmount">> & DigestOptions, detailed: number): { head: string[]; problems: string[]; tail: string[] } {
+function blocks(d: DigestData, o: Required<Pick<DigestOptions, "minAmount" | "problemMin">> & DigestOptions, detailed: number): { head: string[]; problems: string[]; tail: string[] } {
   const cmp = d.baseDays > 0;
   const head: string[] = [];
   const r = romi(d.total.revenue, d.total.cost);
-  const vs = cmp ? arrow(delta(d.total.revenue, d.avg.revenue, "percent")) : "";
+  const vs = cmp ? arrow(delta(d.total.revenue, d.prev.revenue, "percent")) : "";
   head.push([`📊 <b>TubeStat · ${dayLabel(d.day)}</b>`,
     ...(d.incomplete ? ["⚠️ <i>Данные за вчера загружены не полностью — цифры ещё изменятся</i>"] : []),
     "",
-    `💰 Выручка <b>${usd(d.total.revenue)}</b>${vs ? `  ${vs} к ср. 7 дн.` : ""}`,
+    `💰 Выручка <b>${usd(d.total.revenue)}</b>${vs ? `  ${vs} к ${prevLabel(d.day)}` : ""}`,
     `💸 Расход <b>${usd(d.total.cost)}</b>`,
     `📈 Маржа <b>${usd(d.total.margin)}</b>${r == null ? "" : `  ROMI ${Math.round(r)}%`}`].join("\n"));
   if (d.total.revenue > 0) {
@@ -187,8 +212,19 @@ function blocks(d: DigestData, o: Required<Pick<DigestOptions, "minAmount">> & D
   if (bundles.length) {
     const w = [12, 6, 6, 5];
     head.push(`🗂 <b>Бандлы</b>${d.bundlesOverlap ? " <i>(сайт может быть в нескольких)</i>" : ""}\n` + pre([
-      row(["", "выруч.", "маржа", cmp ? "7 дн." : ""], w),
-      ...bundles.map((b) => row([b.name, usd(b.revenue), usd(b.margin), cmp ? pct(delta(b.revenue, b.avgRevenue, "percent")) || "—" : ""], w)),
+      row(["", "выруч.", "маржа", cmp ? prevLabel(d.day) : ""], w),
+      ...bundles.map((b) => row([b.name, usd(b.revenue), usd(b.margin), cmp ? pct(delta(b.revenue, b.prevRevenue, "percent")) || "—" : ""], w)),
+    ]));
+  }
+
+  const formats = d.formats.filter((f) => Math.round(f.revenue) !== 0 || Math.round(f.prevRevenue) !== 0).sort((a, b) => b.revenue - a.revenue);
+  const fmtSum = formats.reduce((t, f) => t + f.revenue, 0); // display only: shares of the rows shown
+  if (formats.length) {
+    const w = [12, 6, 5, 5];
+    head.push(`🧩 <b>Форматы</b> <i>(AdSpyglass, без фикс-дилов)</i>\n` + pre([
+      row(["", "выруч.", "доля", cmp ? prevLabel(d.day) : ""], w),
+      ...formats.map((f) => row([FORMAT_LABEL[f.format] ?? f.format, usd(f.revenue), fmtSum > 0 ? `${Math.round((f.revenue / fmtSum) * 100)}%` : "",
+        cmp ? pct(delta(f.revenue, f.prevRevenue, "percent")) || "—" : ""], w)),
     ]));
   }
 
@@ -198,23 +234,26 @@ function blocks(d: DigestData, o: Required<Pick<DigestOptions, "minAmount">> & D
     head.push(`🚦 <b>Расход на трафик</b>\n` + pre(costs.map((c) => row([c.title, usd(c.cost), costSum ? `${Math.round((c.cost / costSum) * 100)}%` : ""], [19, 7, 4]))));
   }
 
-  const own = digestProblems(d, o.minAmount);
+  const own = digestProblems(d, o.problemMin);
   const ch = digestChanges(d, o.minAmount, new Set(own.map((p) => p.site).filter((s): s is string => Boolean(s))));
   const moves = [...ch.up.map((x) => `▲ ${esc(x.name)} ${signedUsd(x.diff)}${x.p == null ? "" : ` (${pct(x.p)})`}`),
     ...ch.down.map((x) => `▼ ${esc(x.name)} ${signedUsd(x.diff)}${x.p == null ? "" : ` (${pct(x.p)})`}`)];
-  if (moves.length) head.push(["🔀 <b>Изменения</b> <i>к среднему за 7 дней</i>", ...moves].join("\n"));
+  if (moves.length) head.push([`🔀 <b>Изменения</b> <i>к ${prevLabel(d.day)}</i>`, ...moves].join("\n"));
 
-  const groups = digestAlertGroups(d);
+  const { groups, hidden } = digestAlertGroups(d, o.problemMin);
   const problems: string[] = [];
   const crit = own.filter((p) => p.icon === "🔴").length + groups.filter((g) => g.level === "CRITICAL").length;
   const warn = own.length + groups.length - crit;
+  const alertsLink = (text: string) => (o.appUrl ? `<a href="${o.appUrl}/alerts">${text}</a>` : text);
+  const small = hidden > 0 ? `${plural(hidden, "алерт", "алерта", "алертов")} меньше ${usd(o.problemMin)}/день` : "";
   if (own.length || groups.length) {
-    problems.push(`⚠️ <b>Проблемы</b> — ${[crit ? plural(crit, "критичная", "критичные", "критичных") : "", warn ? plural(warn, "предупреждение", "предупреждения", "предупреждений") : ""].filter(Boolean).join(", ")}`
+    problems.push(`⚠️ <b>Проблемы от ${usd(o.problemMin)}/день</b> — ${[crit ? plural(crit, "критичная", "критичные", "критичных") : "", warn ? plural(warn, "предупреждение", "предупреждения", "предупреждений") : ""].filter(Boolean).join(", ")}`
       + (own.length ? `\n\n${own.map((p) => `${p.icon} ${p.text}`).join("\n")}` : ""));
     for (const g of groups) problems.push(alertBlock(g, detailed));
-  } else problems.push("✅ <b>Без просадок и сбоев</b>");
+    if (small) problems.push(`ℹ️ Ещё ${small} — ${alertsLink("все алерты")}`);
+  } else problems.push(`✅ <b>Крупных проблем нет</b>${small ? ` · ${small} — ${alertsLink("все алерты")}` : ""}`);
 
-  const tail = o.appUrl ? [`<a href="${o.appUrl}/?preset=yesterday">Открыть сводку</a>${groups.length ? ` · <a href="${o.appUrl}/alerts">Все алерты</a>` : ""}`] : [];
+  const tail = o.appUrl ? [`<a href="${o.appUrl}/?preset=yesterday">Открыть сводку</a>`] : [];
   return { head, problems, tail };
 }
 
@@ -236,7 +275,7 @@ function pack(parts: string[], max: number): string[] {
  * problems; alert details fold into expandable quotes before anything is split further.
  */
 export function buildDigest(d: DigestData, opts: DigestOptions = {}): string[] {
-  const o = { ...opts, minAmount: opts.minAmount ?? DIGEST_DEFAULTS.minAmount };
+  const o = { ...opts, minAmount: opts.minAmount ?? DIGEST_DEFAULTS.minAmount, problemMin: opts.problemMin ?? DIGEST_DEFAULTS.problemMin };
   const max = opts.maxChars ?? DIGEST_DEFAULTS.maxChars;
   for (const detailed of [DETAILED, 1, 0]) {
     const b = blocks(d, o, detailed);

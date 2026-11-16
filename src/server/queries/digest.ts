@@ -1,5 +1,4 @@
-// Numbers of the morning Telegram digest (ADR 0022): yesterday against the average of the 7 days
-// before it — the network (over sites, never a sum of bundles), bundles, sites, traffic cost by
+// Numbers of the morning Telegram digest (ADR 0022): yesterday against the day before it — the network (over sites, never a sum of bundles), bundles, sites, traffic cost by
 // source, active alerts and the state of the load. All money is summed in SQL over v_site_geo_daily:
 // `revenue_mediated` is everything AdSpyglass reports (deals billed via ADOK are inside it),
 // `revenue_direct` — fix deals billed directly, so the two never overlap.
@@ -35,7 +34,8 @@ export function alertGroups(rows: { level: "CRITICAL" | "WARNING"; rule: string;
     if (g.items.length < MAX_ITEMS) g.items.push({ title: a.title, message: a.message, moneyAtRisk: money, isNew });
     groups.set(key, g);
   }
-  for (const g of groups.values()) g.items.sort((x, y) => Number(y.isNew) - Number(x.isNew) || y.moneyAtRisk - x.moneyAtRisk);
+  // Costliest first: the digest shows what is worth money a day, and the top of the list is what passes the bar.
+  for (const g of groups.values()) g.items.sort((x, y) => y.moneyAtRisk - x.moneyAtRisk || Number(y.isNew) - Number(x.isNew));
   const rank = (l: string) => (l === "CRITICAL" ? 0 : 1);
   return [...groups.values()].sort((x, y) => rank(x.level) - rank(y.level) || y.moneyAtRisk - x.moneyAtRisk || y.count - x.count);
 }
@@ -43,11 +43,13 @@ export function alertGroups(rows: { level: "CRITICAL" | "WARNING"; rule: string;
 export const MAX_ITEMS = 20;
 
 export async function digestData(db: PrismaClient, day: string, now = new Date()): Promise<DigestData> {
-  const from = addDays(day, -7), prevTo = addDays(day, -1);
+  // The digest goes day after day: yesterday against the day before it (the owner's call, 16.11 — not a 7-day average).
+  const from = addDays(day, -1), prevTo = addDays(day, -1);
   const fresh = new Date(now.getTime() - 26 * 3_600_000); // "new" = first seen since the previous digest (a day and a margin)
   const win = Prisma.sql`g.date BETWEEN ${from}::date AND ${day}::date AND g.site_id IN ${LIVE}`;
   const cur = Prisma.sql`FILTER (WHERE g.date = ${day}::date)`, prev = Prisma.sql`FILTER (WHERE g.date <= ${prevTo}::date)`;
-  const [[net], bundles, sites, costs, overlap, alerts, pause, [cov], lastDerive, ready] = await Promise.all([
+  const fwin = Prisma.sql`f.date BETWEEN ${from}::date AND ${day}::date AND f.site_id IN ${LIVE}`;
+  const [[net], bundles, sites, costs, overlap, alerts, pause, [cov], lastDerive, ready, formats] = await Promise.all([
     db.$queryRaw<Record<string, number | null>[]>`
       SELECT COUNT(DISTINCT g.date) FILTER (WHERE g.date <= ${prevTo}::date AND (g.revenue <> 0 OR g.page_loads > 0))::int base_days,
         SUM(g.revenue) ${cur}::float8 revenue, SUM(g.revenue_mediated) ${cur}::float8 mediated, SUM(g.revenue_direct) ${cur}::float8 direct,
@@ -77,9 +79,13 @@ export async function digestData(db: PrismaClient, day: string, now = new Date()
       FROM (SELECT g.date, g.site_id FROM v_site_geo_daily g WHERE g.date = ${day}::date AND g.site_id IN ${LIVE} GROUP BY 1, 2 HAVING SUM(g.revenue_mediated) > 0) x`,
     db.ingestRun.findFirst({ where: { source: "derive", status: { not: "running" } }, orderBy: { startedAt: "desc" } }),
     digestReady(db, day),
+    // AdSpyglass revenue by format (v_format_daily: the ad_type cut, zones where it is missing) — own and fix deals are not in it.
+    db.$queryRaw<{ format: string; revenue: number | null; p_revenue: number | null }[]>`
+      SELECT f.format, SUM(f.revenue) FILTER (WHERE f.date = ${day}::date)::float8 revenue, SUM(f.revenue) FILTER (WHERE f.date <= ${prevTo}::date)::float8 p_revenue
+      FROM v_format_daily f WHERE ${fwin} GROUP BY f.format`,
   ]);
   const base = n(net?.base_days);
-  const avg = (v: number | null | undefined) => (base ? n(v) / base : 0);
+  const avg = (v: number | null | undefined) => (base ? n(v) : 0); // the day before as it is
   const health: string[] = [];
   if (pause) health.push(`AdSpyglass на паузе до ${pause.until.slice(11, 16)} UTC: ${pause.reason.slice(0, 80)}`);
   if (n(cov?.missing) > 0) health.push(`Расход не загружен у ${cov!.missing} из ${cov!.sites} сайтов — маржа завышена`);
@@ -87,10 +93,11 @@ export async function digestData(db: PrismaClient, day: string, now = new Date()
   return {
     day, baseDays: base,
     total: { revenue: n(net?.revenue), mediated: n(net?.mediated), direct: n(net?.direct), cost: n(net?.cost), margin: n(net?.margin) },
-    avg: { revenue: avg(net?.p_revenue), cost: avg(net?.p_cost), margin: avg(net?.p_margin) },
-    bundles: bundles.map((b) => ({ name: b.name, revenue: n(b.revenue), margin: n(b.margin), avgRevenue: avg(b.p_revenue) })),
+    prev: { revenue: avg(net?.p_revenue), cost: avg(net?.p_cost), margin: avg(net?.p_margin) },
+    bundles: bundles.map((b) => ({ name: b.name, revenue: n(b.revenue), margin: n(b.margin), prevRevenue: avg(b.p_revenue) })),
     bundlesOverlap: n(overlap[0]?.n) > 0,
-    sites: sites.map((s) => ({ name: s.name, revenue: n(s.revenue), margin: n(s.margin), avgRevenue: avg(s.p_revenue), pageLoads: n(s.loads), avgLoads: avg(s.p_loads) })),
+    formats: formats.map((f) => ({ format: f.format, revenue: n(f.revenue), prevRevenue: avg(f.p_revenue) })),
+    sites: sites.map((s) => ({ name: s.name, revenue: n(s.revenue), margin: n(s.margin), prevRevenue: avg(s.p_revenue), pageLoads: n(s.loads), prevLoads: avg(s.p_loads) })),
     costs: costs.map((c) => ({ title: c.title, cost: n(c.cost) })),
     alerts: alertGroups(alerts, fresh),
     health, incomplete: !ready,
