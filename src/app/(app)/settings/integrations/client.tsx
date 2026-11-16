@@ -6,7 +6,8 @@ import { Input, Select } from "@/components/ui/input";
 import { Confirm } from "@/components/ui/sheet";
 import { useToast } from "@/components/ui/toast";
 import { applyMetrikaCountersAction, cancelBackfillAction, connectMetrikaAction, demoAction, disconnectMetrikaAction, mapAliasAction, metrikaCountersAction, resumeAsgAction, runJobAction,
-  saveAsgBudgetAction, saveAsgPlanAction, saveAsgSpeedAction, saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
+  saveAsgBudgetAction, saveAsgPlanAction, saveAsgSpeedAction, disconnectTelegramAction, findTelegramChatsAction, previewDigestAction,
+  saveTelegramSettingsAction, saveTelegramTokenAction, sendDigestNowAction, saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
 import { RESTATE_CHOICES, UNLIMITED, planCost, type AsgPlan, type CutKey } from "@/server/ingest/adspyglass/plan";
 import { DECISION_LABEL, type MatchRow } from "@/server/domain/metrika-match";
 import { fmtDate } from "@/lib/format";
@@ -266,6 +267,77 @@ export function SpeedForm({ preset, options }: { preset: string; options: { valu
     <ActionForm action={saveAsgSpeedAction} submit="Сохранить" submitSize="sm" className="mt-3 flex flex-wrap items-end gap-2 [&>div:last-child]:pt-0">
       <FormField name="preset" label="Скорость запросов"><Select name="preset" defaultValue={preset}>{options.map((o) => <option key={o.value} value={o.value}>{o.title}</option>)}</Select></FormField>
     </ActionForm>
+    </div>
+  );
+}
+
+export interface TelegramBlockView { bot: string | null; chatId: string | null; chatTitle: string | null; hour: number; minAmount: number; enabled: boolean }
+type TgChat = { id: string; title: string; type: string };
+const CHAT_KIND: Record<string, string> = { private: "личный чат", group: "группа", supergroup: "группа", channel: "канал" };
+
+/** «Telegram»: the bot token → the chat → when to send → preview and «send now». */
+export function TelegramBlock({ view, hours, error = null }: { view: TelegramBlockView | null; hours: number[]; error?: string | null }) {
+  const { pending, run } = useRun();
+  const toast = useToast();
+  const [busy, start] = useTransition();
+  const [editToken, setEditToken] = useState(!view);
+  const [chats, setChats] = useState<TgChat[] | null>(null);
+  const [preview, setPreview] = useState<string | null>(null);
+  const find = () => start(async () => {
+    const r = await findTelegramChatsAction();
+    if (r.error) return toast(r.error, "error");
+    setChats((r.data?.chats as TgChat[]) ?? []);
+  });
+  const show = () => start(async () => {
+    const r = await previewDigestAction();
+    if (r.error) return toast(r.error, "error");
+    setPreview(String(r.data?.text ?? ""));
+  });
+  return (
+    <div className="flex flex-col gap-4" data-testid="telegram-block">
+      {error && <p className="rounded-md bg-negative-soft px-3 py-2 text-sm text-negative">{error}</p>}
+      {editToken || !view ? (
+        <ActionForm action={saveTelegramTokenAction} submit="Подключить бота" submitSize="sm" onDone={() => setEditToken(false)} cancel={view ? () => setEditToken(false) : undefined}
+          className="grid items-end gap-3 sm:grid-cols-[1fr_auto] [&>div:last-child]:col-span-full">
+          <FormField name="token" label="Токен бота" hint="@BotFather → /newbot → токен вида 123456789:AA…; хранится зашифрованным, в интерфейсе не показывается">
+            <Input name="token" type="password" autoComplete="new-password" className="font-mono" />
+          </FormField>
+        </ActionForm>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <span data-testid="telegram-bot">Бот <a href={`https://t.me/${view.bot}`} target="_blank" rel="noreferrer" className="text-accent hover:underline">@{view.bot}</a></span>
+            <span className={view.chatId ? "" : "text-warning"} data-testid="telegram-chat">{view.chatId ? `→ ${view.chatTitle ?? view.chatId}` : "чат не выбран"}</span>
+            <Button size="sm" variant="ghost" onClick={() => setEditToken(true)}>Сменить токен</Button>
+            <Button size="sm" variant="ghost" disabled={pending} onClick={() => run(disconnectTelegramAction)}>Отключить</Button>
+          </div>
+          <div className="rounded-lg border border-border p-3">
+            <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
+              <Button size="sm" disabled={busy} onClick={find}>{busy ? "Ищем…" : "Найти чат"}</Button>
+              <span className="text-xs text-muted">сначала откройте бота в Telegram и нажмите Start — или добавьте его в группу и напишите там сообщение</span>
+            </div>
+            <ActionForm action={saveTelegramSettingsAction} submit="Сохранить" submitSize="sm" className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-4 [&>div:last-child]:col-span-full">
+              <FormField name="chat" label="Куда слать">
+                <Select name="chat" defaultValue="" key={chats?.length ?? 0}>
+                  <option value="">{view.chatId ? `${view.chatTitle ?? view.chatId} (сейчас)` : chats ? "выберите чат" : "нажмите «Найти чат»"}</option>
+                  {(chats ?? []).map((c) => <option key={c.id} value={`${c.id}|${c.title}`}>{c.title} · {CHAT_KIND[c.type] ?? c.type}</option>)}
+                </Select>
+              </FormField>
+              <FormField name="hour" label="Время, МСК" hint="данные за вчера готовы около 08:00">
+                <Select name="hour" defaultValue={String(view.hour)}>{hours.map((h) => <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>)}</Select>
+              </FormField>
+              <FormField name="minAmount" label="Порог, $" hint="изменения и просадки меньше — не показывать"><Input name="minAmount" inputMode="numeric" defaultValue={view.minAmount} className="num w-28" /></FormField>
+              <label className="flex h-9 items-center gap-2 text-sm"><input type="checkbox" name="enabled" value="1" defaultChecked={view.enabled} data-testid="telegram-enabled" /> отправлять каждый день</label>
+            </ActionForm>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Button size="sm" disabled={busy} onClick={show}>Предпросмотр</Button>
+            <Button size="sm" variant="primary" disabled={pending || !view.chatId} onClick={() => run(sendDigestNowAction)}>{pending ? "Отправляем…" : "Отправить сейчас"}</Button>
+            {!view.chatId && <span className="text-xs text-muted">выберите чат, чтобы отправить</span>}
+          </div>
+          {preview != null && <pre className="whitespace-pre-wrap rounded-lg border border-border bg-surface-2 p-3 text-sm" data-testid="telegram-preview">{preview}</pre>}
+        </>
+      )}
     </div>
   );
 }

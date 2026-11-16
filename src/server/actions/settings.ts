@@ -6,6 +6,8 @@ import { config } from "@/server/config";
 import { db } from "@/server/db";
 import { RuleError } from "@/server/domain/errors";
 import { checkSite, withAsg } from "@/server/ingest/probe";
+import { digestPlain } from "@/lib/digest";
+import { digestText, disconnectTelegram, findTelegramChats, saveTelegramSettings, saveTelegramToken, sendDigestNow, telegramView } from "@/server/services/telegram";
 import { SPEEDS, asgBudget, resumeAsg, setAsgBudget, setAsgSpeed, type AsgSpeedPreset } from "@/server/ingest/run";
 import { JOB_NAMES, type JobName } from "@/server/jobs/handlers";
 import { BACKFILL_MODES, cancelBackfill, daysBetween, requestsPerDay, startBackfill, type BackfillMode } from "@/server/jobs/backfill";
@@ -19,7 +21,7 @@ import {
 } from "@/server/services/settings";
 import { applyMetrikaCounters, connectMetrika, disconnectMetrika, metrikaCounters, saveMetrikaApp } from "@/server/services/metrika-connection";
 import { requireSession } from "@/server/session";
-import { guarded, int, opt, str, type ActionResult } from "./result";
+import { guarded, int, money, opt, str, type ActionResult } from "./result";
 
 const yesterday = () => new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
 
@@ -396,4 +398,59 @@ export async function saveAsgSpeedAction(_: ActionResult, f: FormData): Promise<
     revalidatePath("/settings/integrations");
     return { ok: true, message: `Скорость: ${SPEEDS[preset as AsgSpeedPreset].title}. Действует со следующего запуска джоба` };
   });
+}
+
+/** «Telegram» step 1: the bot token from @BotFather (checked with getMe, stored encrypted). */
+export async function saveTelegramTokenAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const bot = await saveTelegramToken(db, config(), str(f, "token"));
+    revalidatePath("/settings/integrations");
+    return { ok: true, message: `Бот @${bot} подключён. Напишите ему в Telegram (Start) или добавьте в группу, затем «Найти чат»` };
+  });
+}
+
+/** «Найти чат»: the chats the bot has heard from. */
+export async function findTelegramChatsAction(): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const chats = await findTelegramChats(db, config());
+    return chats.length ? { ok: true, message: `Найдено чатов: ${chats.length}`, data: { chats } }
+      : { error: "Бот ещё ничего не получал: откройте его в Telegram и нажмите Start (или напишите в группе, куда он добавлен), затем повторите" };
+  });
+}
+
+/** «Telegram» step 2: chat, hour (MSK), noise threshold, on/off. */
+export async function saveTelegramSettingsAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const [chatId, chatTitle] = str(f, "chat") ? [str(f, "chat").split("|")[0], str(f, "chat").split("|").slice(1).join("|")] : [null, null];
+    await saveTelegramSettings(db, { chatId, chatTitle, hour: Number(str(f, "hour")), minAmount: Number(money(f, "minAmount") || "0"), enabled: f.get("enabled") === "1" });
+    revalidatePath("/settings/integrations");
+    return { ok: true, message: "Настройки сводки сохранены" };
+  });
+}
+
+/** Preview: yesterday's digest as it would be sent now (plain text). */
+export async function previewDigestAction(): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const day = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    const v = await telegramView(db);
+    return { ok: true, data: { text: digestPlain(await digestText(db, config(), day, v?.minAmount)) } };
+  });
+}
+
+export async function sendDigestNowAction(): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const day = await sendDigestNow(db, config());
+    revalidatePath("/settings/integrations");
+    return { ok: true, message: `Сводка за ${day} отправлена в Telegram` };
+  });
+}
+
+export async function disconnectTelegramAction(): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => { await disconnectTelegram(db); revalidatePath("/settings/integrations"); return { ok: true, message: "Бот отключён, токен удалён" }; });
 }

@@ -18,16 +18,17 @@ import { matchZonesToPlacements } from "@/server/services/inventory";
 import { forecastDeals } from "@/server/services/deals";
 import { generateHypotheses } from "@/server/services/hypotheses";
 import { ensureFreshToken, metrikaToken } from "@/server/services/metrika-connection";
+import { digestTick } from "@/server/services/telegram";
 
 /** Sources the alert «ингест упал» watches: ADOK from .env, Metrika from the UI connection or .env (ADR 0018). */
 export async function configuredSources(db: PrismaClient, cfg: Config): Promise<string[]> {
   return [cfg.asg.configured && "adspyglass", (await metrikaToken(db, cfg)) && "metrika"].filter(Boolean) as string[];
 }
 
-export interface JobContext { db: PrismaClient; cfg: Config; raw: RawStore; today?: string; fetchImpl?: typeof fetch }
+export interface JobContext { db: PrismaClient; cfg: Config; raw: RawStore; today?: string; fetchImpl?: typeof fetch; now?: Date }
 export interface JobData { from?: string; to?: string; siteId?: string; mode?: BackfillMode }
 
-export const JOB_NAMES = ["asg:totals", "asg:sites", "asg:backfill", "metrika", "derive", "geo:reprocess", "raw:prune"] as const;
+export const JOB_NAMES = ["asg:totals", "asg:sites", "asg:backfill", "metrika", "derive", "geo:reprocess", "raw:prune", "digest"] as const;
 export type JobName = (typeof JOB_NAMES)[number];
 
 const todayOf = (ctx: JobContext) => ctx.today ?? new Date().toISOString().slice(0, 10);
@@ -61,6 +62,7 @@ export function windowFor(name: JobName, ctx: JobContext, data: JobData, plan: A
     case "derive": return { from: addDays(t, -4), to: addDays(t, -1) };
     case "geo:reprocess": return { from: addDays(t, -90), to: t };
     case "raw:prune": return { from: t, to: t };
+    case "digest": return { from: addDays(t, -1), to: addDays(t, -1) };
   }
 }
 
@@ -105,6 +107,10 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
       const derived = await runJob("derive", ctx, { from: w.from, to: addDays(todayOf(ctx), -1) });
       return { rows, partial: derived.error ? [`derive: ${derived.error}`] : [] };
     });
+  }
+  if (name === "digest") {
+    // The morning Telegram digest (ADR 0022): sends once a day at the chosen hour, when yesterday is loaded.
+    return digestTick(db, cfg, ctx.fetchImpl, ctx.now ?? (ctx.today ? new Date(`${ctx.today}T12:00:00Z`) : new Date()));
   }
   if (name === "raw:prune") {
     // Disk: gzip old plain files, drop superseded runs of final days and everything past 90 days (ADR 0019).
@@ -217,4 +223,5 @@ export const SCHEDULES: { name: JobName; pattern: string; queue: "asg" | "main" 
   { name: "metrika", pattern: "15 * * * *", queue: "main" },
   { name: "derive", pattern: "45 4 * * *", queue: "main" },
   { name: "raw:prune", pattern: "30 5 * * *", queue: "main" },
+  { name: "digest", pattern: "0,30 * * * *", queue: "main" },
 ];

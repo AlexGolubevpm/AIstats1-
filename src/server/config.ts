@@ -17,6 +17,11 @@ export function config(env: Record<string, string | undefined> = process.env) {
       token: (env.METRIKA_TOKEN ?? "").trim(),
       get configured() { return Boolean(this.token); },
     },
+    telegram: {
+      // The bot token is entered in the UI and stored encrypted (ADR 0022); this is only the Bot API address,
+      // for a proxy when the hosting cannot reach api.telegram.org.
+      apiBase: (env.TELEGRAM_API_BASE ?? "").trim().replace(/\/$/, "") || "https://api.telegram.org",
+    },
     /** Key for secrets stored in the database (src/server/crypto.ts); the deploy generates it once. */
     appSecret: (env.APP_SECRET ?? "").trim(),
     /** Public https address of the app incl. the base path (deploy/apply-env.sh): absolute links, the Metrika OAuth callback. */

@@ -1,5 +1,7 @@
 // The minimum E2E scenarios from docs/engineering/10-testing.md.
 import { expect, test } from "@playwright/test";
+import { createServer } from "node:http";
+import { E2E_TELEGRAM_PORT } from "../../playwright.config";
 import { login } from "./helpers";
 
 test("1. password login → overview with non-empty KPIs; pages are closed without a session", async ({ page, request }) => {
@@ -477,6 +479,63 @@ test("integrations: the ADOK request plan shows its cost live, saves, and the ba
   await page.reload();
   await expect(page.getByTestId("asg-cuts").locator("input[name='cut:ad_type']")).toBeChecked();
   await expect(page.getByText(/запросов на день для/)).toBeVisible(); // the backfill paragraph quotes the plan's per-day cost
+});
+
+test("integrations: Telegram — the bot token, the chat found by the bot, a preview of the digest and «send now»", async ({ page }) => {
+  // A fake Bot API on the port the app is pointed at (TELEGRAM_API_BASE): nothing leaves the machine.
+  const sent: { chat_id: string; text: string }[] = [];
+  const api = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const method = (req.url ?? "").split("/").pop();
+      if (method === "sendMessage") sent.push(JSON.parse(body));
+      const result = method === "getMe" ? { username: "tubestat_e2e_bot" }
+        : method === "getUpdates" ? [{ message: { chat: { id: 4242, type: "private", first_name: "Owner" } } }, { my_chat_member: { chat: { id: -100777, type: "supergroup", title: "TubeStat team" } } }] : { message_id: 1 };
+      res.setHeader("Content-Type", "application/json").end(JSON.stringify({ ok: true, result }));
+    });
+  });
+  await new Promise<void>((r) => api.listen(E2E_TELEGRAM_PORT, "127.0.0.1", r));
+  try {
+    await login(page, "/settings/integrations");
+    const block = page.getByTestId("telegram-block");
+    await block.locator("input[name=token]").fill("123");
+    await block.getByRole("button", { name: "Подключить бота" }).click();
+    await expect(block.getByText(/скопируйте его целиком из @BotFather/)).toBeVisible();
+    await block.locator("input[name=token]").fill("123456789:AAe2etokene2etokene2etokene2etoken_x");
+    await block.getByRole("button", { name: "Подключить бота" }).click();
+    await expect(page.getByTestId("telegram-bot")).toContainText("@tubestat_e2e_bot");
+    await expect(page.getByTestId("telegram-chat")).toHaveText("чат не выбран");
+    await expect(block.getByRole("button", { name: "Отправить сейчас" })).toBeDisabled();
+    await expect(page.locator("body")).not.toContainText("AAe2etoken"); // the token is never shown back
+
+    await block.getByRole("button", { name: "Найти чат" }).click();
+    await block.locator("select[name=chat]").selectOption({ label: "TubeStat team · группа" });
+    await block.locator("select[name=hour]").selectOption("10");
+    await block.getByRole("button", { name: "Сохранить" }).click();
+    await expect(page.getByText("Настройки сводки сохранены")).toBeVisible();
+    await expect(page.getByTestId("telegram-chat")).toHaveText("→ TubeStat team");
+
+    await block.getByRole("button", { name: "Предпросмотр" }).click();
+    const preview = page.getByTestId("telegram-preview");
+    await expect(preview).toContainText("📊 TubeStat ·");
+    await expect(preview).toContainText(/Выручка \$[\d ]+/);
+    await expect(preview).toContainText(/AdSpyglass \$[\d ]+.*фикс-дилы \$[\d ]+/);
+    await expect(preview).toContainText("Бандлы");
+    expect((await preview.innerText()).length).toBeLessThanOrEqual(1500);
+
+    await block.getByRole("button", { name: "Отправить сейчас" }).click();
+    await expect(page.getByText(/Сводка за \d{4}-\d{2}-\d{2} отправлена в Telegram/)).toBeVisible();
+    expect(sent).toHaveLength(1);
+    expect(sent[0].chat_id).toBe("-100777");
+    expect(sent[0].text).toContain("<b>TubeStat ·");
+
+    await page.reload();
+    await expect(page.getByRole("row", { name: /digest/ }).first()).toBeVisible(); // the send is in the 7-day log
+    await page.getByTestId("telegram-block").getByRole("button", { name: "Отключить" }).click();
+    await expect(page.getByText("Бот отключён, токен удалён")).toBeVisible();
+    await expect(page.getByTestId("telegram-block").locator("input[name=token]")).toBeVisible();
+  } finally { await new Promise((r) => api.close(r)); }
 });
 
 test("integrations: the ADOK speed — «Максимум» shows 0.25 s and 8 in parallel, back to «Бережно»", async ({ page }) => {

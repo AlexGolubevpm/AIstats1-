@@ -6,6 +6,8 @@ const base = process.env.TEST_DATABASE_URL ?? "postgresql://postgres@127.0.0.1:5
 export const E2E_DATABASE_URL = base.replace(/\/[^/?]+(\?|$)/, "/tubestat_e2e$1");
 export const E2E_LOGIN = "Admin";
 export const E2E_PASSWORD = "e2e-password-123";
+/** The fake Telegram Bot API the Telegram scenario starts (tests/e2e/scenarios.spec.ts). */
+export const E2E_TELEGRAM_PORT = PORT + 1;
 
 export default defineConfig({
   testDir: "tests/e2e",
@@ -27,6 +29,7 @@ export default defineConfig({
     url: `http://127.0.0.1:${PORT}${(process.env.BASE_PATH ?? "").replace(/\/$/, "")}/api/health`, // E2E runs the root build; BASE_PATH only when checking a base-path build by hand
     reuseExistingServer: false,
     timeout: 120_000,
-    env: { DATABASE_URL: E2E_DATABASE_URL, APP_LOGIN: E2E_LOGIN, APP_PASSWORD: E2E_PASSWORD, REDIS_URL: "redis://127.0.0.1:1", NODE_ENV: "production" },
+    env: { DATABASE_URL: E2E_DATABASE_URL, APP_LOGIN: E2E_LOGIN, APP_PASSWORD: E2E_PASSWORD, REDIS_URL: "redis://127.0.0.1:1", NODE_ENV: "production",
+      APP_SECRET: "e2e-app-secret", TELEGRAM_API_BASE: `http://127.0.0.1:${E2E_TELEGRAM_PORT}` },
   },
 });

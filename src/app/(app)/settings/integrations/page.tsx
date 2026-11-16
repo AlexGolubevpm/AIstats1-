@@ -13,7 +13,8 @@ import { isDemo } from "@/server/seed/demo";
 import { authorizeUrl } from "@/server/ingest/metrika/oauth";
 import { metrikaCallbackUrl, metrikaStatus } from "@/server/services/metrika-connection";
 import { withBase } from "@/lib/base-path";
-import { AliasRow, BackfillBlock, BudgetForm, SpeedForm, CutsPlanner, DemoButtons, MetrikaBlock, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
+import { AliasRow, BackfillBlock, BudgetForm, SpeedForm, CutsPlanner, DemoButtons, MetrikaBlock, ReprocessButton, ResumeAsg, RunJobForm, TelegramBlock, TestAsg } from "./client";
+import { DIGEST_HOURS, telegramView } from "@/server/services/telegram";
 
 const JOB_LABEL: Record<string, string> = {
   "asg:sites": "AdSpyglass: разрезы по сайтам из плана ниже (страны, сетки, устройства, источники, форматы), зоны + расход (ночной)",
@@ -21,8 +22,9 @@ const JOB_LABEL: Record<string, string> = {
   "asg:backfill": "AdSpyglass: бэкфилл прошлых дней порциями под бюджет (окно — в блоке ниже)",
   metrika: "Метрика: трафик", derive: "Расход → прогноз дилов → алерты", "geo:reprocess": "Пересчитать гео из сырья (без запросов к API)",
   "raw:prune": "Диск: сжать и почистить сырые ответы (без запросов к API)",
+  digest: "Telegram: утренняя сводка за вчера (раз в день, в выбранный час)",
 };
-const CRON: Record<string, string> = { "5 * * * *": "каждый час в :05", "0 4 * * *": "ежедневно 04:00 UTC", "*/30 * * * *": "каждые 30 минут, если есть что догружать", "15 * * * *": "каждый час в :15", "45 4 * * *": "ежедневно 04:45 UTC", "30 5 * * *": "ежедневно 05:30 UTC" };
+const CRON: Record<string, string> = { "5 * * * *": "каждый час в :05", "0 4 * * *": "ежедневно 04:00 UTC", "*/30 * * * *": "каждые 30 минут, если есть что догружать", "15 * * * *": "каждый час в :15", "45 4 * * *": "ежедневно 04:45 UTC", "30 5 * * *": "ежедневно 05:30 UTC", "0,30 * * * *": "каждые 30 минут; отправляет раз в день в выбранный час" };
 const tail = (s: string) => (s ? `задан · …${s.slice(-4)}` : "не задан");
 
 export default async function Integrations({ searchParams }: { searchParams: Promise<Record<string, string | undefined>> }) {
@@ -44,7 +46,7 @@ export default async function Integrations({ searchParams }: { searchParams: Pro
     : metrika.kind === "app" ? `приложение …${metrika.clientId.slice(-4)} сохранено, токена ещё нет — получите код ниже`
     : metrika.kind === "env" ? `токен из .env: ${tail(cfg.metrika.token)}`
     : metrika.kind === "broken" ? metrika.error : "не подключена — блок «Яндекс Метрика» ниже";
-  const [backfill, plan, budget, speed] = await Promise.all([readBackfill(db), readPlan(db), asgBudget(db, cfg.asg.dailyBudget), asgSpeed(db, cfg.asg.minIntervalMs)]);
+  const [backfill, plan, budget, speed, telegram] = await Promise.all([readBackfill(db), readPlan(db), asgBudget(db, cfg.asg.dailyBudget), asgSpeed(db, cfg.asg.minIntervalMs), telegramView(db)]);
   const today = new Date().toISOString().slice(0, 10);
   const asgSites = sites.filter((s) => s.status === "ACTIVE" && s.adsgSiteId).length;
   const nSites = backfill?.siteId ? 1 : Math.max(1, asgSites);
@@ -81,6 +83,12 @@ export default async function Integrations({ searchParams }: { searchParams: Pro
           authorizeHref={metrika.kind === "app" || metrika.kind === "oauth" ? authorizeUrl(metrika.clientId) : null}
           connectHref={metrikaCallbackUrl(cfg) && (metrika.kind === "app" || metrika.kind === "oauth") ? withBase("/api/metrika/oauth/start") : null}
           callbackUri={metrikaCallbackUrl(cfg)} notice={sp.connected === "1" ? { kind: "ok", text: "Метрика подключена — нажмите «Подтянуть счётчики»" } : sp.metrika_error ? { kind: "error", text: sp.metrika_error } : null} />
+      </Section>
+      </div>
+
+      <div id="telegram" className="scroll-mt-20">
+      <Section title="Telegram" sub="Утренняя сводка за вчера одним сообщением: выручка, расход и маржа сети, AdSpyglass и фикс-дилы, бандлы, расход по источникам, заметные изменения и проблемы. Бот только отправляет — создайте его в @BotFather и вставьте токен сюда">
+        <TelegramBlock view={telegram} hours={[...DIGEST_HOURS]} />
       </Section>
       </div>
 
