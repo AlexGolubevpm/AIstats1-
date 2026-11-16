@@ -59,9 +59,9 @@ describe("digest numbers", () => {
     expect(d.costs).toEqual([{ title: (await db.costSource.findUniqueOrThrow({ where: { slug: "tubecrown" } })).title, cost: 51 }]);
     expect(d.incomplete).toBe(true); // no derive run yet
     const text = digestPlain(buildDigest(d, { appUrl: cfg.appUrl }));
-    expect(text).toContain("Выручка $63 (−3% к ср. 7 дн.) · расход $51 · маржа $12");
-    expect(text).toContain("AdSpyglass $60 (95%) · фикс-дилы $3 (5%)");
-    expect(text).toContain("пересекаются");
+    expect(text).toContain("💰 Выручка $63  ▼ 3% к ср. 7 дн.\n💸 Расход $51\n📈 Маржа $12");
+    expect(text).toContain("AdSpyglass    $60 ▓▓▓▓▓▓▓▓▓▓  95%\nФикс-дилы      $3 ▓░░░░░░░░░   5%");
+    expect(text).toContain("(сайт может быть в нескольких)");
   });
 
   it("a site that stopped loading and a site that fell are problems; an archived site is not counted; alerts and the paused queue are listed", async () => {
@@ -82,13 +82,20 @@ describe("digest numbers", () => {
     expect(d.baseDays).toBe(2);
     const problems = digestProblems(d, 5).map((p) => p.text);
     expect(problems[0]).toMatch(/^AdSpyglass на паузе до \d\d:\d\d UTC: AdSpyglass ограничил/);
-    expect(problems).toContain("one.test: нет загрузок (обычно 20 000 в день, $21)");
-    expect(problems).toContain("Сеть: выручка −66% к ср. 7 дн. (−$42)");
-    expect(problems).toContain("Метрика: ингест упал"); // a critical alert stays in the digest while it is active
-    expect(problems).toContain("Дискрепанси AdPulsar · новый"); // a warning — only on the day it appeared
-    expect(problems).toContain("Убыточное гео US на two.test и ещё 1 такой · новых 1 · под риском $11"); // one line per rule: the new one names it
-    expect(problems).toContain("two.test: выручка −90% к ср. 7 дн. (−$18)");
-    expect(problems.join("|")).not.toMatch(/Старый алерт|Решённый/); // an old warning is not news; a resolved alert is gone
+    expect(problems).toContain("<b>one.test</b> не отдал ни одной загрузки. Обычно 20 000 загрузок и $21 в день — проверьте сайт и код ADOK.");
+    expect(problems).toContain("<b>Выручка сети упала на 66%</b>: $22 вместо обычных $64 в день.");
+    expect(problems).toContain("<b>two.test</b>: выручка $2 вместо обычных $20 (−90%, −$18).");
+    // Alerts come as groups per rule, with the alerts themselves (new and costly first) and what to do.
+    expect(d.alerts.map((g) => [g.level, g.rule, g.count, g.newCount, Math.round(g.moneyAtRisk * 10) / 10, g.items.map((i) => i.title)])).toEqual([
+      ["CRITICAL", "loss_geo", 2, 1, 10.5, ["Убыточное гео US на two.test", "Убыточное гео JP на two.test"]],
+      ["CRITICAL", "ingest_down", 1, 0, 0, ["Метрика: ингест упал"]],
+      ["WARNING", "discrepancy", 1, 1, 0, ["Дискрепанси AdPulsar"]],
+      ["WARNING", "low_fill", 1, 0, 0, ["Старый алерт"]],
+    ]);
+    const text = digestPlain(buildDigest(d, { minAmount: 5 }));
+    expect(text).toContain("Метрика: ингест упал"); // a critical alert stays in the digest while it is active
+    expect(text).toContain("Дискрепанси — наши показы и показы сетки расходятся\n▪️ AdPulsar"); // a warning — on the day it appeared, under the rule in words
+    expect(text).not.toMatch(/Старый алерт|Решённый/); // an old warning is not news; a resolved alert is gone
     await db.site.update({ where: { id: "s1" }, data: { status: "ARCHIVED" } });
     expect(digestProblems(await digestData(db, "2026-09-22"), 5).map((p) => p.text).join("|")).not.toContain("one.test");
   });
@@ -267,7 +274,7 @@ describe("digest job", () => {
     expect(tg.calls.map((c) => c.method)).toEqual(["sendMessage"]);
     const body = tg.calls[0].body!;
     expect(body).toMatchObject({ chat_id: "4242", parse_mode: "HTML", link_preview_options: { is_disabled: true } });
-    expect(String(body.text)).toContain("<b>TubeStat · пн 21.09</b>");
+    expect(String(body.text)).toContain("<b>TubeStat · понедельник, 21 сентября</b>");
     expect(String(body.text)).toContain('<a href="https://stat.test/?preset=yesterday">');
     expect(String(body.text)).not.toContain("не полностью");
     expect((await db.appSetting.findUniqueOrThrow({ where: { key: DIGEST_SENT_KEY } })).value).toBe("2026-09-21");
@@ -282,7 +289,7 @@ describe("digest job", () => {
     const tg = fakeTelegram();
     expect((await digestTick(db, cfg, tg.fetchImpl, at("08:30"))).skipped).toContain("ждёт данные");
     expect((await digestTick(db, cfg, tg.fetchImpl, at("09:00"))).status).toBe("ok");
-    expect(String(tg.calls[0].body!.text)).toContain("⚠️ Данные за вчера загружены не полностью");
+    expect(String(tg.calls[0].body!.text)).toContain("⚠️ <i>Данные за вчера загружены не полностью");
   });
 
   it("a Telegram refusal fails the run without the token in the log and without the sent mark — the next tick tries again; «send now» ignores the hour", async () => {

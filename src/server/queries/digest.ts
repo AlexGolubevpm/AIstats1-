@@ -5,7 +5,7 @@
 // `revenue_direct` — fix deals billed directly, so the two never overlap.
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import { addDays } from "@/lib/period";
-import type { DigestData } from "@/lib/digest";
+import type { DigestAlert, DigestData } from "@/lib/digest";
 import { asgPause } from "@/server/ingest/run";
 
 const LIVE = Prisma.sql`(SELECT id FROM "Site" WHERE status <> 'ARCHIVED')`;
@@ -19,6 +19,28 @@ export async function digestReady(db: PrismaClient, day: string): Promise<boolea
   ]);
   return cut > 0 && derived > 0;
 }
+
+/** Alerts of one rule and level make one group. Money at risk counts what the digest shows: all critical, new warnings. */
+export function alertGroups(rows: { level: "CRITICAL" | "WARNING"; rule: string; title: string; message: string; moneyAtRisk: unknown; firstSeenAt: Date; payload: unknown }[], fresh: Date): DigestAlert[] {
+  const groups = new Map<string, DigestAlert>();
+  for (const a of rows) {
+    const isNew = a.firstSeenAt >= fresh, money = Number(a.moneyAtRisk ?? 0);
+    const key = `${a.level}|${a.rule}`;
+    const g = groups.get(key) ?? { level: a.level, rule: a.rule, count: 0, newCount: 0, moneyAtRisk: 0, action: "", items: [] };
+    g.count++;
+    if (isNew) g.newCount++;
+    if (a.level === "CRITICAL" || isNew) g.moneyAtRisk += money; // display only, like the alerts page header
+    const action = (a.payload as { action?: unknown } | null)?.action;
+    if (!g.action && typeof action === "string") g.action = action;
+    if (g.items.length < MAX_ITEMS) g.items.push({ title: a.title, message: a.message, moneyAtRisk: money, isNew });
+    groups.set(key, g);
+  }
+  for (const g of groups.values()) g.items.sort((x, y) => Number(y.isNew) - Number(x.isNew) || y.moneyAtRisk - x.moneyAtRisk);
+  const rank = (l: string) => (l === "CRITICAL" ? 0 : 1);
+  return [...groups.values()].sort((x, y) => rank(x.level) - rank(y.level) || y.moneyAtRisk - x.moneyAtRisk || y.count - x.count);
+}
+/** Alerts per group brought into the message; the rest are counted and live on the alerts page. */
+export const MAX_ITEMS = 20;
 
 export async function digestData(db: PrismaClient, day: string, now = new Date()): Promise<DigestData> {
   const from = addDays(day, -7), prevTo = addDays(day, -1);
@@ -44,13 +66,10 @@ export async function digestData(db: PrismaClient, day: string, now = new Date()
       SELECT COALESCE(cs.title, c."sourceSlug") title, SUM(c.cost)::float8 cost FROM "FactCost" c LEFT JOIN "CostSource" cs ON cs.slug = c."sourceSlug"
       WHERE c.date = ${day}::date AND c."siteId" IN ${LIVE} GROUP BY 1`,
     db.$queryRaw<{ n: number }[]>`SELECT COUNT(*)::int n FROM (SELECT "siteId" FROM "BundleSite" WHERE "siteId" IN ${LIVE} GROUP BY 1 HAVING COUNT(*) > 1) x`,
-    // One line per rule and level: how many are active, how many are new, the money at risk, the costliest one's title.
-    db.$queryRaw<{ level: "CRITICAL" | "WARNING"; rule: string; title: string; count: number; new_count: number; risk: number }[]>`
-      SELECT a.level::text "level", a.rule, (ARRAY_AGG(a.title ORDER BY (a."firstSeenAt" >= ${fresh}) DESC, a."moneyAtRisk" DESC, a.title))[1] title,
-        COUNT(*)::int count, COUNT(*) FILTER (WHERE a."firstSeenAt" >= ${fresh})::int new_count,
-        SUM(a."moneyAtRisk") FILTER (WHERE a.level = 'CRITICAL' OR a."firstSeenAt" >= ${fresh})::float8 risk
-      FROM "Alert" a WHERE a."resolvedAt" IS NULL AND (a."snoozedUntil" IS NULL OR a."snoozedUntil" < ${now})
-      GROUP BY a.level, a.rule ORDER BY 6 DESC NULLS LAST, 4 DESC`,
+    // Every active alert, new and costly first; grouped by rule and level below.
+    db.alert.findMany({ where: { resolvedAt: null, OR: [{ snoozedUntil: null }, { snoozedUntil: { lt: now } }] },
+      select: { level: true, rule: true, title: true, message: true, moneyAtRisk: true, firstSeenAt: true, payload: true },
+      orderBy: [{ moneyAtRisk: "desc" }, { title: "asc" }] }),
     asgPause(db),
     // Sites with AdSpyglass revenue yesterday but no traffic-source cut: their cost is 0 because it was not loaded.
     db.$queryRaw<{ missing: number; sites: number }[]>`
@@ -73,7 +92,7 @@ export async function digestData(db: PrismaClient, day: string, now = new Date()
     bundlesOverlap: n(overlap[0]?.n) > 0,
     sites: sites.map((s) => ({ name: s.name, revenue: n(s.revenue), margin: n(s.margin), avgRevenue: avg(s.p_revenue), pageLoads: n(s.loads), avgLoads: avg(s.p_loads) })),
     costs: costs.map((c) => ({ title: c.title, cost: n(c.cost) })),
-    alerts: alerts.map((a) => ({ level: a.level, rule: a.rule, title: a.title, count: a.count, newCount: a.new_count, moneyAtRisk: n(a.risk) })),
+    alerts: alertGroups(alerts, fresh),
     health, incomplete: !ready,
   };
 }
