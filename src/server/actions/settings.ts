@@ -6,7 +6,7 @@ import { config } from "@/server/config";
 import { db } from "@/server/db";
 import { RuleError } from "@/server/domain/errors";
 import { checkSite, withAsg } from "@/server/ingest/probe";
-import { asgBudget, resumeAsg, setAsgBudget } from "@/server/ingest/run";
+import { SPEEDS, asgBudget, resumeAsg, setAsgBudget, setAsgSpeed, type AsgSpeedPreset } from "@/server/ingest/run";
 import { JOB_NAMES, type JobName } from "@/server/jobs/handlers";
 import { BACKFILL_MODES, cancelBackfill, daysBetween, requestsPerDay, startBackfill, type BackfillMode } from "@/server/jobs/backfill";
 import { CUTS, normalizePlan, planCost, readPlan, savePlan, type CutKey } from "@/server/ingest/adspyglass/plan";
@@ -383,5 +383,17 @@ export async function saveAsgBudgetAction(_: ActionResult, f: FormData): Promise
     await setAsgBudget(db, daily);
     revalidatePath("/settings/integrations");
     return { ok: true, message: daily === 0 ? "Лимит снят — пауза между запросами остаётся" : `Суточный бюджет: ${daily} запросов` };
+  });
+}
+
+/** «Лимиты AdSpyglass» → speed: pause between request starts and requests in flight (backfill days in parallel). */
+export async function saveAsgSpeedAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  const preset = str(f, "preset");
+  if (!(preset in SPEEDS)) return { error: "Выберите скорость", field: "preset" };
+  return guarded(async () => {
+    await setAsgSpeed(db, preset);
+    revalidatePath("/settings/integrations");
+    return { ok: true, message: `Скорость: ${SPEEDS[preset as AsgSpeedPreset].title}. Действует со следующего запуска джоба` };
   });
 }

@@ -51,6 +51,22 @@ describe("AsgClient", () => {
     expect(c.requests).toBe(3);
   });
 
+  it("with parallel > 1 keeps that many requests in flight, request starts still spaced by the interval", async () => {
+    let active = 0, peak = 0;
+    const starts: number[] = [];
+    const f = (async () => {
+      starts.push(Date.now()); active++; peak = Math.max(peak, active);
+      await new Promise((r) => setTimeout(r, 40));
+      active--;
+      return new Response("[]");
+    }) as unknown as typeof fetch;
+    const c = new AsgClient({ baseUrl: "https://api.test/api", email: "e", token: "t", fetchImpl: f, minIntervalMs: 10, parallel: 3 });
+    await Promise.all(Array.from({ length: 9 }, (_, i) => c.report({ from: "a", to: "a", groupBy: String(i) })));
+    expect(c.requests).toBe(9);
+    expect(peak).toBe(3); // never more than three at once
+    expect(starts.slice(1).every((t, i) => t - starts[i] >= 8)).toBe(true); // ~10 ms apart (timer slack)
+  });
+
   it("stops when the daily budget is exhausted", async () => {
     let left = 1;
     const f = fakeFetch([json([])]);

@@ -478,6 +478,21 @@ test("integrations: the ADOK request plan shows its cost live, saves, and the ba
   await expect(page.getByText(/запросов на день для/)).toBeVisible(); // the backfill paragraph quotes the plan's per-day cost
 });
 
+test("integrations: the ADOK speed — «Максимум» shows 0.25 s and 8 in parallel, back to «Бережно»", async ({ page }) => {
+  await login(page, "/settings/integrations");
+  const form = page.getByTestId("asg-speed-form");
+  await form.locator("select[name=preset]").selectOption("max");
+  await form.getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText(/Скорость: Максимум/)).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("asg-speed")).toHaveText("0.25 с между запросами · 8 параллельно");
+  await page.getByTestId("asg-speed-form").locator("select[name=preset]").selectOption("careful");
+  await page.getByTestId("asg-speed-form").getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText(/Скорость: Бережно/)).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("asg-speed")).toContainText("по одному");
+});
+
 test("integrations: the daily ADOK budget is ours to change — a number, or «без лимита» that drops the bar and the plan ceiling", async ({ page }) => {
   await login(page, "/settings/integrations");
   const form = page.getByTestId("asg-budget");

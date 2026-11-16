@@ -170,7 +170,7 @@ describe("asg:backfill", () => {
     expect(await planCatchUp(db, "2026-09-01")).toEqual([]); // the 1st: nothing before today
   });
 
-  it("core: website + countries, networks, traffic sources per site and the cost; then derive, then stage 2 with the remaining cuts over the same window", async () => {
+  it("core: website + countries, networks, traffic sources per site and the cost; then derive, then stage 2 with the remaining cuts over the same window in the same job", async () => {
     const groups: string[] = [];
     const fetchImpl = (async (u: URL | string) => { groups.push(new URL(String(u)).searchParams.get("group_by") ?? ""); return fakeApi(u); }) as typeof fetch;
     const ctx = { db, cfg: cfg(1_000_000), raw, today, fetchImpl };
@@ -178,24 +178,46 @@ describe("asg:backfill", () => {
     expect(requestsPerDay(3, "core")).toBe(1 + 3 * 3);
     const r1 = await runJob("asg:backfill", ctx, { from: "2026-09-02", to: "2026-09-03", mode: "core" });
     expect(r1.status).toBe("ok");
-    expect(groups.length).toBe(2 * (1 + 3 * 3));
-    expect(new Set(groups)).toEqual(new Set(["website", "country", "adnetwork_squashed", "traffic_source"]));
+    expect(new Set(groups.slice(0, 2 * (1 + 3 * 3)))).toEqual(new Set(["website", "country", "adnetwork_squashed", "traffic_source"]));
     const D3 = new Date("2026-09-03T00:00:00Z");
     expect(await db.factRevenueGeo.count({ where: { date: D3, countryCode: "JP" } })).toBe(3); // money per site
     expect(await db.factCost.count({ where: { date: D3, origin: "ASG" } })).toBe(3); // traffic purchase cost per site
-    expect(await db.factRevenueZone.count({ where: { date: D3 } })).toBe(0); // zones wait for stage 2
-    expect(await db.factRevenueFormat.count({ where: { date: D3 } })).toBe(0);
-    expect(await db.ingestRun.count({ where: { source: "derive" } })).toBe(1); // money, cost, deals and alerts right after stage 1
-    let s = (await readBackfill(db))!;
-    expect([s.mode, s.stage, s.from, s.to, s.pending, s.done]).toEqual(["full", 2, "2026-09-02", "2026-09-03", ["2026-09-03", "2026-09-02"], []]);
-    groups.length = 0;
-    expect((await runJob("asg:backfill", ctx, {})).status).toBe("ok");
+    // Stage 2 follows in the same job: its own IngestRun, the remaining cuts and zones, a second derive.
     expect(groups).toContain("ad_type");
     expect(await db.factRevenueZone.count({ where: { date: D3 } })).toBe(3);
-    s = (await readBackfill(db))!;
-    expect([s.mode, s.stage, s.pending]).toEqual(["full", 2, []]);
-    expect(await db.ingestRun.count({ where: { source: "derive" } })).toBe(2);
+    const runs = await db.ingestRun.findMany({ where: { job: "asg:backfill" }, orderBy: { startedAt: "asc" } });
+    expect(runs.map((r) => [r.status, r.requests])).toEqual([["ok", 2 * (1 + 3 * 3)], ["ok", 2 * (1 + 8 * 3)]]);
+    expect(await db.ingestRun.count({ where: { source: "derive" } })).toBe(2); // money, cost, deals and alerts right after stage 1, then again
+    const s = (await readBackfill(db))!;
+    expect([s.mode, s.stage, s.pending, s.done.length]).toEqual(["full", 2, [], 2]);
     expect((await runJob("asg:backfill", ctx, {})).skipped).toContain("нечего"); // no stage 3
+  });
+
+  it("speed «max»: days in parallel, both stages in one job; a 429 steps the speed down and pauses the queue for an hour", async () => {
+    const { setAsgSpeed, asgSpeed, asgPause } = await import("@/server/ingest/run");
+    const { readBackfill } = await import("@/server/jobs/backfill");
+    await setAsgSpeed(db, "max");
+    expect(await asgSpeed(db, 5000)).toEqual({ preset: "max", intervalMs: 250, parallel: 8 });
+    let active = 0, peak = 0;
+    const slow = (async (u: URL | string) => { active++; peak = Math.max(peak, active); await new Promise((r) => setTimeout(r, 5)); active--; return fakeApi(u); }) as typeof fetch;
+    const fast = config({ ASG_AUTH_EMAIL: "e", ASG_AUTH_TOKEN: "t", ASG_MIN_INTERVAL_MS: "0", ASG_DAILY_BUDGET: "0" });
+    // max starts requests 250 ms apart: patched to 0 here so the test stays fast.
+    const { SPEEDS } = await import("@/server/ingest/run");
+    const saved = SPEEDS.max.intervalMs;
+    SPEEDS.max.intervalMs = 0;
+    try {
+      const r = await runJob("asg:backfill", { db, cfg: fast, raw, today, fetchImpl: slow }, { from: "2026-09-01", to: "2026-09-04", mode: "core" });
+      expect(r.status).toBe("ok");
+      expect(peak).toBeGreaterThan(1); // several days at once
+      expect((await readBackfill(db))!).toMatchObject({ mode: "full", stage: 2, pending: [] });
+      expect(await db.factRevenueGeo.count({ where: { date: { gte: new Date("2026-09-01T00:00:00Z"), lte: new Date("2026-09-04T00:00:00Z") }, countryCode: "JP" } })).toBe(4 * 3);
+      // ADOK answers 429: the speed drops one step and the queue pauses; the days stay pending for the next tick.
+      const limited = (async () => new Response("slow down", { status: 429 })) as unknown as typeof fetch;
+      await runJob("asg:backfill", { db, cfg: fast, raw, today, fetchImpl: limited }, { from: "2026-08-20", to: "2026-08-21", mode: "core" });
+      expect((await asgSpeed(db, 5000)).preset).toBe("fast");
+      expect((await asgPause(db))?.reason).toContain("429");
+      expect((await readBackfill(db))!.pending).toHaveLength(2);
+    } finally { SPEEDS.max.intervalMs = saved; }
   });
 
   it("planCatchUp turns a full catch-up saved before the stages (no origin) into core for its pending days, then full for them; a manual full is left alone", async () => {
