@@ -10,8 +10,27 @@ export interface DigestSite extends DigestLine { pageLoads: number; prevLoads: n
 export interface DigestAlertItem { title: string; message: string; moneyAtRisk: number; isNew: boolean }
 /** Active alerts of one rule and level: how many, how many new, the money at risk, what to do, the alerts themselves (new and costly first). */
 export interface DigestAlert { level: "CRITICAL" | "WARNING"; rule: string; count: number; newCount: number; moneyAtRisk: number; action: string; items: DigestAlertItem[] }
+export type DigestKind = "day" | "week" | "month";
+/** The margin plan of a month: what has to cover the operating expenses (servers, salaries) entered on /finance. */
+export interface DigestPlan {
+  /** First day of the plan's month. */
+  month: string;
+  /** Operating expenses of the month — the margin the month has to earn. */
+  target: number;
+  /** Margin from the 1st of the month up to `asOf`. */
+  margin: number;
+  asOf: string;
+  /** Null when the month's own entries are there; otherwise the month whose entries stand in (nothing entered yet). */
+  copiedFrom: string | null;
+}
 export interface DigestData {
+  /** The last day of the report (the day itself for a daily digest). */
   day: string;
+  /** Daily digest (default), the week Monday–Sunday, the calendar month. */
+  kind?: DigestKind;
+  /** First day of the report; = `day` for a daily digest. */
+  from?: string;
+  plan?: DigestPlan | null;
   /** 1 when the day before `day` has data — the comparison base (the digest goes day after day); 0 — nothing to compare with. */
   baseDays: number;
   total: { revenue: number; mediated: number; direct: number; cost: number; margin: number };
@@ -86,6 +105,41 @@ const arrow = (v: number | null) => (v == null ? "" : Math.round(v) > 0 ? `▲ $
 /** "15.11" — the day before `day`, the comparison base. */
 export const prevLabel = (day: string) => { const d = new Date(new Date(`${day}T00:00:00Z`).getTime() - 86_400_000); return `${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}`; };
 export const dayLabel = (day: string) => { const d = new Date(`${day}T00:00:00Z`); return `${WEEKDAY[d.getUTCDay()]}, ${d.getUTCDate()} ${MONTH[d.getUTCMonth()]}`; };
+const MONTH_NOM = ["январь", "февраль", "март", "апрель", "май", "июнь", "июль", "август", "сентябрь", "октябрь", "ноябрь", "декабрь"];
+const MONTH_DAT = ["январю", "февралю", "марту", "апрелю", "маю", "июню", "июлю", "августу", "сентябрю", "октябрю", "ноябрю", "декабрю"];
+const MONTH_PREP = ["январе", "феврале", "марте", "апреле", "мае", "июне", "июле", "августе", "сентябре", "октябре", "ноябре", "декабре"];
+const MONTH_SHORT = ["янв.", "фев.", "мар.", "апр.", "май", "июнь", "июль", "авг.", "сен.", "окт.", "ноя.", "дек."];
+const mIdx = (iso: string) => Number(iso.slice(5, 7)) - 1;
+const prevMonthIdx = (iso: string) => (mIdx(iso) + 11) % 12;
+/** "10–16 ноября", "27 октября – 2 ноября". */
+const weekRange = (from: string, to: string) => mIdx(from) === mIdx(to)
+  ? `${Number(from.slice(8, 10))}–${Number(to.slice(8, 10))} ${MONTH[mIdx(to)]}`
+  : `${Number(from.slice(8, 10))} ${MONTH[mIdx(from)]} – ${Number(to.slice(8, 10))} ${MONTH[mIdx(to)]}`;
+
+/** How the report names itself and what it compares with: the title, the table column (≤ 6 chars), «к …», «… (было)». */
+export function reportWords(d: Pick<DigestData, "day" | "kind" | "from">) {
+  const kind = d.kind ?? "day", from = d.from ?? d.day;
+  if (kind === "week") return { title: `📅 <b>TubeStat · неделя ${weekRange(from, d.day)}</b>`, col: "пр.нед", to: "к прошлой неделе", was: "за прошлую неделю", what: "за неделю" };
+  if (kind === "month") return { title: `🗓 <b>TubeStat · ${MONTH_NOM[mIdx(d.day)]} ${d.day.slice(0, 4)}</b>`, col: MONTH_SHORT[prevMonthIdx(d.day)], to: `к ${MONTH_DAT[prevMonthIdx(d.day)]}`, was: `в ${MONTH_PREP[prevMonthIdx(d.day)]}`, what: "за месяц" };
+  return { title: `📊 <b>TubeStat · ${dayLabel(d.day)}</b>`, col: prevLabel(d.day), to: `к ${prevLabel(d.day)}`, was: prevLabel(d.day), what: "за вчера" };
+}
+
+/** «🎯 План по марже»: how much of the month's operating expenses the margin has covered, and against the schedule. */
+export function planBlock(p: DigestPlan): string {
+  const days = new Date(Date.UTC(Number(p.month.slice(0, 4)), mIdx(p.month) + 1, 0)).getUTCDate();
+  const passed = Number(p.asOf.slice(8, 10));
+  const share = p.target > 0 ? p.margin / p.target : 0;
+  const due = (p.target * passed) / days; // the straight-line schedule: an equal share of the plan each day
+  const L = [`🎯 <b>План по марже · ${MONTH_NOM[mIdx(p.month)]}</b> <i>(опер. расходы: сервера, зарплаты)</i>`,
+    pre([`${bar(share)} ${`${Math.round(share * 100)}%`.padStart(4)}`]),
+    `Закрыто <b>${usd(p.margin)}</b> из ${usd(p.target)} на ${prevLabel(addDay(p.asOf))}`];
+  if (passed >= days) L.push(p.margin >= p.target ? `✅ План месяца выполнен: +${usd(p.margin - p.target)} сверх расходов` : `❌ Не хватило ${usd(p.target - p.margin)} до покрытия расходов`);
+  else L.push(`По графику к ${prevLabel(addDay(p.asOf))} — ${usd(due)}: ${p.margin >= due ? `опережаем на ${usd(p.margin - due)}` : `отстаём на ${usd(due - p.margin)}`}`);
+  if (p.copiedFrom) L.push(`<i>План — как в ${MONTH_PREP[mIdx(p.copiedFrom)]}: опер. расходы на ${MONTH_NOM[mIdx(p.month)]} не внесены</i>`);
+  return L.join("\n");
+}
+const addDay = (iso: string) => new Date(new Date(`${iso}T00:00:00Z`).getTime() + 86_400_000).toISOString().slice(0, 10);
+
 /** "1 случай / 2 случая / 5 случаев". */
 export const plural = (n: number, one: string, few: string, many: string) => {
   const a = Math.abs(n) % 100, b = a % 10;
@@ -96,7 +150,11 @@ const cut = (s: string, w: number) => (s.length > w ? `${s.slice(0, w - 1)}…` 
 const row = (cells: string[], widths: number[]) => cells.map((c, i) => (i === 0 ? cut(c, widths[0]).padEnd(widths[0]) : c.padStart(widths[i]))).join(" ").trimEnd();
 const pre = (rows: string[]) => `<pre>${esc(rows.join("\n"))}</pre>`;
 /** Ten cells; a share above zero always gets at least one, so 5% does not look like nothing. */
-const bar = (share: number) => { const n = share <= 0 ? 0 : Math.max(1, Math.min(10, Math.round(share * 10))); return "▓".repeat(n) + "░".repeat(10 - n); };
+/** Money columns are as wide as their longest value ($1 234 567 in a month report), at least 6. */
+const moneyWidth = (vs: number[]) => Math.max(6, ...vs.map((v) => usd(v).length));
+/** The name column takes what the other columns leave of the phone width (one space between columns), at least 8. */
+const nameWidth = (others: number[]) => Math.max(8, Math.min(12 + (others.length === 2 ? 7 : 0), TABLE_WIDTH - others.reduce((a, w) => a + w + 1, 0)));
+const bar = (share: number, cells = 10) => { const n = share <= 0 ? 0 : Math.max(1, Math.min(cells, Math.round(share * cells))); return "▓".repeat(n) + "░".repeat(cells - n); };
 
 export interface DigestProblem { icon: "🔴" | "🟡"; text: string; site?: string }
 
@@ -191,54 +249,63 @@ function alertBlock(a: DigestAlert & { shown: DigestAlertItem[] }, detailed: num
 /** Blocks of the digest in order. Each block is whole: messages are split only between blocks. */
 function blocks(d: DigestData, o: Required<Pick<DigestOptions, "minAmount" | "problemMin">> & DigestOptions, detailed: number): { head: string[]; problems: string[]; tail: string[] } {
   const cmp = d.baseDays > 0;
+  const kind = d.kind ?? "day", w = reportWords(d);
   const head: string[] = [];
   const r = romi(d.total.revenue, d.total.cost);
   const vs = cmp ? arrow(delta(d.total.revenue, d.prev.revenue, "percent")) : "";
-  head.push([`📊 <b>TubeStat · ${dayLabel(d.day)}</b>`,
+  head.push([w.title,
     ...(d.incomplete ? ["⚠️ <i>Данные за вчера загружены не полностью — цифры ещё изменятся</i>"] : []),
     "",
-    `💰 Выручка <b>${usd(d.total.revenue)}</b>${vs ? `  ${vs} к ${prevLabel(d.day)}` : ""}`,
+    `💰 Выручка <b>${usd(d.total.revenue)}</b>${vs ? `  ${vs} ${w.to}` : ""}`,
     `💸 Расход <b>${usd(d.total.cost)}</b>`,
     `📈 Маржа <b>${usd(d.total.margin)}</b>${r == null ? "" : `  ROMI ${Math.round(r)}%`}`].join("\n"));
   if (d.total.revenue > 0) {
     const sh = (v: number) => v / d.total.revenue;
+    const mw = moneyWidth([d.total.mediated, d.total.direct]);
+    const cells = Math.min(10, TABLE_WIDTH - (10 + mw + 4 + 3)); // big sums take cells off the bar, not the phone width
     head.push(pre([
-      row(["AdSpyglass", usd(d.total.mediated), bar(sh(d.total.mediated)), `${Math.round(sh(d.total.mediated) * 100)}%`], [10, 6, 10, 4]),
-      row(["Фикс-дилы", usd(d.total.direct), bar(sh(d.total.direct)), `${Math.round(sh(d.total.direct) * 100)}%`], [10, 6, 10, 4]),
+      row(["AdSpyglass", usd(d.total.mediated), bar(sh(d.total.mediated), cells), `${Math.round(sh(d.total.mediated) * 100)}%`], [10, mw, cells, 4]),
+      row(["Фикс-дилы", usd(d.total.direct), bar(sh(d.total.direct), cells), `${Math.round(sh(d.total.direct) * 100)}%`], [10, mw, cells, 4]),
     ]));
   }
+  if (d.plan && d.plan.target > 0) head.push(planBlock(d.plan));
+  const cw = Math.max(5, w.col.length); // the comparison column fits its label
 
   const bundles = [...d.bundles].sort((a, b) => b.revenue - a.revenue);
   if (bundles.length) {
-    const w = [12, 6, 6, 5];
+    const mw = moneyWidth(bundles.flatMap((b) => [b.revenue, b.margin]));
+    const bw = [nameWidth([mw, mw, cw]), mw, mw, cw];
     head.push(`🗂 <b>Бандлы</b>${d.bundlesOverlap ? " <i>(сайт может быть в нескольких)</i>" : ""}\n` + pre([
-      row(["", "выруч.", "маржа", cmp ? prevLabel(d.day) : ""], w),
-      ...bundles.map((b) => row([b.name, usd(b.revenue), usd(b.margin), cmp ? pct(delta(b.revenue, b.prevRevenue, "percent")) || "—" : ""], w)),
+      row(["", "выруч.", "маржа", cmp ? w.col : ""], bw),
+      ...bundles.map((b) => row([b.name, usd(b.revenue), usd(b.margin), cmp ? pct(delta(b.revenue, b.prevRevenue, "percent")) || "—" : ""], bw)),
     ]));
   }
 
   const formats = d.formats.filter((f) => Math.round(f.revenue) !== 0 || Math.round(f.prevRevenue) !== 0).sort((a, b) => b.revenue - a.revenue);
   const fmtSum = formats.reduce((t, f) => t + f.revenue, 0); // display only: shares of the rows shown
   if (formats.length) {
-    const w = [12, 6, 5, 5];
+    const mw = moneyWidth(formats.map((f) => f.revenue));
+    const fw = [nameWidth([mw, 5, cw]), mw, 5, cw];
     head.push(`🧩 <b>Форматы</b> <i>(AdSpyglass, без фикс-дилов)</i>\n` + pre([
-      row(["", "выруч.", "доля", cmp ? prevLabel(d.day) : ""], w),
+      row(["", "выруч.", "доля", cmp ? w.col : ""], fw),
       ...formats.map((f) => row([FORMAT_LABEL[f.format] ?? f.format, usd(f.revenue), fmtSum > 0 ? `${Math.round((f.revenue / fmtSum) * 100)}%` : "",
-        cmp ? pct(delta(f.revenue, f.prevRevenue, "percent")) || "—" : ""], w)),
+        cmp ? pct(delta(f.revenue, f.prevRevenue, "percent")) || "—" : ""], fw)),
     ]));
   }
 
   const costs = d.costs.filter((c) => Math.round(c.cost) !== 0).sort((a, b) => b.cost - a.cost);
   const costSum = costs.reduce((a, c) => a + c.cost, 0); // display only: shares of the rows shown
   if (costs.length) {
-    head.push(`🚦 <b>Расход на трафик</b>\n` + pre(costs.map((c) => row([c.title, usd(c.cost), costSum ? `${Math.round((c.cost / costSum) * 100)}%` : ""], [19, 7, 4]))));
+    const mw = Math.max(7, moneyWidth(costs.map((c) => c.cost)));
+    head.push(`🚦 <b>Расход на трафик</b>\n` + pre(costs.map((c) => row([c.title, usd(c.cost), costSum ? `${Math.round((c.cost / costSum) * 100)}%` : ""], [nameWidth([mw, 4]), mw, 4]))));
   }
 
-  const own = digestProblems(d, o.problemMin);
-  const ch = digestChanges(d, o.minAmount, new Set(own.map((p) => p.site).filter((s): s is string => Boolean(s))));
+  // Week and month: the trends, not today's fires — no problem list, the change bar grows with the period.
+  const own = kind === "day" ? digestProblems(d, o.problemMin) : [];
+  const ch = digestChanges(d, o.minAmount * (kind === "week" ? 7 : kind === "month" ? 30 : 1), new Set(own.map((p) => p.site).filter((s): s is string => Boolean(s))));
   const moves = [...ch.up.map((x) => `▲ ${esc(x.name)} ${signedUsd(x.diff)}${x.p == null ? "" : ` (${pct(x.p)})`}`),
     ...ch.down.map((x) => `▼ ${esc(x.name)} ${signedUsd(x.diff)}${x.p == null ? "" : ` (${pct(x.p)})`}`)];
-  if (moves.length) head.push([`🔀 <b>Изменения</b> <i>к ${prevLabel(d.day)}</i>`, ...moves].join("\n"));
+  if (moves.length) head.push([`🔀 <b>Изменения</b> <i>${w.to}</i>`, ...moves].join("\n"));
 
   const { groups, hidden } = digestAlertGroups(d, o.problemMin);
   const problems: string[] = [];
@@ -246,14 +313,17 @@ function blocks(d: DigestData, o: Required<Pick<DigestOptions, "minAmount" | "pr
   const warn = own.length + groups.length - crit;
   const alertsLink = (text: string) => (o.appUrl ? `<a href="${o.appUrl}/alerts">${text}</a>` : text);
   const small = hidden > 0 ? `${plural(hidden, "алерт", "алерта", "алертов")} меньше ${usd(o.problemMin)}/день` : "";
-  if (own.length || groups.length) {
+  if (kind !== "day") {
+    const active = d.alerts.reduce((t, a) => t + a.count, 0);
+    if (active) problems.push(`⚠️ Сейчас ${plural(active, "активный алерт", "активных алерта", "активных алертов")}${groups.length ? `, от ${usd(o.problemMin)}/день — ${groups.reduce((t, g) => t + g.shown.length, 0)}` : ""} — ${alertsLink("все алерты")}`);
+  } else if (own.length || groups.length) {
     problems.push(`⚠️ <b>Проблемы от ${usd(o.problemMin)}/день</b> — ${[crit ? plural(crit, "критичная", "критичные", "критичных") : "", warn ? plural(warn, "предупреждение", "предупреждения", "предупреждений") : ""].filter(Boolean).join(", ")}`
       + (own.length ? `\n\n${own.map((p) => `${p.icon} ${p.text}`).join("\n")}` : ""));
     for (const g of groups) problems.push(alertBlock(g, detailed));
     if (small) problems.push(`ℹ️ Ещё ${small} — ${alertsLink("все алерты")}`);
   } else problems.push(`✅ <b>Крупных проблем нет</b>${small ? ` · ${small} — ${alertsLink("все алерты")}` : ""}`);
 
-  const tail = o.appUrl ? [`<a href="${o.appUrl}/?preset=yesterday">Открыть сводку</a>`] : [];
+  const tail = o.appUrl ? [`<a href="${o.appUrl}/?${kind === "day" ? "preset=yesterday" : `from=${d.from ?? d.day}&to=${d.day}`}">Открыть сводку</a>`] : [];
   return { head, problems, tail };
 }
 

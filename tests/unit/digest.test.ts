@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RISK_DAYS, RULE_LABEL, TABLE_WIDTH, perDay, prevLabel, shortTitle, buildDigest, dayLabel, digestChanges, digestPlain, digestProblems, plural, usd, type DigestAlert, type DigestData } from "@/lib/digest";
+import { RISK_DAYS, RULE_LABEL, TABLE_WIDTH, perDay, planBlock, prevLabel, reportWords, shortTitle, buildDigest, dayLabel, digestChanges, digestPlain, digestProblems, plural, usd, type DigestAlert, type DigestData } from "@/lib/digest";
 
 const base = (over: Partial<DigestData> = {}): DigestData => ({
   day: "2026-11-15", baseDays: 7,
@@ -179,6 +179,45 @@ describe("digest text", () => {
     expect(shortTitle("ingest_down", "Метрика: ингест упал")).toBe("Метрика: ингест упал"); // the heading does not say it — kept
     expect(shortTitle("low_fill", "Низкий фил слайдера на x.com")).toBe("Низкий фил слайдера на x.com");
     expect(shortTitle("unknown_rule", "Что-то: где-то")).toBe("Что-то: где-то");
+  });
+
+  it("the margin plan: a bar, how much of the month's operating expenses is covered, ahead of or behind the straight-line schedule, the result at the month end", () => {
+    const plan = (over = {}) => ({ month: "2026-11-01", target: 12_000, margin: 9_800, asOf: "2026-11-16", copiedFrom: null, ...over });
+    expect(digestPlain(planBlock(plan())).split("\n")).toEqual([
+      "🎯 План по марже · ноябрь (опер. расходы: сервера, зарплаты)",
+      "▓▓▓▓▓▓▓▓░░  82%",
+      "Закрыто $9 800 из $12 000 на 16.11",
+      "По графику к 16.11 — $6 400: опережаем на $3 400", // 12 000 × 16 / 30
+    ]);
+    expect(digestPlain(planBlock(plan({ margin: 5_000 })))).toContain("По графику к 16.11 — $6 400: отстаём на $1 400");
+    expect(digestPlain(planBlock(plan({ asOf: "2026-11-30", margin: 12_480 })))).toContain("▓▓▓▓▓▓▓▓▓▓ 104%\nЗакрыто $12 480 из $12 000 на 30.11\n✅ План месяца выполнен: +$480 сверх расходов");
+    expect(digestPlain(planBlock(plan({ asOf: "2026-11-30", margin: 11_000 })))).toContain("❌ Не хватило $1 000 до покрытия расходов");
+    expect(digestPlain(planBlock(plan({ copiedFrom: "2026-10-01" })))).toContain("План — как в октябре: опер. расходы на ноябрь не внесены");
+    // In the daily digest: right after the AdSpyglass / fix-deal split.
+    const t = digestPlain(buildDigest(base({ plan: plan({ asOf: "2026-11-15" }) })));
+    expect(t).toMatch(/Фикс-дилы .*\n\n🎯 План по марже · ноябрь/);
+    expect(digestPlain(buildDigest(base({ plan: plan({ target: 0 }) })))).not.toContain("🎯"); // nothing entered anywhere — no plan line
+  });
+
+  it("week and month reports: their own title and comparison, money columns widen, no problem list — one line about the alerts; changes need a bar × days", () => {
+    expect(reportWords({ day: "2026-11-15", kind: "week", from: "2026-11-09" })).toMatchObject({ title: "📅 <b>TubeStat · неделя 9–15 ноября</b>", col: "пр.нед", to: "к прошлой неделе" });
+    expect(reportWords({ day: "2026-11-01", kind: "week", from: "2026-10-26" }).title).toBe("📅 <b>TubeStat · неделя 26 октября – 1 ноября</b>");
+    expect(reportWords({ day: "2026-10-31", kind: "month", from: "2026-10-01" })).toMatchObject({ title: "🗓 <b>TubeStat · октябрь 2026</b>", col: "сен.", to: "к сентябрю" });
+    expect(reportWords({ day: "2026-01-31", kind: "month" }).to).toBe("к декабрю");
+    const week = base({ kind: "week", from: "2026-11-09", day: "2026-11-15",
+      total: { revenue: 123_456, mediated: 120_000, direct: 3_456, cost: 50_000, margin: 73_456 }, prev: { revenue: 100_000, cost: 40_000, margin: 60_000 },
+      bundles: [{ name: "Gay", revenue: 104_567, margin: 51_234, prevRevenue: 99_000 }],
+      alerts: [{ level: "CRITICAL", rule: "loss_geo", count: 3, newCount: 1, moneyAtRisk: 900, action: "a", items: [item("Убыточное гео FR на x.com", 700)] }] });
+    const [msg] = buildDigest(week, { appUrl: "https://stat.test", minAmount: 31 });
+    const t = digestPlain(msg);
+    expect(t).toContain("💰 Выручка $123 456  ▲ 23% к прошлой неделе");
+    expect(t).toContain("            выруч.    маржа пр.нед\nGay       $104 567  $51 234    +6%"); // wider money, a narrower name column
+    for (const block of msg.match(/<pre>[\s\S]*?<\/pre>/g)!) for (const line of digestPlain(block).split("\n")) expect(line.length).toBeLessThanOrEqual(TABLE_WIDTH);
+    expect(t).toContain("⚠️ Сейчас 3 активных алерта, от $10/день — 1 — все алерты →");
+    expect(t).not.toContain("👉");
+    expect(t).not.toContain("▲ gay-tube.com"); // +$210 over a week is below $31 × 7
+    expect(digestPlain(buildDigest(week, { minAmount: 30 }))).toContain("▲ gay-tube.com +$210"); // $30 × 7 = $210: just enough
+    expect(msg).toContain('<a href="https://stat.test/?from=2026-11-09&to=2026-11-15">Открыть сводку</a>');
   });
 
   it("words and money: date, plurals, whole dollars with a real minus", () => {

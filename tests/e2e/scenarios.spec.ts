@@ -552,11 +552,30 @@ test("integrations: Telegram — the bot token, the chat found by the bot, a pre
     await expect(preview).not.toContainText(/и ещё \d+$/m);
 
     await block.getByRole("button", { name: "Отправить сейчас" }).click();
-    await expect(page.getByText(/Сводка за \d{4}-\d{2}-\d{2} отправлена в Telegram/)).toBeVisible();
+    await expect(page.getByText(/Сводка за вчера \(по \d{4}-\d{2}-\d{2}\) отправлена в Telegram/)).toBeVisible();
     expect(sent.length).toBeGreaterThanOrEqual(1); // one message, or the numbers and then the problems
     expect(sent.every((m) => m.chat_id === "-100555" && m.text.length <= 4096)).toBe(true);
     expect(sent[0].text).toContain("<b>TubeStat ·");
     expect(sent.map((m) => m.text).join("")).toContain("<pre>");
+
+    // The week and the month: their own preview and «send now»; the Monday / 1st switches are saved.
+    await block.getByTestId("telegram-kind").selectOption("week");
+    await block.getByRole("button", { name: "Предпросмотр" }).click();
+    await expect(preview).toContainText(/📅 TubeStat · неделя \d+/);
+    await expect(preview).toContainText("к прошлой неделе");
+    await block.getByTestId("telegram-kind").selectOption("month");
+    await block.getByRole("button", { name: "Предпросмотр" }).click();
+    await expect(preview).toContainText(/🗓 TubeStat · [а-я]+ \d{4}/);
+    const before = sent.length;
+    await block.getByRole("button", { name: "Отправить сейчас" }).click();
+    await expect(page.getByText(/Отчёт за месяц \(по \d{4}-\d{2}-\d{2}\) отправлен в Telegram/)).toBeVisible();
+    expect(sent.slice(before)[0].text).toContain("🗓 <b>TubeStat ·");
+    await block.getByTestId("telegram-weekly").uncheck();
+    await block.getByRole("button", { name: "Сохранить", exact: true }).click();
+    await expect(page.getByText("Настройки сводки сохранены").last()).toBeVisible(); // a second toast after the first save
+    await page.reload();
+    await expect(page.getByTestId("telegram-weekly")).not.toBeChecked();
+    await expect(page.getByTestId("telegram-monthly")).toBeChecked();
 
     await page.reload();
     await expect(page.getByRole("row", { name: /digest/ }).first()).toBeVisible(); // the send is in the 7-day log
