@@ -24,6 +24,8 @@ export interface AsgClientOptions {
   email: string;
   token: string;
   minIntervalMs?: number;
+  /** Requests in flight at once (default 1: strictly one after another). Starts stay `minIntervalMs` apart either way. */
+  parallel?: number;
   /** Returns false when the daily budget is exhausted; called once per request. */
   takeBudget?: () => Promise<boolean>;
   retryDelaysMs?: number[];
@@ -36,7 +38,9 @@ export interface ReportParams { from: string; to: string; groupBy: string; websi
 
 export class AsgClient {
   private queue: Promise<unknown> = Promise.resolve();
-  private lastAt: number | null = null;
+  private nextAt: number | null = null;
+  private active = 0;
+  private waiters: (() => void)[] = [];
   requests = 0;
   constructor(private o: AsgClientOptions) {}
 
@@ -44,11 +48,19 @@ export class AsgClient {
   private sleep(ms: number) { return (this.o.sleep ?? ((t) => new Promise((r) => setTimeout(r, t))))(ms); }
   private now() { return (this.o.now ?? Date.now)(); }
 
-  /** Serialised: concurrent callers wait their turn. */
+  /** Serialised by default: concurrent callers wait their turn. With `parallel` > 1, up to that many are in flight. */
   report(p: ReportParams): Promise<AsgRow[]> {
+    const n = this.o.parallel ?? 1;
+    if (n > 1) return this.inSlot(n, () => this.send(p));
     const run = this.queue.then(() => this.send(p), () => this.send(p));
     this.queue = run.catch(() => undefined);
     return run;
+  }
+
+  private async inSlot<T>(n: number, fn: () => Promise<T>): Promise<T> {
+    while (this.active >= n) await new Promise<void>((r) => this.waiters.push(r));
+    this.active++;
+    try { return await fn(); } finally { this.active--; this.waiters.shift()?.(); }
   }
 
   private async send(p: ReportParams): Promise<AsgRow[]> {
@@ -63,11 +75,11 @@ export class AsgClient {
     const delays = this.o.retryDelaysMs ?? [60_000, 300_000];
     for (let attempt = 0; ; attempt++) {
       if (this.o.takeBudget && !(await this.o.takeBudget())) throw new AsgError("budget", "Дневной бюджет запросов к AdSpyglass исчерпан");
-      if (this.lastAt != null) {
-        const wait = this.lastAt + (this.o.minIntervalMs ?? 5_000) - this.now();
-        if (wait > 0) await this.sleep(wait);
-      }
-      this.lastAt = this.now();
+      // Each start takes the next free slot: starts stay minIntervalMs apart however many are in flight.
+      const now = this.now();
+      const at = this.nextAt == null ? now : Math.max(now, this.nextAt);
+      this.nextAt = at + (this.o.minIntervalMs ?? 5_000);
+      if (at > now) await this.sleep(at - now);
       this.requests++;
       let res: Response;
       try {

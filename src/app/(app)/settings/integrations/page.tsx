@@ -5,7 +5,7 @@ import { Section } from "@/components/ui/card";
 import { fmtAgo, fmtDate, fmtInt } from "@/lib/format";
 import { config } from "@/server/config";
 import { db } from "@/server/db";
-import { asgBudget, asgPause, asgRequestsToday } from "@/server/ingest/run";
+import { SPEEDS, asgBudget, asgPause, asgRequestsToday, asgSpeed } from "@/server/ingest/run";
 import { SCHEDULES } from "@/server/jobs/handlers";
 import { defaultWindow, readBackfill, requestsPerDay, type BackfillMode } from "@/server/jobs/backfill";
 import { CUTS, planCost, readPlan } from "@/server/ingest/adspyglass/plan";
@@ -13,7 +13,7 @@ import { isDemo } from "@/server/seed/demo";
 import { authorizeUrl } from "@/server/ingest/metrika/oauth";
 import { metrikaCallbackUrl, metrikaStatus } from "@/server/services/metrika-connection";
 import { withBase } from "@/lib/base-path";
-import { AliasRow, BackfillBlock, BudgetForm, CutsPlanner, DemoButtons, MetrikaBlock, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
+import { AliasRow, BackfillBlock, BudgetForm, SpeedForm, CutsPlanner, DemoButtons, MetrikaBlock, ReprocessButton, ResumeAsg, RunJobForm, TestAsg } from "./client";
 
 const JOB_LABEL: Record<string, string> = {
   "asg:sites": "AdSpyglass: разрезы по сайтам из плана ниже (страны, сетки, устройства, источники, форматы), зоны + расход (ночной)",
@@ -44,7 +44,7 @@ export default async function Integrations({ searchParams }: { searchParams: Pro
     : metrika.kind === "app" ? `приложение …${metrika.clientId.slice(-4)} сохранено, токена ещё нет — получите код ниже`
     : metrika.kind === "env" ? `токен из .env: ${tail(cfg.metrika.token)}`
     : metrika.kind === "broken" ? metrika.error : "не подключена — блок «Яндекс Метрика» ниже";
-  const [backfill, plan, budget] = await Promise.all([readBackfill(db), readPlan(db), asgBudget(db, cfg.asg.dailyBudget)]);
+  const [backfill, plan, budget, speed] = await Promise.all([readBackfill(db), readPlan(db), asgBudget(db, cfg.asg.dailyBudget), asgSpeed(db, cfg.asg.minIntervalMs)]);
   const today = new Date().toISOString().slice(0, 10);
   const asgSites = sites.filter((s) => s.status === "ACTIVE" && s.adsgSiteId).length;
   const nSites = backfill?.siteId ? 1 : Math.max(1, asgSites);
@@ -88,12 +88,13 @@ export default async function Integrations({ searchParams }: { searchParams: Pro
         <CutsPlanner plan={plan} cuts={CUTS.map((c) => ({ key: c.key, title: c.title, what: c.what, required: Boolean(c.required) }))} sites={Math.max(1, asgSites)} budget={budget.limit} />
       </Section>
 
-      <Section title="Лимиты AdSpyglass" sub="Суточный бюджет — наш предохранитель: ADOK лимита не задаёт, но блокирует частые запросы, поэтому один запрос за раз и пауза между ними остаются всегда">
+      <Section title="Лимиты AdSpyglass" sub="Суточный бюджет — наш предохранитель: ADOK лимита не задаёт, но блокирует слишком частые запросы. Скорость — пауза между запросами и сколько идёт параллельно (бэкфилл грузит столько дней сразу). Если ADOK ответит 429, скорость сама снизится на ступень, очередь встанет на час">
         <div className="num grid gap-4 text-sm sm:grid-cols-3">
           <div><div className="text-xs text-muted">Запросов сегодня (UTC)</div><div className="text-lg font-semibold" data-testid="asg-used">{used}{budget.unlimited ? <span className="ml-1 text-sm font-normal text-muted">без лимита</span> : <> / {budget.limit}</>}</div>
             {!budget.unlimited && <div className="mt-1 h-1.5 rounded-full bg-surface-hover"><div className="h-full rounded-full bg-accent" style={{ width: `${Math.min(100, (used / budget.limit) * 100)}%` }} /></div>}
             <BudgetForm daily={budget.unlimited ? 0 : budget.limit} /></div>
-          <div><div className="text-xs text-muted">Интервал между запросами</div><div className="text-lg font-semibold">{cfg.asg.minIntervalMs / 1000} с</div></div>
+          <div><div className="text-xs text-muted">Скорость</div><div className="text-lg font-semibold" data-testid="asg-speed">{speed.intervalMs / 1000} с между запросами · {speed.parallel === 1 ? "по одному" : `${speed.parallel} параллельно`}</div>
+            <SpeedForm preset={speed.preset} options={Object.entries(SPEEDS).map(([value, s]) => ({ value, title: s.title }))} /></div>
           <div><div className="text-xs text-muted">Состояние</div>
             {pause ? <div className="flex flex-col items-start gap-1"><Badge tone="negative">пауза до {pause.until.slice(11, 16)} UTC</Badge><span className="text-xs text-muted">{pause.reason}</span><ResumeAsg /></div>
               : <Badge tone="positive">работает</Badge>}</div>

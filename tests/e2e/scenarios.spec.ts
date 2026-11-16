@@ -52,6 +52,7 @@ test("4. new deal → enter period → payment → paid in the payments register
   await page.locator("input[name=endsAt]").fill("2026-08-31");
   await page.getByRole("button", { name: "Создать дил" }).click();
   await expect(page).toHaveURL(/\/deals\/[a-z0-9]+$/);
+  const dealUrl = page.url();
   await expect(page.getByRole("heading", { name: /E2E Media · E2E баннер/ })).toBeVisible();
   await expect(page.getByText(/Tablink 1 · флэт|Tablink 1 · /).first()).toBeVisible();
   // The forecast is there at once (no night run): the deal card lists its August periods with money.
@@ -60,7 +61,7 @@ test("4. new deal → enter period → payment → paid in the payments register
   await expect(page.getByRole("row", { name: /E2E Media · E2E баннер/ })).toContainText("01.08.2026 — 31.08.2026");
   await page.getByRole("button", { name: "Пересчитать прогноз" }).click();
   await expect(page.getByText(/Прогноз пересчитан/)).toBeVisible();
-  await page.goBack(); await page.goBack();
+  await page.goto(dealUrl); // back to the card (two goBack() in a row could abort the first navigation)
 
   await page.getByRole("button", { name: "Внести", exact: true }).first().click();
   const amount = page.locator("input[name=amountInvoiced]");
@@ -476,6 +477,21 @@ test("integrations: the ADOK request plan shows its cost live, saves, and the ba
   await page.reload();
   await expect(page.getByTestId("asg-cuts").locator("input[name='cut:ad_type']")).toBeChecked();
   await expect(page.getByText(/запросов на день для/)).toBeVisible(); // the backfill paragraph quotes the plan's per-day cost
+});
+
+test("integrations: the ADOK speed — «Максимум» shows 0.25 s and 8 in parallel, back to «Бережно»", async ({ page }) => {
+  await login(page, "/settings/integrations");
+  const form = page.getByTestId("asg-speed-form");
+  await form.locator("select[name=preset]").selectOption("max");
+  await form.getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText(/Скорость: Максимум/)).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("asg-speed")).toHaveText("0.25 с между запросами · 8 параллельно");
+  await page.getByTestId("asg-speed-form").locator("select[name=preset]").selectOption("careful");
+  await page.getByTestId("asg-speed-form").getByRole("button", { name: "Сохранить" }).click();
+  await expect(page.getByText(/Скорость: Бережно/)).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("asg-speed")).toContainText("по одному");
 });
 
 test("integrations: the daily ADOK budget is ours to change — a number, or «без лимита» that drops the bar and the plan ceiling", async ({ page }) => {

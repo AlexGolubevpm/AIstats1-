@@ -89,3 +89,38 @@ export async function setAsgBudget(db: PrismaClient, daily: number): Promise<voi
     db.auditLog.create({ data: { entity: "AppSetting", entityId: BUDGET_KEY, field: "daily", before: before?.value ?? null, after: String(daily) } }),
   ]);
 }
+
+/**
+ * How fast the ADOK requests go (ADR 0016, 2026-11-16): the pause between request starts and how many
+ * requests / backfill days run at once. `careful` is the old behaviour (one at a time, ASG_MIN_INTERVAL_MS);
+ * a 429 still pauses the queue whatever the speed, and the owner steps back down.
+ */
+export const SPEED_KEY = "asg_speed";
+export type AsgSpeedPreset = "careful" | "fast" | "max";
+export const SPEEDS: Record<AsgSpeedPreset, { title: string; intervalMs: number | null; parallel: number }> = {
+  careful: { title: "Бережно — 1 запрос за раз", intervalMs: null, parallel: 1 },
+  fast: { title: "Быстро — 2 запроса в секунду, 4 параллельно", intervalMs: 500, parallel: 4 },
+  max: { title: "Максимум — 4 запроса в секунду, 8 параллельно", intervalMs: 250, parallel: 8 },
+};
+export async function asgSpeed(db: PrismaClient, envIntervalMs: number): Promise<{ preset: AsgSpeedPreset; intervalMs: number; parallel: number }> {
+  const row = await db.appSetting.findUnique({ where: { key: SPEED_KEY } });
+  const preset = row && row.value in SPEEDS ? (row.value as AsgSpeedPreset) : "careful";
+  const s = SPEEDS[preset];
+  return { preset, intervalMs: s.intervalMs ?? envIntervalMs, parallel: s.parallel };
+}
+export async function setAsgSpeed(db: PrismaClient, preset: string): Promise<void> {
+  if (!(preset in SPEEDS)) throw new Error("Неизвестная скорость");
+  const before = await db.appSetting.findUnique({ where: { key: SPEED_KEY } });
+  await db.$transaction([
+    db.appSetting.upsert({ where: { key: SPEED_KEY }, create: { key: SPEED_KEY, value: preset }, update: { value: preset } }),
+    db.auditLog.create({ data: { entity: "AppSetting", entityId: SPEED_KEY, field: "preset", before: before?.value ?? null, after: preset } }),
+  ]);
+}
+/** After a 429: one preset slower (max → fast → careful). Returns the new preset's title, or null when already careful. */
+export async function slowDownAsg(db: PrismaClient): Promise<string | null> {
+  const row = await db.appSetting.findUnique({ where: { key: SPEED_KEY } });
+  const next = row?.value === "max" ? "fast" : row?.value === "fast" ? "careful" : null;
+  if (!next) return null;
+  await setAsgSpeed(db, next);
+  return SPEEDS[next].title;
+}

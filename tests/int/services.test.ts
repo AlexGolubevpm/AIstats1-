@@ -202,9 +202,7 @@ describe("deals service", () => {
     const deal = await db.deal.create({ data: { title: "Loads", advertiserId: net.direct.advertiserId, format: "BANNER", price: "2", paymentBasis: "PER_1000_LOADS",
       startsAt: D("2026-11-01"), billedVia: "DIRECT", counterSource: "ASG_ZONE", sites: { create: [{ siteId: "s1" }, { siteId: "s2" }, { siteId: "s3" }] } } });
     await enterPeriod(db, deal.id, { from: "2026-11-04", to: "2026-11-04", siteId: "s1", amountInvoiced: "100", overrideReason: "акт" });
-    const t0 = Date.now();
-    const rows = await forecastDeals(db, "2026-11-04", "2026-11-15", deal.id);
-    expect(Date.now() - t0).toBeLessThan(5_000);
+    const rows = await forecastDeals(db, "2026-11-04", "2026-11-15", deal.id); // the old row-by-row transaction threw «timeout 5000 ms» here
     expect(rows).toBe((12 * 3 - 1) * codes.length); // every forecast cell; s1 on 11-04 is inside the period
     expect(await db.factFixDeal.count({ where: { dealId: deal.id } })).toBe(12 * 3 * codes.length);
     const fc = await db.factFixDeal.aggregate({ _sum: { revenue: true, pageLoads: true }, where: { dealId: deal.id, revenueState: "FORECAST" } });

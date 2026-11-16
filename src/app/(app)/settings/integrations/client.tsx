@@ -6,7 +6,7 @@ import { Input, Select } from "@/components/ui/input";
 import { Confirm } from "@/components/ui/sheet";
 import { useToast } from "@/components/ui/toast";
 import { applyMetrikaCountersAction, cancelBackfillAction, connectMetrikaAction, demoAction, disconnectMetrikaAction, mapAliasAction, metrikaCountersAction, resumeAsgAction, runJobAction,
-  saveAsgBudgetAction, saveAsgPlanAction, saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
+  saveAsgBudgetAction, saveAsgPlanAction, saveAsgSpeedAction, saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
 import { RESTATE_CHOICES, UNLIMITED, planCost, type AsgPlan, type CutKey } from "@/server/ingest/adspyglass/plan";
 import { DECISION_LABEL, type MatchRow } from "@/server/domain/metrika-match";
 import { fmtDate } from "@/lib/format";
@@ -254,6 +254,17 @@ export function BudgetForm({ daily }: { daily: number }) {
     <ActionForm action={saveAsgBudgetAction} submit="Сохранить" submitSize="sm" className="mt-3 flex flex-wrap items-end gap-2 [&>div:last-child]:pt-0">
       <FormField name="daily" label="Суточный бюджет"><Input name="daily" inputMode="numeric" defaultValue={daily || ""} disabled={unlimited} className="w-28" placeholder="800" /></FormField>
       <label className="flex h-9 items-center gap-2 text-sm"><input type="checkbox" name="unlimited" value="1" checked={unlimited} onChange={(e) => setUnlimited(e.target.checked)} data-testid="budget-unlimited" /> без лимита</label>
+    </ActionForm>
+    </div>
+  );
+}
+
+/** «Лимиты AdSpyglass» → speed preset. */
+export function SpeedForm({ preset, options }: { preset: string; options: { value: string; title: string }[] }) {
+  return (
+    <div data-testid="asg-speed-form">
+    <ActionForm action={saveAsgSpeedAction} submit="Сохранить" submitSize="sm" className="mt-3 flex flex-wrap items-end gap-2 [&>div:last-child]:pt-0">
+      <FormField name="preset" label="Скорость запросов"><Select name="preset" defaultValue={preset}>{options.map((o) => <option key={o.value} value={o.value}>{o.title}</option>)}</Select></FormField>
     </ActionForm>
     </div>
   );
