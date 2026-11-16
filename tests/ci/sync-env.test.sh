@@ -35,6 +35,11 @@ check "password set from secret"  '[ "$(grep "^APP_PASSWORD=" "$tmp/.env")" = "A
 check "stored hash and sessions dropped" 'grep -q "password_hash" "$tmp/psql.log" && grep -q "\"Session\"" "$tmp/psql.log" && [[ "$out" == *"applies at the next login"* ]]'
 out=$(printf 'APP_PASSWORD %s\n' "$(b64 NewPass-SECRET-9)" | run)
 check "same password: no reset"   '[ "$(grep -c password_hash "$tmp/psql.log")" = 1 ] && [[ "$out" == *"APP_PASSWORD: unchanged"* ]]'
+out=$(printf 'APP_LOGIN %s\n' "$(b64 owner@example.test)" | run)
+check "login set from secret"     'grep -q "^APP_LOGIN=owner@example.test$" "$tmp/.env" && [[ "$out" != *owner@* ]] && [[ "$out" == *"APP_LOGIN: updated"* ]]'
+check "new login drops sessions"  '[ "$(grep -c "DELETE FROM \"Session\"" "$tmp/psql.log")" -ge 2 ]'
+out=$(printf 'APP_PASSWORD %s\n' "$(b64 'Qx!!)12-SECRET')" | run)
+check "password with ! and ) kept" 'grep -q "^APP_PASSWORD=Qx!!)12-SECRET$" "$tmp/.env" && [[ "$out" != *SECRET* ]]'
 out=$(PSQL=false TUBESTAT_DIR="$tmp" RESTART=0 bash scripts/sync-env.sh <<< "APP_PASSWORD $(b64 Other-SECRET-10)")
 check "db unreachable: still written" '[ "$(grep "^APP_PASSWORD=" "$tmp/.env")" = "APP_PASSWORD=Other-SECRET-10" ] && [[ "$out" == *"could not reset"* && "$out" != *SECRET* ]]'
 

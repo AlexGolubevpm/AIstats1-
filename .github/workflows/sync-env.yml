@@ -41,13 +41,14 @@ jobs:
           ASG_AUTH_TOKEN: ${{ secrets.ASG_AUTH_TOKEN }}
           METRIKA_TOKEN: ${{ secrets.METRIKA_TOKEN }}
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+          APP_LOGIN: ${{ secrets.APP_LOGIN }}
         run: |
-          for k in ASG_AUTH_EMAIL ASG_AUTH_TOKEN METRIKA_TOKEN APP_PASSWORD; do
+          for k in ASG_AUTH_EMAIL ASG_AUTH_TOKEN METRIKA_TOKEN APP_PASSWORD APP_LOGIN; do
             [ -n "${!k}" ] && echo "$k: provided" || echo "$k: no secret in the production environment, skipped"
           done
           dir=/tmp/sync-env-$GITHUB_RUN_ID
           ssh deploy@"$HOST" "mkdir -p $dir"
           scp -q scripts/sync-env.sh deploy@"$HOST":$dir/
-          for k in ASG_AUTH_EMAIL ASG_AUTH_TOKEN METRIKA_TOKEN APP_PASSWORD; do
+          for k in ASG_AUTH_EMAIL ASG_AUTH_TOKEN METRIKA_TOKEN APP_PASSWORD APP_LOGIN; do
             [ -n "${!k}" ] && printf '%s %s\n' "$k" "$(printf '%s' "${!k}" | base64 -w0)"
           done | ssh deploy@"$HOST" "bash $dir/sync-env.sh; rc=\$?; rm -rf $dir; exit \$rc"
