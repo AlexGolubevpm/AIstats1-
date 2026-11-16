@@ -190,6 +190,38 @@ describe("deals service", () => {
     expect(rows.map((r) => r.countryCode)).toEqual(["JP"]); // zones have no country: a scoped deal stays on the site's country counters
   });
 
+  it("a 12-day window × 3 sites × 200 countries forecasts in set-based writes (no 5 s transaction timeout), amounts unchanged; an entered period keeps its amount", async () => {
+    await db.factFixDeal.deleteMany();
+    await db.factRevenueGeo.deleteMany();
+    const D = (s: string) => new Date(`${s}T00:00:00Z`);
+    const codes = (await db.country.findMany({ where: { code: { notIn: ["XX", "ZZ"] } }, select: { code: true }, take: 200, orderBy: { code: "asc" } })).map((c) => c.code);
+    const days = Array.from({ length: 12 }, (_, i) => `2026-11-${String(i + 4).padStart(2, "0")}`);
+    const geo = days.flatMap((day) => ["s1", "s2", "s3"].flatMap((siteId) => codes.map((countryCode) => (
+      { date: D(day), siteId, networkId: net.net.id, countryCode, device: "DESKTOP" as const, pageLoads: 1_000, revenueReported: "1" }))));
+    await db.factRevenueGeo.createMany({ data: geo });
+    const deal = await db.deal.create({ data: { title: "Loads", advertiserId: net.direct.advertiserId, format: "BANNER", price: "2", paymentBasis: "PER_1000_LOADS",
+      startsAt: D("2026-11-01"), billedVia: "DIRECT", counterSource: "ASG_ZONE", sites: { create: [{ siteId: "s1" }, { siteId: "s2" }, { siteId: "s3" }] } } });
+    await enterPeriod(db, deal.id, { from: "2026-11-04", to: "2026-11-04", siteId: "s1", amountInvoiced: "100", overrideReason: "акт" });
+    const t0 = Date.now();
+    const rows = await forecastDeals(db, "2026-11-04", "2026-11-15", deal.id);
+    expect(Date.now() - t0).toBeLessThan(5_000);
+    expect(rows).toBe((12 * 3 - 1) * codes.length); // every forecast cell; s1 on 11-04 is inside the period
+    expect(await db.factFixDeal.count({ where: { dealId: deal.id } })).toBe(12 * 3 * codes.length);
+    const fc = await db.factFixDeal.aggregate({ _sum: { revenue: true, pageLoads: true }, where: { dealId: deal.id, revenueState: "FORECAST" } });
+    expect(Number(fc._sum.revenue)).toBeCloseTo((12 * 3 - 1) * codes.length * 2, 4); // 1 000 loads × $2 / 1000 a cell
+    const period = await db.factFixDeal.aggregate({ _sum: { revenue: true }, where: { dealId: deal.id, dealPeriodId: { not: null } } });
+    expect(Number(period._sum.revenue)).toBeCloseTo(100, 4);
+    // A second run over the same window (counters corrected) updates in place: same rows, new counters, the period amount untouched.
+    await db.factRevenueGeo.updateMany({ where: { siteId: "s1" }, data: { pageLoads: 2_000 } });
+    await forecastDeals(db, "2026-11-04", "2026-11-15", deal.id);
+    expect(await db.factFixDeal.count({ where: { dealId: deal.id } })).toBe(12 * 3 * codes.length);
+    const s1p = await db.factFixDeal.findMany({ where: { dealId: deal.id, siteId: "s1", date: D("2026-11-04") } });
+    expect(s1p.every((r) => r.pageLoads === 2_000 && r.dealPeriodId)).toBe(true);
+    expect(Number((await db.factFixDeal.aggregate({ _sum: { revenue: true }, where: { dealId: deal.id, dealPeriodId: { not: null } } }))._sum.revenue)).toBeCloseTo(100, 4);
+    const s1f = await db.factFixDeal.findFirstOrThrow({ where: { dealId: deal.id, siteId: "s1", date: D("2026-11-05") } });
+    expect([s1f.pageLoads, Number(s1f.revenue), s1f.revenueState]).toEqual([2_000, 4, "FORECAST"]);
+  }, 60_000);
+
   it("disputed period counts as invoiced amount, needs a reason", async () => {
     const id = await enterPeriod(db, net.direct.id, { from: "2026-09-20", to: "2026-09-21", amountInvoiced: "40" });
     await expect(markDisputed(db, id, " ")).rejects.toThrow(/причину/);

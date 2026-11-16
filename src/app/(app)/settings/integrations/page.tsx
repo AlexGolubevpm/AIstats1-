@@ -7,7 +7,7 @@ import { config } from "@/server/config";
 import { db } from "@/server/db";
 import { asgBudget, asgPause, asgRequestsToday } from "@/server/ingest/run";
 import { SCHEDULES } from "@/server/jobs/handlers";
-import { daysBetween, defaultWindow, readBackfill, requestsPerDay } from "@/server/jobs/backfill";
+import { defaultWindow, readBackfill, requestsPerDay, type BackfillMode } from "@/server/jobs/backfill";
 import { CUTS, planCost, readPlan } from "@/server/ingest/adspyglass/plan";
 import { isDemo } from "@/server/seed/demo";
 import { authorizeUrl } from "@/server/ingest/metrika/oauth";
@@ -50,9 +50,10 @@ export default async function Integrations({ searchParams }: { searchParams: Pro
   const nSites = backfill?.siteId ? 1 : Math.max(1, asgSites);
   // What the plan spends a day over all sites; the backfill gets what is left.
   const cost = planCost(plan, Math.max(1, asgSites), budget.limit);
-  const perNight = { full: Math.max(0, Math.floor(cost.backfill / requestsPerDay(nSites, "full", plan))), totals: Math.max(0, Math.floor(cost.backfill / requestsPerDay(nSites, "totals", plan))) };
+  const fit = (m: BackfillMode) => Math.max(0, Math.floor(cost.backfill / requestsPerDay(nSites, m, plan)));
+  const perNight = { full: fit("full"), core: fit("core"), totals: fit("totals") };
   const backfillView = backfill ? { from: backfill.from, to: backfill.to, mode: backfill.mode ?? "full", siteDomain: backfill.siteId ? sites.find((s) => s.id === backfill.siteId)?.domain ?? null : null,
-    total: daysBetween(backfill.from, backfill.to).length, done: backfill.done.length, failed: backfill.failed.length, pending: backfill.pending.length,
+    stage: backfill.stage ?? null, total: backfill.done.length + backfill.failed.length + backfill.pending.length, done: backfill.done.length, failed: backfill.failed.length, pending: backfill.pending.length,
     updatedAt: backfill.updatedAt, lastStop: backfill.lastStop ?? null, cancelled: Boolean(backfill.cancelled) } : null;
   const lastBy = (job: string) => runs.find((r) => r.job === job);
   const dur = (a: Date, b: Date | null) => (b ? `${Math.max(1, Math.round((b.getTime() - a.getTime()) / 1000))} с` : "идёт");
@@ -114,7 +115,7 @@ export default async function Integrations({ searchParams }: { searchParams: Pro
         <div className="border-t border-border pt-4">
           <h3 className="mb-1 text-sm font-medium">Бэкфилл AdSpyglass</h3>
           <p className="mb-3 text-xs text-muted">Догружает прошлые дни от новых к старым порциями под дневной бюджет (плану выше остаётся его резерв — {cost.reserve} запросов): джоба проверяет окно каждые 30 минут и продолжает на следующие сутки сама. «Все разрезы» — разрезы из плана, зоны и расход ({cost.perDay} запросов на день для {asgSites || 1} сайтов); «только итоги по сайтам» — один запрос на день, хватает для графиков, прогноза и сравнения месяцев. В конце пересчитывает прогноз дилов и алерты за окно.</p>
-          <BackfillBlock state={backfillView} sites={sites.map((s) => ({ id: s.id, domain: s.domain }))} defaults={{ full: defaultWindow(today, "full"), totals: defaultWindow(today, "totals") }} perNight={perNight} />
+          <BackfillBlock state={backfillView} sites={sites.map((s) => ({ id: s.id, domain: s.domain }))} defaults={{ full: defaultWindow(today, "full"), core: defaultWindow(today, "core"), totals: defaultWindow(today, "totals") }} perNight={perNight} />
         </div>
         <div className="border-t border-border pt-4">
           <h3 className="mb-2 text-sm font-medium">Ручной перезапуск</h3>

@@ -153,7 +153,7 @@ describe("asg:backfill", () => {
     expect((await runJob("asg:backfill", ctx, {})).skipped).toContain("нечего");
   });
 
-  it("planCatchUp queues the days of the month without a country cut, newest first, and yields to a running backfill", async () => {
+  it("planCatchUp queues the days of the month without a country cut as core then full, newest first, and yields to a running backfill", async () => {
     const { planCatchUp, readBackfill, startBackfill, cancelBackfill } = await import("@/server/jobs/backfill");
     // Factory data: JP/US rows on 09-20 and 09-21. Totals-only day 09-22 has just ZZ.
     const s1 = await db.site.findFirstOrThrow();
@@ -161,13 +161,56 @@ describe("asg:backfill", () => {
     await db.factRevenueGeo.create({ data: { date: new Date("2026-09-22T00:00:00Z"), siteId: s1.id, networkId: net.id, countryCode: "ZZ", device: "DESKTOP", pageLoads: 1, revenueReported: "1" } });
     expect(await planCatchUp(db, "2026-09-23")).toEqual([...Array.from({ length: 19 }, (_, i) => `2026-09-${String(i + 1).padStart(2, "0")}`), "2026-09-22"]);
     const s = (await readBackfill(db))!;
-    expect([s.from, s.to, s.mode, s.pending[0], s.pending.at(-1)]).toEqual(["2026-09-01", "2026-09-22", "full", "2026-09-22", "2026-09-01"]);
+    expect([s.from, s.to, s.mode, s.stage, s.then, s.pending[0], s.pending.at(-1)]).toEqual(["2026-09-01", "2026-09-22", "core", 1, { mode: "full", skip: [] }, "2026-09-22", "2026-09-01"]);
     expect(await planCatchUp(db, "2026-09-23")).toEqual([]); // already pending: no second plan
     await cancelBackfill(db);
     await startBackfill(db, { from: "2026-09-10", to: "2026-09-12" });
     expect(await planCatchUp(db, "2026-09-23")).toEqual([]); // a backfill set by hand is left alone
     await cancelBackfill(db);
     expect(await planCatchUp(db, "2026-09-01")).toEqual([]); // the 1st: nothing before today
+  });
+
+  it("core: website + countries, networks, traffic sources per site and the cost; then derive, then stage 2 with the remaining cuts over the same window", async () => {
+    const groups: string[] = [];
+    const fetchImpl = (async (u: URL | string) => { groups.push(new URL(String(u)).searchParams.get("group_by") ?? ""); return fakeApi(u); }) as typeof fetch;
+    const ctx = { db, cfg: cfg(1_000_000), raw, today, fetchImpl };
+    const { readBackfill, requestsPerDay } = await import("@/server/jobs/backfill");
+    expect(requestsPerDay(3, "core")).toBe(1 + 3 * 3);
+    const r1 = await runJob("asg:backfill", ctx, { from: "2026-09-02", to: "2026-09-03", mode: "core" });
+    expect(r1.status).toBe("ok");
+    expect(groups.length).toBe(2 * (1 + 3 * 3));
+    expect(new Set(groups)).toEqual(new Set(["website", "country", "adnetwork_squashed", "traffic_source"]));
+    const D3 = new Date("2026-09-03T00:00:00Z");
+    expect(await db.factRevenueGeo.count({ where: { date: D3, countryCode: "JP" } })).toBe(3); // money per site
+    expect(await db.factCost.count({ where: { date: D3, origin: "ASG" } })).toBe(3); // traffic purchase cost per site
+    expect(await db.factRevenueZone.count({ where: { date: D3 } })).toBe(0); // zones wait for stage 2
+    expect(await db.factRevenueFormat.count({ where: { date: D3 } })).toBe(0);
+    expect(await db.ingestRun.count({ where: { source: "derive" } })).toBe(1); // money, cost, deals and alerts right after stage 1
+    let s = (await readBackfill(db))!;
+    expect([s.mode, s.stage, s.from, s.to, s.pending, s.done]).toEqual(["full", 2, "2026-09-02", "2026-09-03", ["2026-09-03", "2026-09-02"], []]);
+    groups.length = 0;
+    expect((await runJob("asg:backfill", ctx, {})).status).toBe("ok");
+    expect(groups).toContain("ad_type");
+    expect(await db.factRevenueZone.count({ where: { date: D3 } })).toBe(3);
+    s = (await readBackfill(db))!;
+    expect([s.mode, s.stage, s.pending]).toEqual(["full", 2, []]);
+    expect(await db.ingestRun.count({ where: { source: "derive" } })).toBe(2);
+    expect((await runJob("asg:backfill", ctx, {})).skipped).toContain("нечего"); // no stage 3
+  });
+
+  it("planCatchUp turns a full catch-up saved before the stages (no origin) into core for its pending days, then full for them; a manual full is left alone", async () => {
+    const { planCatchUp, readBackfill, saveBackfill, nextStage, startBackfill, cancelBackfill } = await import("@/server/jobs/backfill");
+    const t = new Date().toISOString();
+    await saveBackfill(db, { from: "2026-09-04", to: "2026-09-08", mode: "full", pending: ["2026-09-06", "2026-09-05", "2026-09-04"], done: ["2026-09-08", "2026-09-07"], failed: [], startedAt: t, updatedAt: t });
+    expect(await planCatchUp(db, "2026-09-16")).toEqual(["2026-09-04", "2026-09-05", "2026-09-06"]);
+    const s = (await readBackfill(db))!;
+    expect([s.mode, s.stage, s.origin, s.pending, s.done, s.then]).toEqual(["core", 1, "catchup", ["2026-09-06", "2026-09-05", "2026-09-04"], [], { mode: "full", skip: ["2026-09-08", "2026-09-07"] }]);
+    const next = (await nextStage(db, { ...s, pending: [], done: s.pending }))!;
+    expect([next.mode, next.stage, next.pending, next.done]).toEqual(["full", 2, ["2026-09-06", "2026-09-05", "2026-09-04"], ["2026-09-08", "2026-09-07"]]);
+    await cancelBackfill(db);
+    await startBackfill(db, { from: "2026-09-10", to: "2026-09-12" });
+    expect(await planCatchUp(db, "2026-09-16")).toEqual([]);
+    expect((await readBackfill(db))!.mode).toBe("full");
   });
 
   it("a cancelled backfill does nothing; a new window keeps the days already done", async () => {
