@@ -7,7 +7,7 @@ import { db } from "@/server/db";
 import { RuleError } from "@/server/domain/errors";
 import { checkSite, withAsg } from "@/server/ingest/probe";
 import { digestPlain } from "@/lib/digest";
-import { digestText, disconnectTelegram, findTelegramChats, saveTelegramSettings, saveTelegramToken, sendDigestNow, telegramView } from "@/server/services/telegram";
+import { checkTelegramLink, digestText, disconnectTelegram, findTelegramChats, resolveTelegramChat, saveTelegramProxy, saveTelegramSettings, saveTelegramToken, sendDigestNow, telegramView } from "@/server/services/telegram";
 import { SPEEDS, asgBudget, resumeAsg, setAsgBudget, setAsgSpeed, type AsgSpeedPreset } from "@/server/ingest/run";
 import { JOB_NAMES, type JobName } from "@/server/jobs/handlers";
 import { BACKFILL_MODES, cancelBackfill, daysBetween, requestsPerDay, startBackfill, type BackfillMode } from "@/server/jobs/backfill";
@@ -420,11 +420,12 @@ export async function findTelegramChatsAction(): Promise<ActionResult> {
   });
 }
 
-/** «Telegram» step 2: chat, hour (MSK), noise threshold, on/off. */
+/** «Telegram» step 2: chat (picked from the list or typed: id / @username, checked with getChat), hour (MSK), noise threshold, on/off. */
 export async function saveTelegramSettingsAction(_: ActionResult, f: FormData): Promise<ActionResult> {
   await requireSession();
   return guarded(async () => {
-    const [chatId, chatTitle] = str(f, "chat") ? [str(f, "chat").split("|")[0], str(f, "chat").split("|").slice(1).join("|")] : [null, null];
+    let [chatId, chatTitle]: (string | null)[] = str(f, "chat") ? [str(f, "chat").split("|")[0], str(f, "chat").split("|").slice(1).join("|")] : [null, null];
+    if (str(f, "manualChat")) { const c = await resolveTelegramChat(db, config(), str(f, "manualChat")); [chatId, chatTitle] = [c.id, c.title]; }
     await saveTelegramSettings(db, { chatId, chatTitle, hour: Number(str(f, "hour")), minAmount: Number(money(f, "minAmount") || "0"), enabled: f.get("enabled") === "1" });
     revalidatePath("/settings/integrations");
     return { ok: true, message: "Настройки сводки сохранены" };
@@ -436,7 +437,7 @@ export async function previewDigestAction(): Promise<ActionResult> {
   await requireSession();
   return guarded(async () => {
     const day = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-    const v = await telegramView(db);
+    const v = await telegramView(db, config());
     return { ok: true, data: { text: digestPlain(await digestText(db, config(), day, v?.minAmount)) } };
   });
 }
@@ -453,4 +454,20 @@ export async function sendDigestNowAction(): Promise<ActionResult> {
 export async function disconnectTelegramAction(): Promise<ActionResult> {
   await requireSession();
   return guarded(async () => { await disconnectTelegram(db); revalidatePath("/settings/integrations"); return { ok: true, message: "Бот отключён, токен удалён" }; });
+}
+
+/** «Прокси к Telegram»: a Cloudflare Worker address or an HTTP proxy, checked with getMe through it; empty — direct. */
+export async function saveTelegramProxyAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const label = await saveTelegramProxy(db, config(), str(f, "proxy"));
+    revalidatePath("/settings/integrations");
+    return { ok: true, message: label ? `Прокси работает: ${label}` : "Прокси убран — запросы идут напрямую" };
+  });
+}
+
+/** «Проверить связь»: DNS, TCP :443, getMe — from the server. */
+export async function checkTelegramLinkAction(): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => ({ ok: true, data: { rows: await checkTelegramLink(db, config()) } }));
 }

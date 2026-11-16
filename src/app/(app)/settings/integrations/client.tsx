@@ -7,7 +7,7 @@ import { Confirm } from "@/components/ui/sheet";
 import { useToast } from "@/components/ui/toast";
 import { applyMetrikaCountersAction, cancelBackfillAction, connectMetrikaAction, demoAction, disconnectMetrikaAction, mapAliasAction, metrikaCountersAction, resumeAsgAction, runJobAction,
   saveAsgBudgetAction, saveAsgPlanAction, saveAsgSpeedAction, disconnectTelegramAction, findTelegramChatsAction, previewDigestAction,
-  saveTelegramSettingsAction, saveTelegramTokenAction, sendDigestNowAction, saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
+  saveTelegramSettingsAction, saveTelegramTokenAction, sendDigestNowAction, saveTelegramProxyAction, checkTelegramLinkAction, saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
 import { RESTATE_CHOICES, UNLIMITED, planCost, type AsgPlan, type CutKey } from "@/server/ingest/adspyglass/plan";
 import { DECISION_LABEL, type MatchRow } from "@/server/domain/metrika-match";
 import { fmtDate } from "@/lib/format";
@@ -271,7 +271,16 @@ export function SpeedForm({ preset, options }: { preset: string; options: { valu
   );
 }
 
-export interface TelegramBlockView { bot: string | null; chatId: string | null; chatTitle: string | null; hour: number; minAmount: number; enabled: boolean }
+export interface TelegramBlockView { bot: string | null; chatId: string | null; chatTitle: string | null; hour: number; minAmount: number; enabled: boolean; proxy: string | null }
+type LinkRow = { step: string; target: string; ok: boolean; ms: number | null; detail: string };
+/** A Cloudflare Worker that forwards Bot API calls to api.telegram.org: the path /bot<token>/<method> stays as it is. */
+export const WORKER_CODE = `export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+    url.hostname = "api.telegram.org";
+    return fetch(new Request(url, request));
+  },
+};`;
 type TgChat = { id: string; title: string; type: string };
 const CHAT_KIND: Record<string, string> = { private: "личный чат", group: "группа", supergroup: "группа", channel: "канал" };
 
@@ -287,6 +296,13 @@ export function TelegramBlock({ view, hours, error = null }: { view: TelegramBlo
     const r = await findTelegramChatsAction();
     if (r.error) return toast(r.error, "error");
     setChats((r.data?.chats as TgChat[]) ?? []);
+  });
+  const [link, setLink] = useState<LinkRow[] | null>(null);
+  const [showWorker, setShowWorker] = useState(false);
+  const check = () => start(async () => {
+    const r = await checkTelegramLinkAction();
+    if (r.error) return toast(r.error, "error");
+    setLink((r.data?.rows as LinkRow[]) ?? []);
   });
   const show = () => start(async () => {
     const r = await previewDigestAction();
@@ -314,8 +330,9 @@ export function TelegramBlock({ view, hours, error = null }: { view: TelegramBlo
           <div className="rounded-lg border border-border p-3">
             <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
               <Button size="sm" disabled={busy} onClick={find}>{busy ? "Ищем…" : "Найти чат"}</Button>
-              <span className="text-xs text-muted">сначала откройте бота в Telegram и нажмите Start — или добавьте его в группу и напишите там сообщение</span>
+              <span className="text-xs text-muted">личный чат: откройте бота и нажмите Start. Группа: добавьте бота и отправьте в группе <code className="select-all">/start@{view.bot}</code> — обычные сообщения бот в группе не видит</span>
             </div>
+            {chats && !chats.some((c) => c.type !== "private") && <p className="mb-3 text-xs text-warning" data-testid="telegram-no-groups">Групп не найдено. Отправьте в группе <code>/start@{view.bot}</code> и нажмите «Найти чат» ещё раз — или впишите chat id ниже.</p>}
             <ActionForm action={saveTelegramSettingsAction} submit="Сохранить" submitSize="sm" className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-4 [&>div:last-child]:col-span-full">
               <FormField name="chat" label="Куда слать">
                 <Select name="chat" defaultValue="" key={chats?.length ?? 0}>
@@ -323,12 +340,48 @@ export function TelegramBlock({ view, hours, error = null }: { view: TelegramBlo
                   {(chats ?? []).map((c) => <option key={c.id} value={`${c.id}|${c.title}`}>{c.title} · {CHAT_KIND[c.type] ?? c.type}</option>)}
                 </Select>
               </FormField>
+              <FormField name="manualChat" label="Или chat id / @username" hint="например −1001234567890; бот должен быть в чате"><Input name="manualChat" autoComplete="off" className="font-mono" placeholder="-100…" /></FormField>
               <FormField name="hour" label="Время, МСК" hint="данные за вчера готовы около 08:00">
                 <Select name="hour" defaultValue={String(view.hour)}>{hours.map((h) => <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>)}</Select>
               </FormField>
               <FormField name="minAmount" label="Порог, $" hint="изменения и просадки меньше — не показывать"><Input name="minAmount" inputMode="numeric" defaultValue={view.minAmount} className="num w-28" /></FormField>
               <label className="flex h-9 items-center gap-2 text-sm"><input type="checkbox" name="enabled" value="1" defaultChecked={view.enabled} data-testid="telegram-enabled" /> отправлять каждый день</label>
             </ActionForm>
+          </div>
+          <div className="rounded-lg border border-border p-3" data-testid="telegram-proxy">
+            <div className="mb-2 flex flex-wrap items-center gap-3 text-sm">
+              <span className="font-medium">Связь с Telegram</span>
+              <span className="text-muted" data-testid="telegram-route">{view.proxy ? `через ${view.proxy}` : "напрямую"}</span>
+              <Button size="sm" disabled={busy} onClick={check}>{busy ? "Проверяем…" : "Проверить связь"}</Button>
+            </div>
+            {link && (
+              <table className="tbl num mb-3 w-full text-[13px]" data-testid="telegram-link">
+                <tbody>{link.map((r, i) => (
+                  <tr key={i} className="border-b border-border/60">
+                    <td className="py-1 pr-3">{r.ok ? "✅" : "❌"} {r.step}</td>
+                    <td className="py-1 pr-3 font-mono text-xs text-muted">{r.target}</td>
+                    <td className="py-1 pr-3 text-right">{r.ms == null ? "" : `${r.ms} мс`}</td>
+                    <td className={`py-1 ${r.ok ? "text-muted" : "text-negative"}`}>{r.detail}</td>
+                  </tr>))}</tbody>
+              </table>
+            )}
+            <ActionForm action={saveTelegramProxyAction} submit="Сохранить прокси" submitSize="sm" className="grid items-end gap-3 sm:grid-cols-[1fr_auto] [&>div:last-child]:col-span-full">
+              <FormField name="proxy" label="Прокси к Telegram" hint="если хостинг режет api.telegram.org: https://….workers.dev (Cloudflare Worker) или http://user:pass@host:port. Пусто — напрямую">
+                <Input name="proxy" autoComplete="off" className="font-mono" placeholder="https://tg-proxy.имя.workers.dev" />
+              </FormField>
+            </ActionForm>
+            <button type="button" className="mt-2 text-xs text-accent hover:underline" onClick={() => setShowWorker(!showWorker)}>{showWorker ? "Скрыть" : "Как сделать воркер в Cloudflare (бесплатно, 3 минуты)"}</button>
+            {showWorker && (
+              <div className="mt-2 text-xs text-muted" data-testid="telegram-worker">
+                <ol className="list-decimal pl-5">
+                  <li>dash.cloudflare.com → войти или зарегистрироваться (бесплатно).</li>
+                  <li>Workers &amp; Pages → Create → Worker → имя, например tg-proxy → Deploy.</li>
+                  <li>Edit code → заменить всё кодом ниже → Deploy.</li>
+                  <li>Скопировать адрес вида https://tg-proxy.имя.workers.dev → вставить выше → «Сохранить прокси».</li>
+                </ol>
+                <pre className="mt-2 select-all whitespace-pre rounded bg-surface-2 p-2 font-mono text-[12px]">{WORKER_CODE}</pre>
+              </div>
+            )}
           </div>
           <div className="flex flex-wrap items-center gap-3">
             <Button size="sm" disabled={busy} onClick={show}>Предпросмотр</Button>

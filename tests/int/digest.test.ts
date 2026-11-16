@@ -1,14 +1,16 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { beforeEach, describe, expect, it } from "vitest";
+import { ProxyAgent } from "undici";
+import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { buildNetwork } from "@tests/factories/network";
 import { buildDigest, digestPlain, digestProblems } from "@/lib/digest";
 import { config } from "@/server/config";
 import { LocalRawStore } from "@/server/ingest/raw-store";
 import { runJob, SCHEDULES } from "@/server/jobs/handlers";
 import { digestData, digestReady } from "@/server/queries/digest";
-import { DIGEST_SENT_KEY, TELEGRAM_SETTING, digestTick, disconnectTelegram, findTelegramChats, getTelegram, saveTelegramSettings, saveTelegramToken, sendDigestNow, telegramView } from "@/server/services/telegram";
+import { DIGEST_SENT_KEY, RETRY_MS, TELEGRAM_SETTING, chatsFromUpdates, checkTelegramLink, digestTick, disconnectTelegram, findTelegramChats, getTelegram, parseProxy,
+  resolveTelegramChat, saveTelegramProxy, saveTelegramSettings, saveTelegramToken, sendDigestNow, telegramView } from "@/server/services/telegram";
 import { resetDb, testDb } from "./helpers";
 
 const db = testDb();
@@ -19,12 +21,13 @@ let net: Awaited<ReturnType<typeof buildNetwork>>;
 
 /** A fake Bot API: records the calls, answers getMe / getUpdates / sendMessage. */
 function fakeTelegram(over: Partial<Record<string, () => Response>> = {}) {
-  const calls: { method: string; url: string; body: Record<string, unknown> | null }[] = [];
-  const fetchImpl = (async (u: URL | string, init?: RequestInit) => {
+  const calls: { method: string; url: string; body: Record<string, unknown> | null; dispatcher?: unknown }[] = [];
+  const fetchImpl = (async (u: URL | string, init?: RequestInit & { dispatcher?: unknown }) => {
     const url = String(u), method = url.split("/").pop()!;
-    calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : null });
+    calls.push({ method, url, body: init?.body ? JSON.parse(String(init.body)) : null, dispatcher: init?.dispatcher });
     if (over[method]) return over[method]!();
     if (method === "getMe") return Response.json({ ok: true, result: { username: "tubestat_bot" } });
+    if (method === "getChat") return Response.json({ ok: true, result: { id: -100555, type: "supergroup", title: "Team <chat>" } });
     if (method === "getUpdates") return Response.json({ ok: true, result: [
       { message: { chat: { id: 4242, type: "private", first_name: "Alex", last_name: "G" } } },
       { message: { chat: { id: 4242, type: "private", first_name: "Alex", last_name: "G" } } },
@@ -35,6 +38,8 @@ function fakeTelegram(over: Partial<Record<string, () => Response>> = {}) {
   }) as typeof fetch;
   return { fetchImpl, calls };
 }
+
+beforeAll(() => { RETRY_MS.splice(0, RETRY_MS.length, 0, 0); }); // no real pauses between attempts in tests
 
 beforeEach(async () => {
   await resetDb();
@@ -108,34 +113,127 @@ describe("telegram connection", () => {
     const stored = (await db.appSetting.findUniqueOrThrow({ where: { key: TELEGRAM_SETTING } })).value;
     expect(stored).not.toContain(TOKEN.split(":")[1]);
     expect((await getTelegram(db, cfg))!.token).toBe(TOKEN);
-    expect(await telegramView(db)).toEqual({ bot: "tubestat_bot", chatId: null, chatTitle: null, hour: 9, minAmount: 30, enabled: true });
-    expect(JSON.stringify(await telegramView(db))).not.toContain("AAtest");
-    expect(await findTelegramChats(db, cfg, tg.fetchImpl)).toEqual([{ id: "4242", title: "Alex G", type: "private" }, { id: "-100777", title: "TubeStat team", type: "supergroup" }]);
+    expect(await telegramView(db, cfg)).toEqual({ bot: "tubestat_bot", chatId: null, chatTitle: null, hour: 9, minAmount: 30, enabled: true, proxy: null });
+    expect(JSON.stringify(await telegramView(db, cfg))).not.toContain("AAtest");
+    expect(await findTelegramChats(db, cfg, tg.fetchImpl)).toEqual([{ id: "-100777", title: "TubeStat team", type: "supergroup" }, { id: "4242", title: "Alex G", type: "private" }]); // groups first
     await expect(saveTelegramSettings(db, { chatId: "abc", hour: 9, minAmount: 30, enabled: true })).rejects.toThrow(/чат/);
     await expect(saveTelegramSettings(db, { chatId: "4242", hour: 3, minAmount: 30, enabled: true })).rejects.toThrow(/время/);
     await saveTelegramSettings(db, { chatId: "-100777", chatTitle: "TubeStat team", hour: 10, minAmount: 50, enabled: true });
     await saveTelegramSettings(db, { hour: 11, minAmount: 50, enabled: false }); // no chat in the form: the chosen one stays
-    expect(await telegramView(db)).toEqual({ bot: "tubestat_bot", chatId: "-100777", chatTitle: "TubeStat team", hour: 11, minAmount: 50, enabled: false });
+    expect(await telegramView(db, cfg)).toEqual({ bot: "tubestat_bot", chatId: "-100777", chatTitle: "TubeStat team", hour: 11, minAmount: 50, enabled: false, proxy: null });
     expect(await db.auditLog.count({ where: { entityId: TELEGRAM_SETTING } })).toBe(3);
     // The same bot again keeps the chat; a wrong token is refused with a clear text and without the token in it.
     await saveTelegramToken(db, cfg, TOKEN, tg.fetchImpl);
-    expect((await telegramView(db))!.chatId).toBe("-100777");
+    expect((await telegramView(db, cfg))!.chatId).toBe("-100777");
     const bad = fakeTelegram({ getMe: () => Response.json({ ok: false, description: "Unauthorized" }, { status: 401 }) });
     const err = await saveTelegramToken(db, cfg, TOKEN.replace("AA", "BB"), bad.fetchImpl).catch((e: Error) => e.message);
     expect(err).toContain("токен не подошёл");
     expect(err).not.toContain("BBtest");
     await disconnectTelegram(db);
-    expect(await telegramView(db)).toBeNull();
+    expect(await telegramView(db, cfg)).toBeNull();
   });
 
-  it("a network failure names the cause and never the token; TELEGRAM_API_BASE redirects the calls", async () => {
-    const down = (async () => { throw Object.assign(new TypeError(`fetch failed for https://api.telegram.org/bot${TOKEN}/getMe`), { cause: { code: "ETIMEDOUT" } }); }) as unknown as typeof fetch;
+  it("a network failure is retried (IPv4 first, then dual-stack); three failures name the cause and never the token; TELEGRAM_API_BASE redirects the calls", async () => {
+    let n = 0;
+    const dispatchers: unknown[] = [];
+    const down = (async (_u: string, init?: { dispatcher?: unknown }) => {
+      n++; dispatchers.push(init?.dispatcher);
+      throw Object.assign(new TypeError(`fetch failed for https://api.telegram.org/bot${TOKEN}/getMe`), { cause: { code: "ETIMEDOUT" } });
+    }) as unknown as typeof fetch;
     const err = await saveTelegramToken(db, cfg, TOKEN, down).catch((e: Error) => e.message);
-    expect(err).toContain("Telegram недоступен с сервера (ETIMEDOUT)");
+    expect(n).toBe(3);
+    expect(dispatchers[0]).toBeDefined();
+    expect(dispatchers[1]).not.toBe(dispatchers[0]); // the second attempt lets the system pick IPv4 or IPv6
+    expect(err).toBe("Сервер не достучался до Telegram (ETIMEDOUT, 3 попытки). Нажмите «Проверить связь» или задайте прокси ниже");
     expect(err).not.toContain(TOKEN);
+    // One blip recovers on the next attempt.
+    let k = 0;
     const tg = fakeTelegram();
-    await saveTelegramToken(db, config({ APP_SECRET: "test-secret", TELEGRAM_API_BASE: "https://proxy.test/" }), TOKEN, tg.fetchImpl);
-    expect(tg.calls[0].url).toBe(`https://proxy.test/bot${TOKEN}/getMe`);
+    const flaky = (async (u: string, init?: RequestInit) => { if (k++ === 0) throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ECONNRESET" } }); return tg.fetchImpl(u, init); }) as unknown as typeof fetch;
+    expect(await saveTelegramToken(db, cfg, TOKEN, flaky)).toBe("tubestat_bot");
+    const tg2 = fakeTelegram();
+    await saveTelegramToken(db, config({ APP_SECRET: "test-secret", TELEGRAM_API_BASE: "https://proxy.test/" }), TOKEN, tg2.fetchImpl);
+    expect(tg2.calls[0].url).toBe(`https://proxy.test/bot${TOKEN}/getMe`);
+  });
+});
+
+describe("telegram reachability", () => {
+  it("proxy addresses: a worker mirror (https, no path) or an HTTP proxy with a port; anything else is refused", () => {
+    expect(parseProxy(" https://tg-proxy.alex.workers.dev/ ")).toEqual({ kind: "mirror", base: "https://tg-proxy.alex.workers.dev" });
+    expect(parseProxy("http://u:p@1.2.3.4:8080")).toEqual({ kind: "proxy", url: "http://u:p@1.2.3.4:8080" });
+    for (const bad of ["tg-proxy.workers.dev", "https://x.dev/bot", "https://u:p@x.dev", "http://1.2.3.4", "socks5://1.2.3.4:1080"]) expect(() => parseProxy(bad)).toThrow(/workers\.dev|host:port/);
+  });
+
+  it("a worker: checked with getMe through it, stored encrypted, every call goes to it; an HTTP proxy rides as the dispatcher; empty — back to direct", async () => {
+    const tg = fakeTelegram();
+    await saveTelegramToken(db, cfg, TOKEN, tg.fetchImpl);
+    await expect(saveTelegramProxy(db, cfg, "nonsense", tg.fetchImpl)).rejects.toThrow(/workers\.dev/);
+    const dead = (async () => { throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ENOTFOUND" } }); }) as unknown as typeof fetch;
+    await expect(saveTelegramProxy(db, cfg, "https://w.example", dead)).rejects.toThrow("Сервер не достучался до Telegram через воркер w.example (ENOTFOUND, 3 попытки). Нажмите «Проверить связь»");
+    expect((await telegramView(db, cfg))!.proxy).toBeNull(); // a proxy that does not answer is not saved
+    tg.calls.length = 0;
+    expect(await saveTelegramProxy(db, cfg, "https://w.example/", tg.fetchImpl)).toBe("воркер w.example");
+    expect(tg.calls[0].url).toBe(`https://w.example/bot${TOKEN}/getMe`);
+    expect((await db.appSetting.findUniqueOrThrow({ where: { key: TELEGRAM_SETTING } })).value).not.toContain("w.example");
+    expect((await telegramView(db, cfg))!.proxy).toBe("воркер w.example");
+    await findTelegramChats(db, cfg, tg.fetchImpl);
+    expect(tg.calls.at(-1)!.url).toBe(`https://w.example/bot${TOKEN}/getUpdates`);
+    await saveTelegramToken(db, cfg, TOKEN, tg.fetchImpl); // a new token keeps the proxy
+    expect(tg.calls.at(-1)!.url).toContain("https://w.example/");
+
+    await saveTelegramProxy(db, cfg, "http://user:secret@1.2.3.4:8080", tg.fetchImpl);
+    expect(tg.calls.at(-1)!.url).toBe(`https://api.telegram.org/bot${TOKEN}/getMe`);
+    expect(tg.calls.at(-1)!.dispatcher).toBeInstanceOf(ProxyAgent);
+    const v = await telegramView(db, cfg);
+    expect(v!.proxy).toBe("HTTP-прокси 1.2.3.4:8080");
+    expect(JSON.stringify(v)).not.toContain("secret");
+    expect(await saveTelegramProxy(db, cfg, "", tg.fetchImpl)).toBeNull();
+    expect((await telegramView(db, cfg))!.proxy).toBeNull();
+    expect(await db.auditLog.count({ where: { entityId: TELEGRAM_SETTING, field: "proxy" } })).toBe(3);
+  });
+
+  it("groups: a group turned supergroup takes its new id, a group the bot left goes away, groups first; a chat typed by hand is checked with getChat", async () => {
+    const chat = (id: number, type: string, title?: string) => ({ id, type, ...(title ? { title } : { first_name: "Owner" }) });
+    expect(chatsFromUpdates([
+      { message: { chat: chat(1, "private") } },
+      { my_chat_member: { chat: chat(-5, "group", "Old group"), new_chat_member: { status: "member" } } },
+      { message: { chat: chat(-5, "group", "Old group"), migrate_to_chat_id: -1005 } },
+      { my_chat_member: { chat: chat(-7, "group", "Left"), new_chat_member: { status: "member" } } },
+      { my_chat_member: { chat: chat(-7, "group", "Left"), new_chat_member: { status: "kicked" } } },
+      { channel_post: { chat: chat(-1009, "channel", "Канал") } },
+    ])).toEqual([{ id: "-1005", title: "Old group", type: "supergroup" }, { id: "-1009", title: "Канал", type: "channel" }, { id: "1", title: "Owner", type: "private" }]);
+
+    const tg = fakeTelegram();
+    await saveTelegramToken(db, cfg, TOKEN, tg.fetchImpl);
+    await expect(resolveTelegramChat(db, cfg, "not a chat", tg.fetchImpl)).rejects.toThrow(/Chat id/);
+    expect(await resolveTelegramChat(db, cfg, "-100555", tg.fetchImpl)).toEqual({ id: "-100555", title: "Team <chat>", type: "supergroup" });
+    expect(tg.calls.at(-1)!.body).toEqual({ chat_id: "-100555" });
+    const missing = fakeTelegram({ getChat: () => Response.json({ ok: false, description: "Bad Request: chat not found" }, { status: 400 }) });
+    await expect(resolveTelegramChat(db, cfg, "@nogroup", missing.fetchImpl)).rejects.toThrow("Чат не найден: добавьте бота в этот чат и повторите");
+  });
+
+  it("«Проверить связь»: DNS A / AAAA, TCP :443 to each address, getMe directly and through the proxy", async () => {
+    const tg = fakeTelegram();
+    let t = 0;
+    const deps = {
+      now: () => (t += 10),
+      resolve4: async () => ["149.154.167.220"],
+      resolve6: async () => { throw Object.assign(new Error("queryAaaa ENODATA"), { code: "ENODATA" }); },
+      tcp: async (ip: string) => { if (ip !== "149.154.167.220") throw Object.assign(new Error("t"), { code: "ETIMEDOUT" }); },
+    };
+    const before = await checkTelegramLink(db, cfg, tg.fetchImpl, deps);
+    expect(before.map((r) => [r.step, r.ok, r.detail])).toEqual([["DNS A (IPv4)", true, "149.154.167.220"], ["DNS AAAA (IPv6)", false, "ENODATA"], ["TCP :443 (IPv4)", true, "ok"]]);
+    await saveTelegramToken(db, cfg, TOKEN, tg.fetchImpl);
+    await saveTelegramProxy(db, cfg, "https://w.example", tg.fetchImpl);
+    const blocked = (async (u: string, init?: RequestInit) => {
+      if (String(u).startsWith("https://api.telegram.org")) throw Object.assign(new TypeError("fetch failed"), { cause: { code: "ETIMEDOUT" } });
+      return tg.fetchImpl(u, init);
+    }) as unknown as typeof fetch;
+    const rows = await checkTelegramLink(db, cfg, blocked, { ...deps, tcp: async () => { throw Object.assign(new Error("t"), { code: "ETIMEDOUT" }); } });
+    expect(rows.slice(2).map((r) => [r.step, r.target, r.ok])).toEqual([
+      ["TCP :443 (IPv4)", "149.154.167.220", false], ["HTTPS getMe напрямую", "api.telegram.org", false], ["HTTPS getMe через прокси", "воркер w.example", true]]);
+    expect(rows[3].detail).toContain("ETIMEDOUT");
+    expect(JSON.stringify(rows)).not.toContain(TOKEN);
   });
 });
 

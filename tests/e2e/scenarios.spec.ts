@@ -491,7 +491,8 @@ test("integrations: Telegram — the bot token, the chat found by the bot, a pre
       const method = (req.url ?? "").split("/").pop();
       if (method === "sendMessage") sent.push(JSON.parse(body));
       const result = method === "getMe" ? { username: "tubestat_e2e_bot" }
-        : method === "getUpdates" ? [{ message: { chat: { id: 4242, type: "private", first_name: "Owner" } } }, { my_chat_member: { chat: { id: -100777, type: "supergroup", title: "TubeStat team" } } }] : { message_id: 1 };
+        : method === "getUpdates" ? [{ message: { chat: { id: 4242, type: "private", first_name: "Owner" } } }, { my_chat_member: { chat: { id: -100777, type: "supergroup", title: "TubeStat team" } } }]
+        : method === "getChat" ? { id: -100555, type: "supergroup", title: "Менеджеры" } : { message_id: 1 };
       res.setHeader("Content-Type", "application/json").end(JSON.stringify({ ok: true, result }));
     });
   });
@@ -512,9 +513,25 @@ test("integrations: Telegram — the bot token, the chat found by the bot, a pre
     await block.getByRole("button", { name: "Найти чат" }).click();
     await block.locator("select[name=chat]").selectOption({ label: "TubeStat team · группа" });
     await block.locator("select[name=hour]").selectOption("10");
-    await block.getByRole("button", { name: "Сохранить" }).click();
+    await block.getByRole("button", { name: "Сохранить", exact: true }).click();
     await expect(page.getByText("Настройки сводки сохранены")).toBeVisible();
     await expect(page.getByTestId("telegram-chat")).toHaveText("→ TubeStat team");
+
+    // A chat typed by hand is checked with getChat and replaces the picked one.
+    await block.locator("input[name=manualChat]").fill("-100555");
+    await block.getByRole("button", { name: "Сохранить", exact: true }).click();
+    await expect(page.getByTestId("telegram-chat")).toHaveText("→ Менеджеры");
+
+    // Link check from the server, the proxy form refuses nonsense, the worker how-to opens.
+    await expect(page.getByTestId("telegram-route")).toHaveText("напрямую");
+    await block.getByRole("button", { name: "Проверить связь" }).click();
+    await expect(page.getByTestId("telegram-link")).toContainText("HTTPS getMe напрямую");
+    await expect(page.getByTestId("telegram-link")).toContainText("✅");
+    await block.locator("input[name=proxy]").fill("tg-proxy.workers.dev");
+    await block.getByRole("button", { name: "Сохранить прокси" }).click();
+    await expect(block.getByText(/Адрес вида https:\/\/….workers.dev/).first()).toBeVisible();
+    await block.getByRole("button", { name: /Как сделать воркер в Cloudflare/ }).click();
+    await expect(page.getByTestId("telegram-worker")).toContainText('url.hostname = "api.telegram.org"');
 
     await block.getByRole("button", { name: "Предпросмотр" }).click();
     const preview = page.getByTestId("telegram-preview");
@@ -527,7 +544,7 @@ test("integrations: Telegram — the bot token, the chat found by the bot, a pre
     await block.getByRole("button", { name: "Отправить сейчас" }).click();
     await expect(page.getByText(/Сводка за \d{4}-\d{2}-\d{2} отправлена в Telegram/)).toBeVisible();
     expect(sent).toHaveLength(1);
-    expect(sent[0].chat_id).toBe("-100777");
+    expect(sent[0].chat_id).toBe("-100555");
     expect(sent[0].text).toContain("<b>TubeStat ·");
 
     await page.reload();
