@@ -8,7 +8,7 @@ import { RuleError } from "@/server/domain/errors";
 import { checkSite, withAsg } from "@/server/ingest/probe";
 import { asgBudget, resumeAsg, setAsgBudget } from "@/server/ingest/run";
 import { JOB_NAMES, type JobName } from "@/server/jobs/handlers";
-import { cancelBackfill, daysBetween, requestsPerDay, startBackfill, type BackfillMode } from "@/server/jobs/backfill";
+import { BACKFILL_MODES, cancelBackfill, daysBetween, requestsPerDay, startBackfill, type BackfillMode } from "@/server/jobs/backfill";
 import { CUTS, normalizePlan, planCost, readPlan, savePlan, type CutKey } from "@/server/ingest/adspyglass/plan";
 import { clearData } from "@/server/seed/demo";
 import { loadDemo } from "@/server/seed/load-demo";
@@ -252,7 +252,7 @@ export async function issueMcpTokenAction(): Promise<ActionResult> {
 export async function startBackfillAction(_: ActionResult, f: FormData): Promise<ActionResult> {
   await requireSession();
   const from = str(f, "from"), to = str(f, "to"), siteId = opt(f, "siteId");
-  const mode: BackfillMode = str(f, "mode") === "totals" ? "totals" : "full";
+  const mode: BackfillMode = BACKFILL_MODES.find((m) => m === str(f, "mode")) ?? "full";
   const today = new Date().toISOString().slice(0, 10);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to) || from > to) return { error: "Проверьте диапазон дат", field: "from" };
   if (to >= today) return { error: "Бэкфилл — для прошлых дней: сегодня и вчера грузят почасовой и ночной джобы", field: "to" };
@@ -264,7 +264,7 @@ export async function startBackfillAction(_: ActionResult, f: FormData): Promise
     const perDay = Math.floor(planCost(plan, sites, (await asgBudget(db, cfg.asg.dailyBudget)).limit).backfill / requestsPerDay(sites, mode, plan));
     const nights = perDay > 0 ? Math.ceil(state.pending.length / perDay) : null;
     revalidatePath("/settings/integrations");
-    return { ok: true, message: `Бэкфилл (${mode === "totals" ? "только итоги" : "все разрезы"}): ${state.pending.length} из ${daysBetween(from, to).length} дней — первая порция в ближайшие 30 минут${nights ? `, всего ≈ ${nights} сут. при ${perDay} дн./сутки` : ""}` };
+    return { ok: true, message: `Бэкфилл (${{ totals: "только итоги", core: "сайты, сетки, деньги и расход, затем остальные разрезы", full: "все разрезы" }[mode]}): ${state.pending.length} из ${daysBetween(from, to).length} дней — первая порция в ближайшие 30 минут${nights ? `, всего ≈ ${nights} сут. при ${perDay} дн./сутки` : ""}` };
   });
 }
 

@@ -431,6 +431,21 @@ test("integrations: the backfill block shows the window, queues the job and repo
   await expect(page.getByText("Бэкфилл отменён")).toBeVisible();
 });
 
+test("integrations: the backfill offers «sites, networks, money and cost» first and shows the stage", async ({ page }) => {
+  await login(page, "/settings/integrations");
+  await page.locator("select[name=mode]").selectOption("core");
+  const iso = (n: number) => new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+  await page.locator("input[name=from]").first().fill(iso(12));
+  await page.locator("input[name=to]").first().fill(iso(5));
+  await page.getByRole("button", { name: /Запустить бэкфилл|Изменить окно/ }).click();
+  await expect(page.getByText(/Бэкфилл \(сайты, сетки, деньги и расход, затем остальные разрезы\): 8 из 8 дней/).first()).toBeVisible();
+  await page.reload();
+  await expect(page.getByTestId("backfill-stage")).toHaveText("этап 1 из 2: сайты, сетки, деньги и расход");
+  await expect(page.getByTestId("backfill-progress")).toContainText("готово 0 из 8 дней");
+  await page.getByRole("button", { name: "Отменить" }).click();
+  await expect(page.getByText("Бэкфилл отменён")).toBeVisible();
+});
+
 test("integrations: the Metrika block takes the OAuth app and refuses a nonsense id; the connection row links to it", async ({ page }) => {
   await login(page, "/settings/integrations");
   const block = page.getByTestId("metrika-block");

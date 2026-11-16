@@ -7,6 +7,9 @@ describe("backfill arithmetic", () => {
     expect(requestsPerDay(27)).toBe(1 + 8 * 27); // the default plan: eight per-site cuts, zones per site (no account spot request)
     expect(requestsPerDay(27, "full", { ...DEFAULT_PLAN, cuts: { ...DEFAULT_PLAN.cuts, ad_type: false, device: false, spot_site: false } })).toBe(2 + 5 * 27);
     expect(requestsPerDay(27, "totals")).toBe(1);
+    expect(requestsPerDay(27, "core")).toBe(1 + 3 * 27); // website + countries, networks, traffic sources: ≈ 2.7× fewer than full
+    expect(requestsPerDay(27, "core", { ...DEFAULT_PLAN, cuts: { ...DEFAULT_PLAN.cuts, network: false } })).toBe(1 + 2 * 27); // a cut the plan has off stays off
+    expect(defaultWindow("2026-10-04", "core")).toEqual({ from: "2026-10-01", to: "2026-10-01" });
     expect(daysThatFit(270, 800, 300, 110)).toBe(2); // (800 − 300 − 270) / 110
     expect(daysThatFit(600, 800, 300, 110)).toBe(0);
     expect(defaultWindow("2026-10-04")).toEqual({ from: "2026-10-01", to: "2026-10-01" }); // full cuts: the current month

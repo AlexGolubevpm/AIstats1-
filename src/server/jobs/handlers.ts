@@ -11,8 +11,8 @@ import type { RawStore } from "@/server/ingest/raw-store";
 import { pruneRaw } from "@/server/ingest/raw-retention";
 import { AsgError } from "@/server/ingest/adspyglass/client";
 import { asgBudget, asgPause, asgRequestsToday, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
-import { daysThatFit, defaultWindow, readBackfill, requestsPerDay, saveBackfill, startBackfill, type BackfillMode } from "./backfill";
-import { DEFAULT_PLAN, planCost, readPlan, type AsgPlan } from "@/server/ingest/adspyglass/plan";
+import { daysThatFit, defaultWindow, nextStage, readBackfill, requestsPerDay, saveBackfill, startBackfill, type BackfillMode } from "./backfill";
+import { DEFAULT_PLAN, corePlan, planCost, readPlan, type AsgPlan } from "@/server/ingest/adspyglass/plan";
 import { recalcCosts, revshareCosts } from "@/server/services/costs";
 import { matchZonesToPlacements } from "@/server/services/inventory";
 import { forecastDeals } from "@/server/services/deals";
@@ -151,8 +151,9 @@ async function runBackfill(ctx: JobContext, client: AsgClient, w: { from: string
         if (mode === "totals") {
           rows += (await ingestSiteTotals(deps, [day])).rows; // site totals only; days that already have countries are left alone
         } else {
-          const g = await ingestSiteGeo(deps, [day], state!.siteId, plan);
-          const z = await ingestSiteZones(deps, [day], state!.siteId, plan);
+          // core: website + countries, networks, traffic sources per site (money and cost first); full adds the rest and the zones.
+          const g = await ingestSiteGeo(deps, [day], state!.siteId, mode === "core" ? corePlan(plan) : plan);
+          const z = mode === "core" ? { rows: 0, failed: [] as string[] } : await ingestSiteZones(deps, [day], state!.siteId, plan);
           rows += g.rows + z.rows + await revshareCosts(db, day, day, state!.siteId);
           partial.push(...g.failed, ...z.failed);
           if (g.skipped) { partial.push(g.skipped); state!.failed.push(day); state!.pending = state!.pending.filter((d) => d !== day); await saveBackfill(db, state!); continue; }
@@ -173,6 +174,8 @@ async function runBackfill(ctx: JobContext, client: AsgClient, w: { from: string
     } else if (!state!.pending.length) {
       const d = await runJob("derive", ctx, { from: state!.from, to: state!.to, siteId: state!.siteId });
       if (d.error) partial.push(`derive: ${d.error}`);
+      // Stage 1 done (sites, networks, money, cost are in): the remaining cuts follow over the same window from the next tick.
+      await nextStage(db, state!);
     }
     return { rows, requests: client.requests, partial };
   });

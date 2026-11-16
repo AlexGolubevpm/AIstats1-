@@ -52,6 +52,12 @@ export async function savePlan(db: PrismaClient, plan: AsgPlan): Promise<AsgPlan
 }
 
 export const enabledCuts = (plan: AsgPlan): CutInfo[] => CUTS.filter((c) => plan.cuts[c.key]);
+/** Cuts of the first stage after downtime: site money by country, networks, traffic sources (cost). Zones and the rest wait for the full stage. */
+export const CORE_CUTS: CutKey[] = ["country", "network", "traffic_source"];
+/** The plan narrowed to the core cuts (the ones the owner has on); zones are not pulled in core mode. */
+export const corePlan = (plan: AsgPlan): AsgPlan => ({ ...plan, cuts: Object.fromEntries(CUTS.map((c) => [c.key, CORE_CUTS.includes(c.key) && plan.cuts[c.key]])) as Record<CutKey, boolean> });
+/** Requests one core day costs: the website reference + the core cuts per site. */
+export const coreDayRequests = (plan: AsgPlan, sites: number) => 1 + enabledCuts(corePlan(plan)).length * sites;
 /** Requests one day of the full per-site ingest costs for N sites. */
 export const perDayRequests = (plan: AsgPlan, sites: number) => accountRequestsPerDay(plan) + enabledCuts(plan).length * sites;
 

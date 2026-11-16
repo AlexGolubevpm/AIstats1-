@@ -78,24 +78,26 @@ export function DemoButtons({ demo, hasData }: { demo: boolean; hasData: boolean
   );
 }
 
-export interface BackfillView { from: string; to: string; mode: "full" | "totals"; siteDomain: string | null; total: number; done: number; failed: number; pending: number; updatedAt: string; lastStop: string | null; cancelled: boolean }
+type Mode = "full" | "core" | "totals";
+export interface BackfillView { from: string; to: string; mode: Mode; stage: 1 | 2 | null; siteDomain: string | null; total: number; done: number; failed: number; pending: number; updatedAt: string; lastStop: string | null; cancelled: boolean }
 type Win = { from: string; to: string };
-const MODE_LABEL = { full: "все разрезы", totals: "только итоги по сайтам" } as const;
+const MODE_LABEL = { full: "все разрезы", core: "сайты, сетки, деньги и расход", totals: "только итоги по сайтам" } as const;
+const STAGE_LABEL = { 1: "этап 1 из 2: сайты, сетки, деньги и расход", 2: "этап 2 из 2: остальные разрезы" } as const;
 
 /** «Бэкфилл AdSpyglass»: mode + window form, progress of the running one, cancel. */
-export function BackfillBlock({ state, sites, defaults, perNight }: { state: BackfillView | null; sites: { id: string; domain: string }[]; defaults: { full: Win; totals: Win }; perNight: { full: number; totals: number } }) {
+export function BackfillBlock({ state, sites, defaults, perNight }: { state: BackfillView | null; sites: { id: string; domain: string }[]; defaults: Record<Mode, Win>; perNight: Record<Mode, number> }) {
   const { pending, run } = useRun();
   const running = state && !state.cancelled && state.pending > 0;
-  const [mode, setMode] = useState<"full" | "totals">(state && !state.cancelled ? state.mode : "full");
+  const [mode, setMode] = useState<Mode>(state && !state.cancelled ? state.mode : "full");
   const [win, setWin] = useState<Win>(state && !state.cancelled ? { from: state.from, to: state.to } : defaults.full);
-  const pick = (m: "full" | "totals") => { setMode(m); setWin(defaults[m]); };
+  const pick = (m: Mode) => { setMode(m); setWin(defaults[m]); };
   return (
     <div className="flex flex-col gap-4">
       {state && !state.cancelled && (
         <div className="rounded-lg border border-border p-3 text-sm" data-testid="backfill-progress">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
             <span className="font-medium">{state.from} — {state.to}{state.siteDomain ? ` · ${state.siteDomain}` : ""}</span>
-            <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted">{MODE_LABEL[state.mode]}</span>
+            <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[11px] text-muted" data-testid="backfill-stage">{state.stage ? STAGE_LABEL[state.stage] : MODE_LABEL[state.mode]}</span>
             <span className="num">готово {state.done} из {state.total} дней</span>
             {state.failed > 0 && <span className="text-negative">ошибок: {state.failed}</span>}
             {running && <span className="text-muted">осталось ≈ {Math.ceil(state.pending / Math.max(1, perNight[state.mode]))} сут. · порции каждые 30 минут, пока хватает бюджета</span>}
@@ -111,8 +113,9 @@ export function BackfillBlock({ state, sites, defaults, perNight }: { state: Bac
       )}
       <ActionForm action={startBackfillAction} submit={running ? "Изменить окно" : "Запустить бэкфилл"} className="grid items-end gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <FormField name="mode" label="Что грузить">
-          <Select name="mode" value={mode} onChange={(e) => pick(e.target.value as "full" | "totals")}>
+          <Select name="mode" value={mode} onChange={(e) => pick(e.target.value as Mode)}>
             <option value="full">Все разрезы (по плану «Разрезы ADOK»)</option>
+            <option value="core">Сайты, сетки, деньги и расход — потом остальные разрезы</option>
             <option value="totals">Только итоги по сайтам (1 запрос в день)</option>
           </Select>
         </FormField>

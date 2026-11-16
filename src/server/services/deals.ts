@@ -2,7 +2,7 @@
 // corrections (versioned, never in place) and distribution of period amounts to days.
 // Reference: docs/product/04-finance-and-deals.md.
 import Decimal from "decimal.js";
-import type { PrismaClient } from "@/generated/prisma/client";
+import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import {
   DealRuleError, calcAmount, checkInvoiceAmount, distribute, effectiveAmount, flatPerDay, flatPeriodDays, inGeoScope, isFlat, periodsOverlap,
   placeKey, revenueStateOf, statusAfterPayment, validateDeal, weightOf, type BillingPeriod, type DealInput, type PaymentBasis, type PeriodStatus,
@@ -113,6 +113,37 @@ async function enteredPeriods(db: PrismaClient, dealId: string) {
   return db.dealPeriod.findMany({ where: { dealId, supersededById: null, status: { not: "OPEN" } } });
 }
 
+type FactRow = Counter & { revenue: string };
+const CHUNK = 1000; // 7 parameters a row: far under PostgreSQL's 65 535 bind parameters
+
+/** Forecast rows of one deal: INSERT … ON CONFLICT DO UPDATE in chunks (the row leaves any period it was bound to). */
+async function upsertForecast(db: PrismaClient, dealId: string, cells: FactRow[]): Promise<number> {
+  // One key twice in a statement is an error for ON CONFLICT DO UPDATE; the row-by-row upsert let the last one win — so does this.
+  const rows = [...new Map(cells.map((r) => [`${r.date}|${r.siteId}|${r.countryCode}`, r])).values()];
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const values = rows.slice(i, i + CHUNK).map((r) =>
+      Prisma.sql`(${r.date}::date, ${dealId}, ${r.siteId}, ${r.countryCode}, ${r.pageLoads}::int, ${r.impsOwn}::int, ${r.revenue}::numeric, 'FORECAST'::"RevenueState")`);
+    await db.$executeRaw`
+      INSERT INTO "FactFixDeal" (date, "dealId", "siteId", "countryCode", "pageLoads", "impsOwn", revenue, "revenueState")
+      VALUES ${Prisma.join(values)}
+      ON CONFLICT (date, "dealId", "siteId", "countryCode") DO UPDATE SET
+        "pageLoads" = EXCLUDED."pageLoads", "impsOwn" = EXCLUDED."impsOwn", revenue = EXCLUDED.revenue,
+        "revenueState" = 'FORECAST', "dealPeriodId" = NULL`;
+  }
+  return rows.length;
+}
+
+/** Counters of cells inside an entered period: one UPDATE … FROM (VALUES …) per chunk, amounts untouched. */
+async function refreshCounters(db: PrismaClient, dealId: string, rows: FactRow[]): Promise<void> {
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const values = rows.slice(i, i + CHUNK).map((r) => Prisma.sql`(${r.date}::date, ${r.siteId}, ${r.countryCode}, ${r.pageLoads}::int, ${r.impsOwn}::int)`);
+    await db.$executeRaw`
+      UPDATE "FactFixDeal" f SET "pageLoads" = v.pl, "impsOwn" = v.io
+      FROM (VALUES ${Prisma.join(values)}) AS v(date, site, cc, pl, io)
+      WHERE f.date = v.date AND f."dealId" = ${dealId} AND f."siteId" = v.site AND f."countryCode" = v.cc`;
+  }
+}
+
 /**
  * Nightly forecast: counters and forecast revenue for days not covered by an entered period.
  * Days inside entered periods keep their distributed amounts; only counters are refreshed.
@@ -135,38 +166,31 @@ export async function forecastDeals(db: PrismaClient, from: string, to: string, 
     const covered = (date: string, siteId: string) => periods.some((p) => (p.siteId == null || p.siteId === siteId) && isoOf(p.from) <= date && isoOf(p.to) >= date);
     // Counters may have arrived (or been corrected) since the period was entered: spread its amount again over the days it covers.
     for (const p of periods) if (isoOf(p.from) <= to && isoOf(p.to) >= from) await distributePeriod(db, p.id);
-    await db.$transaction(async (tx) => {
-      await tx.factFixDeal.deleteMany({ where: { dealId: deal.id, date: { gte: d(start), lte: d(to) }, dealPeriodId: null } });
-    });
+    await db.factFixDeal.deleteMany({ where: { dealId: deal.id, date: { gte: d(start), lte: d(to) }, dealPeriodId: null } });
     if (start > end) continue;
     const raw = await dealCounters(db, deal.id, start, end);
     const counters = isFlat(basis) ? flatCells(deal.sites.map((s) => s.siteId), start, end, raw) : raw;
     const byDay = new Map<string, Counter[]>();
     for (const c of counters) byDay.set(c.date, [...(byDay.get(c.date) ?? []), c]);
-    await db.$transaction(async (tx) => {
-      for (const [date, cells] of byDay) {
-        let amounts: Decimal[];
-        if (isFlat(basis)) {
-          const perDay = flatPerDay(basis, deal.price.toString(), deal.billingPeriod as BillingPeriod, termDaysOf(deal), date);
-          amounts = cells.map(() => perDay.div(cells.length).toDecimalPlaces(4)); // evenly between the deal's sites
-        } else {
-          amounts = cells.map((c) => calcAmount(basis, deal.price.toString(), { ...c, days: 1 }));
-        }
-        for (const [i, c] of cells.entries()) {
-          const key = { date_dealId_siteId_countryCode: { date: d(date), dealId: deal.id, siteId: c.siteId, countryCode: c.countryCode } };
-          if (covered(date, c.siteId)) {
-            await tx.factFixDeal.updateMany({ where: { date: d(date), dealId: deal.id, siteId: c.siteId, countryCode: c.countryCode },
-              data: { pageLoads: c.pageLoads, impsOwn: c.impsOwn } });
-            continue;
-          }
-          await tx.factFixDeal.upsert({ ...{ where: key },
-            create: { date: d(date), dealId: deal.id, siteId: c.siteId, countryCode: c.countryCode, pageLoads: c.pageLoads, impsOwn: c.impsOwn,
-              revenue: amounts[i].toString(), revenueState: "FORECAST" },
-            update: { pageLoads: c.pageLoads, impsOwn: c.impsOwn, revenue: amounts[i].toString(), revenueState: "FORECAST", dealPeriodId: null } });
-          rows++;
-        }
+    const forecast: FactRow[] = [], countersOnly: FactRow[] = [];
+    for (const [date, cells] of byDay) {
+      let amounts: Decimal[];
+      if (isFlat(basis)) {
+        const perDay = flatPerDay(basis, deal.price.toString(), deal.billingPeriod as BillingPeriod, termDaysOf(deal), date);
+        amounts = cells.map(() => perDay.div(cells.length).toDecimalPlaces(4)); // evenly between the deal's sites
+      } else {
+        amounts = cells.map((c) => calcAmount(basis, deal.price.toString(), { ...c, days: 1 }));
       }
-    });
+      for (const [i, c] of cells.entries()) {
+        // Days inside an entered period keep their distributed amount: only the counters are refreshed.
+        if (covered(date, c.siteId)) countersOnly.push({ ...c, date, revenue: "0" });
+        else forecast.push({ ...c, date, revenue: amounts[i].toString() });
+      }
+    }
+    // Set-based writes in chunks, no interactive transaction: a 12-day window × sites × countries is thousands of
+    // cells, one upsert each did not fit Prisma's 5 s transaction timeout after the downtime backfill.
+    rows += await upsertForecast(db, deal.id, forecast);
+    await refreshCounters(db, deal.id, countersOnly);
   }
   return rows;
 }
@@ -191,19 +215,20 @@ export async function distributePeriod(db: PrismaClient, periodId: string): Prom
   const parts = distribute(amount, cells as never);
   const reported = p.impsReported ?? 0;
   const totalW = cells.reduce((a, c) => a + c.impsOwn, 0);
-  await db.$transaction(async (tx) => {
-    await tx.factFixDeal.deleteMany({ where: { dealId: p.dealId, date: { gte: p.from, lte: p.to }, ...(p.siteId ? { siteId: p.siteId } : {}) } });
-    let reportedLeft = reported;
-    for (const [i, c] of parts.entries()) {
-      const src = cells.find((x) => x.date === c.date && x.siteId === c.siteId && x.countryCode === c.countryCode)!;
-      const share = i === parts.length - 1 ? reportedLeft : totalW ? Math.floor((reported * src.impsOwn) / totalW) : 0;
-      reportedLeft -= share;
-      await tx.factFixDeal.create({ data: {
-        date: d(c.date), dealId: p.dealId, siteId: c.siteId, countryCode: c.countryCode, pageLoads: src.pageLoads, impsOwn: src.impsOwn,
-        impsReported: share, revenue: c.amount.toString(), revenueState: state, dealPeriodId: p.id,
-      } });
-    }
+  const byKey = new Map(cells.map((x) => [`${x.date}|${x.siteId}|${x.countryCode}`, x]));
+  let reportedLeft = reported;
+  const data = parts.map((c, i) => {
+    const src = byKey.get(`${c.date}|${c.siteId}|${c.countryCode}`)!;
+    const share = i === parts.length - 1 ? reportedLeft : totalW ? Math.floor((reported * src.impsOwn) / totalW) : 0;
+    reportedLeft -= share;
+    return { date: d(c.date), dealId: p.dealId, siteId: c.siteId, countryCode: c.countryCode, pageLoads: src.pageLoads, impsOwn: src.impsOwn,
+      impsReported: share, revenue: c.amount.toString(), revenueState: state, dealPeriodId: p.id };
   });
+  // One batch transaction (delete + bulk insert), not a row-by-row interactive one: no 5 s timeout on long periods.
+  await db.$transaction([
+    db.factFixDeal.deleteMany({ where: { dealId: p.dealId, date: { gte: p.from, lte: p.to }, ...(p.siteId ? { siteId: p.siteId } : {}) } }),
+    db.factFixDeal.createMany({ data }),
+  ]);
 }
 
 export interface EnterPeriodInput {
