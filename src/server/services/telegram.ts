@@ -245,7 +245,7 @@ export async function disconnectTelegram(db: PrismaClient): Promise<void> {
 }
 
 /** The digest text for a day, as it would be sent now. */
-export async function digestText(db: PrismaClient, cfg: Config, day: string, minAmount: number = DIGEST_DEFAULTS.minAmount, now = new Date()): Promise<string> {
+export async function digestText(db: PrismaClient, cfg: Config, day: string, minAmount: number = DIGEST_DEFAULTS.minAmount, now = new Date()): Promise<string[]> {
   return buildDigest(await digestData(db, day, now), { appUrl: cfg.appUrl || undefined, minAmount });
 }
 
@@ -254,8 +254,10 @@ export async function sendDigest(db: PrismaClient, cfg: Config, day: string, fet
   const conn = await getTelegram(db, cfg);
   if (!conn) throw new RuleError("token", "Сначала сохраните токен бота", "token");
   if (!conn.chatId) throw new RuleError("chatId", "Выберите чат: напишите боту и нажмите «Найти чат»", "chatId");
-  const text = await digestText(db, cfg, day, conn.minAmount, now);
-  await call(cfg, conn.token, "sendMessage", { chat_id: conn.chatId, text, parse_mode: "HTML", link_preview_options: { is_disabled: true } }, fetchImpl, conn.proxy);
+  // Usually one message; a long day goes out as several, in order (numbers first, then the problems).
+  for (const text of await digestText(db, cfg, day, conn.minAmount, now)) {
+    await call(cfg, conn.token, "sendMessage", { chat_id: conn.chatId, text, parse_mode: "HTML", link_preview_options: { is_disabled: true } }, fetchImpl, conn.proxy);
+  }
 }
 
 const yesterdayOf = (now: Date) => addDays(now.toISOString().slice(0, 10), -1);

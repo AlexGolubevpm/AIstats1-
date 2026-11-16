@@ -536,16 +536,21 @@ test("integrations: Telegram — the bot token, the chat found by the bot, a pre
     await block.getByRole("button", { name: "Предпросмотр" }).click();
     const preview = page.getByTestId("telegram-preview");
     await expect(preview).toContainText("📊 TubeStat ·");
-    await expect(preview).toContainText(/Выручка \$[\d ]+/);
-    await expect(preview).toContainText(/AdSpyglass \$[\d ]+.*фикс-дилы \$[\d ]+/);
-    await expect(preview).toContainText("Бандлы");
-    expect((await preview.innerText()).length).toBeLessThanOrEqual(1500);
+    await expect(preview).toContainText(/💰 Выручка \$[\d ]+/);
+    await expect(preview).toContainText(/AdSpyglass +\$[\d ]+ [▓░]{10} +\d+%/);
+    await expect(preview).toContainText(/Фикс-дилы +\$[\d ]+ [▓░]{10} +\d+%/);
+    await expect(preview).toContainText("🗂 Бандлы");
+    await expect(preview).toContainText("выруч.  маржа");
+    await expect(preview).toContainText("⚠️ Проблемы"); // demo data has alerts: grouped, in words, with what to do
+    await expect(preview).toContainText("👉");
+    await expect(preview).not.toContainText(/и ещё \d+$/m);
 
     await block.getByRole("button", { name: "Отправить сейчас" }).click();
     await expect(page.getByText(/Сводка за \d{4}-\d{2}-\d{2} отправлена в Telegram/)).toBeVisible();
-    expect(sent).toHaveLength(1);
-    expect(sent[0].chat_id).toBe("-100555");
+    expect(sent.length).toBeGreaterThanOrEqual(1); // one message, or the numbers and then the problems
+    expect(sent.every((m) => m.chat_id === "-100555" && m.text.length <= 4096)).toBe(true);
     expect(sent[0].text).toContain("<b>TubeStat ·");
+    expect(sent.map((m) => m.text).join("")).toContain("<pre>");
 
     await page.reload();
     await expect(page.getByRole("row", { name: /digest/ }).first()).toBeVisible(); // the send is in the 7-day log
