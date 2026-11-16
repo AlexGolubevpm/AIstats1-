@@ -271,7 +271,7 @@ export function SpeedForm({ preset, options }: { preset: string; options: { valu
   );
 }
 
-export interface TelegramBlockView { bot: string | null; chatId: string | null; chatTitle: string | null; hour: number; minAmount: number; problemMin: number; enabled: boolean; proxy: string | null }
+export interface TelegramBlockView { bot: string | null; chatId: string | null; chatTitle: string | null; hour: number; minAmount: number; problemMin: number; enabled: boolean; weekly: boolean; monthly: boolean; proxy: string | null }
 type LinkRow = { step: string; target: string; ok: boolean; ms: number | null; detail: string };
 /** A Cloudflare Worker that forwards Bot API calls to api.telegram.org: the path /bot<token>/<method> stays as it is. */
 export const WORKER_CODE = `export default {
@@ -304,8 +304,9 @@ export function TelegramBlock({ view, hours, error = null }: { view: TelegramBlo
     if (r.error) return toast(r.error, "error");
     setLink((r.data?.rows as LinkRow[]) ?? []);
   });
+  const [kind, setKind] = useState<"day" | "week" | "month">("day");
   const show = () => start(async () => {
-    const r = await previewDigestAction();
+    const r = await previewDigestAction(kind);
     if (r.error) return toast(r.error, "error");
     setPreview(String(r.data?.text ?? ""));
   });
@@ -346,7 +347,11 @@ export function TelegramBlock({ view, hours, error = null }: { view: TelegramBlo
               </FormField>
               <FormField name="minAmount" label="Изменения от, $" hint="сайты, сдвинувшиеся меньше, — не показывать"><Input name="minAmount" inputMode="numeric" defaultValue={view.minAmount} className="num w-28" /></FormField>
               <FormField name="problemMin" label="Проблемы от, $/день" hint="мельче — одной ссылкой на алерты"><Input name="problemMin" inputMode="numeric" defaultValue={view.problemMin} className="num w-28" /></FormField>
-              <label className="flex h-9 items-center gap-2 text-sm"><input type="checkbox" name="enabled" value="1" defaultChecked={view.enabled} data-testid="telegram-enabled" /> отправлять каждый день</label>
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm">
+                <label className="flex h-9 items-center gap-2"><input type="checkbox" name="enabled" value="1" defaultChecked={view.enabled} data-testid="telegram-enabled" /> каждый день — сводка за вчера</label>
+                <label className="flex h-9 items-center gap-2"><input type="checkbox" name="weekly" value="1" defaultChecked={view.weekly} data-testid="telegram-weekly" /> по понедельникам — отчёт за неделю</label>
+                <label className="flex h-9 items-center gap-2"><input type="checkbox" name="monthly" value="1" defaultChecked={view.monthly} data-testid="telegram-monthly" /> 1-го числа — отчёт за месяц</label>
+              </div>
             </ActionForm>
           </div>
           <div className="rounded-lg border border-border p-3" data-testid="telegram-proxy">
@@ -385,8 +390,11 @@ export function TelegramBlock({ view, hours, error = null }: { view: TelegramBlo
             )}
           </div>
           <div className="flex flex-wrap items-center gap-3">
+            <Select aria-label="Какой отчёт" value={kind} onChange={(e) => { setKind(e.target.value as "day"); setPreview(null); }} className="w-auto" data-testid="telegram-kind">
+              <option value="day">Сводка за вчера</option><option value="week">Отчёт за прошлую неделю</option><option value="month">Отчёт за прошлый месяц</option>
+            </Select>
             <Button size="sm" disabled={busy} onClick={show}>Предпросмотр</Button>
-            <Button size="sm" variant="primary" disabled={pending || !view.chatId} onClick={() => run(sendDigestNowAction)}>{pending ? "Отправляем…" : "Отправить сейчас"}</Button>
+            <Button size="sm" variant="primary" disabled={pending || !view.chatId} onClick={() => run(() => sendDigestNowAction(kind))}>{pending ? "Отправляем…" : "Отправить сейчас"}</Button>
             {!view.chatId && <span className="text-xs text-muted">выберите чат, чтобы отправить</span>}
           </div>
           {preview != null && <pre className="whitespace-pre-wrap rounded-lg border border-border bg-surface-2 p-3 text-sm" data-testid="telegram-preview">{preview}</pre>}

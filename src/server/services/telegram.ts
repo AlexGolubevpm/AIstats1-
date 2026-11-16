@@ -5,7 +5,7 @@ import { promises as dnsp } from "node:dns";
 import { connect as tcpConnect } from "node:net";
 import { Agent, ProxyAgent, fetch as undiciFetch, type Dispatcher } from "undici";
 import type { PrismaClient } from "@/generated/prisma/client";
-import { buildDigest, DIGEST_DEFAULTS } from "@/lib/digest";
+import { buildDigest, DIGEST_DEFAULTS, type DigestKind } from "@/lib/digest";
 import { addDays } from "@/lib/period";
 import type { Config } from "@/server/config";
 import { decryptSecret, encryptSecret } from "@/server/crypto";
@@ -22,8 +22,8 @@ export const DIGEST_HOURS = [8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18] as const;
 /** How long the digest waits for yesterday's data past the chosen hour before it goes out with a warning. */
 export const WAIT_FOR_DATA_H = 3;
 
-interface Stored { token: string; bot?: string; chatId?: string; chatTitle?: string; hour?: number; minAmount?: number; problemMin?: number; enabled?: boolean; proxy?: string }
-export interface TelegramConnection { token: string; bot: string | null; chatId: string | null; chatTitle: string | null; hour: number; minAmount: number; problemMin: number; enabled: boolean; proxy: string | null }
+interface Stored { token: string; bot?: string; chatId?: string; chatTitle?: string; hour?: number; minAmount?: number; problemMin?: number; enabled?: boolean; weekly?: boolean; monthly?: boolean; proxy?: string }
+export interface TelegramConnection { token: string; bot: string | null; chatId: string | null; chatTitle: string | null; hour: number; minAmount: number; problemMin: number; enabled: boolean; weekly: boolean; monthly: boolean; proxy: string | null }
 /** What the page shows: no token, the proxy only as its kind and host (it may carry a password). */
 export type TelegramView = Omit<TelegramConnection, "token" | "proxy"> & { proxy: string | null };
 
@@ -36,7 +36,7 @@ const write = (db: PrismaClient, s: Stored) => db.appSetting.upsert({ where: { k
 
 const base = (s: Stored) => ({ bot: s.bot ?? null, chatId: s.chatId ?? null, chatTitle: s.chatTitle ?? null,
   hour: DIGEST_HOURS.includes(s.hour as 9) ? s.hour! : 9, minAmount: s.minAmount ?? DIGEST_DEFAULTS.minAmount,
-  problemMin: s.problemMin ?? DIGEST_DEFAULTS.problemMin, enabled: s.enabled !== false });
+  problemMin: s.problemMin ?? DIGEST_DEFAULTS.problemMin, enabled: s.enabled !== false, weekly: s.weekly !== false, monthly: s.monthly !== false });
 
 /** What the page shows: everything but the token. */
 export async function telegramView(db: PrismaClient, cfg: Config): Promise<TelegramView | null> {
@@ -226,7 +226,7 @@ export async function checkTelegramLink(db: PrismaClient, cfg: Config, fetchImpl
 }
 
 /** Step 2: where to send, when (hour MSK), what counts as noise, on/off. */
-export async function saveTelegramSettings(db: PrismaClient, i: { chatId?: string | null; chatTitle?: string | null; hour: number; minAmount: number; problemMin?: number; enabled: boolean }): Promise<void> {
+export async function saveTelegramSettings(db: PrismaClient, i: { chatId?: string | null; chatTitle?: string | null; hour: number; minAmount: number; problemMin?: number; enabled: boolean; weekly?: boolean; monthly?: boolean }): Promise<void> {
   const prev = await readStored(db);
   if (!prev) throw new RuleError("token", "Сначала сохраните токен бота", "token");
   if (i.chatId && !/^-?\d{1,20}$/.test(i.chatId)) throw new RuleError("chatId", "Выберите чат из списка", "chatId");
@@ -235,7 +235,8 @@ export async function saveTelegramSettings(db: PrismaClient, i: { chatId?: strin
   const problemMin = i.problemMin ?? prev.problemMin ?? DIGEST_DEFAULTS.problemMin;
   if (!Number.isFinite(problemMin) || problemMin < 0 || problemMin > 100_000) throw new RuleError("problemMin", "Порог проблем — долларов в день, от 0", "problemMin");
   const chatId = i.chatId || prev.chatId, chatTitle = i.chatId ? i.chatTitle || i.chatId : prev.chatTitle;
-  await write(db, { ...prev, chatId, chatTitle, hour: i.hour, minAmount: Math.round(i.minAmount), problemMin: Math.round(problemMin), enabled: i.enabled });
+  await write(db, { ...prev, chatId, chatTitle, hour: i.hour, minAmount: Math.round(i.minAmount), problemMin: Math.round(problemMin), enabled: i.enabled,
+    weekly: i.weekly ?? prev.weekly ?? true, monthly: i.monthly ?? prev.monthly ?? true });
   await db.auditLog.create({ data: { entity: "AppSetting", entityId: TELEGRAM_SETTING, field: "settings",
     before: prev.chatId ? `${prev.chatTitle ?? prev.chatId} · ${prev.hour ?? 9}:00 · ${prev.enabled === false ? "выкл" : "вкл"}` : null,
     after: `${chatTitle ?? chatId ?? "чат не выбран"} · ${i.hour}:00 · ${i.enabled ? "вкл" : "выкл"}` } });
@@ -248,27 +249,42 @@ export async function disconnectTelegram(db: PrismaClient): Promise<void> {
 }
 
 /** The digest text for a day, as it would be sent now. */
-export async function digestText(db: PrismaClient, cfg: Config, day: string, minAmount: number = DIGEST_DEFAULTS.minAmount, now = new Date(), problemMin: number = DIGEST_DEFAULTS.problemMin): Promise<string[]> {
-  return buildDigest(await digestData(db, day, now), { appUrl: cfg.appUrl || undefined, minAmount, problemMin });
+export async function digestText(db: PrismaClient, cfg: Config, day: string, minAmount: number = DIGEST_DEFAULTS.minAmount, now = new Date(),
+  problemMin: number = DIGEST_DEFAULTS.problemMin, kind: DigestKind = "day"): Promise<string[]> {
+  return buildDigest(await digestData(db, day, now, kind), { appUrl: cfg.appUrl || undefined, minAmount, problemMin });
 }
 
-/** Sends the digest for `day` to the chosen chat. */
-export async function sendDigest(db: PrismaClient, cfg: Config, day: string, fetchImpl: TgFetch = defaultFetch, now = new Date()): Promise<void> {
+/** Sends a report ending on `day` (the day, the week to that Sunday, the month to that last day) to the chosen chat. */
+export async function sendDigest(db: PrismaClient, cfg: Config, day: string, fetchImpl: TgFetch = defaultFetch, now = new Date(), kind: DigestKind = "day"): Promise<void> {
   const conn = await getTelegram(db, cfg);
   if (!conn) throw new RuleError("token", "Сначала сохраните токен бота", "token");
   if (!conn.chatId) throw new RuleError("chatId", "Выберите чат: напишите боту и нажмите «Найти чат»", "chatId");
   // Usually one message; a long day goes out as several, in order (numbers first, then the problems).
-  for (const text of await digestText(db, cfg, day, conn.minAmount, now, conn.problemMin)) {
+  for (const text of await digestText(db, cfg, day, conn.minAmount, now, conn.problemMin, kind)) {
     await call(cfg, conn.token, "sendMessage", { chat_id: conn.chatId, text, parse_mode: "HTML", link_preview_options: { is_disabled: true } }, fetchImpl, conn.proxy);
   }
 }
 
 const yesterdayOf = (now: Date) => addDays(now.toISOString().slice(0, 10), -1);
+const dow = (iso: string) => new Date(`${iso}T00:00:00Z`).getUTCDay();
+/** The last day of each report that is complete by `now`: yesterday, the last Sunday, the last day of the last month. */
+export function lastComplete(kind: DigestKind, now: Date): string {
+  const y = yesterdayOf(now);
+  if (kind === "week") return addDays(y, -dow(y)); // Sunday: getUTCDay() = 0
+  if (kind === "month") return addDays(`${now.toISOString().slice(0, 7)}-01`, -1);
+  return y;
+}
+export const REPORT_LABEL: Record<DigestKind, string> = { day: "Сводка за вчера", week: "Отчёт за неделю", month: "Отчёт за месяц" };
+const SENT_KEY: Record<DigestKind, string> = { day: DIGEST_SENT_KEY, week: "telegram_weekly_sent", month: "telegram_monthly_sent" };
+const JOB: Record<DigestKind, string> = { day: "digest", week: "digest:week", month: "digest:month" };
+const startOf = (kind: DigestKind, end: string) => (kind === "week" ? addDays(end, -6) : kind === "month" ? `${end.slice(0, 7)}-01` : end);
 
 /**
  * The half-hourly tick: once a day, when the chosen hour (MSK) has come and yesterday is loaded
- * (the per-site cut and derive). Data still missing WAIT_FOR_DATA_H hours later — the digest goes
- * out anyway, marked as incomplete. The sent mark survives restarts and deploys.
+ * (the per-site cut and derive), the daily digest; on Mondays also the week (Monday–Sunday), on the
+ * 1st also the month — each its own message and IngestRun. Data still missing WAIT_FOR_DATA_H hours
+ * later — they go out anyway, marked as incomplete. The sent marks survive restarts and deploys; a
+ * failed send leaves its mark unset, so the next tick tries again.
  */
 export async function digestTick(db: PrismaClient, cfg: Config, fetchImpl: TgFetch = defaultFetch, now = new Date()): Promise<{ status: string; skipped?: string; error?: string }> {
   let conn: TelegramConnection | null;
@@ -276,22 +292,30 @@ export async function digestTick(db: PrismaClient, cfg: Config, fetchImpl: TgFet
   if (!conn || !conn.chatId) return { status: "skipped", skipped: "Telegram не подключён (Настройки → Интеграции)" };
   if (!conn.enabled) return { status: "skipped", skipped: "сводка в Telegram выключена" };
   const day = yesterdayOf(now);
-  const sent = await db.appSetting.findUnique({ where: { key: DIGEST_SENT_KEY } });
-  if (sent?.value === day) return { status: "skipped", skipped: `сводка за ${day} уже отправлена` };
+  const wanted: DigestKind[] = ["day", ...(conn.weekly && dow(day) === 0 ? ["week" as const] : []), ...(conn.monthly && day.slice(0, 7) !== now.toISOString().slice(0, 7) ? ["month" as const] : [])];
+  const marks = await db.appSetting.findMany({ where: { key: { in: wanted.map((k) => SENT_KEY[k]) } } });
+  const todo = wanted.filter((k) => marks.find((m) => m.key === SENT_KEY[k])?.value !== lastComplete(k, now));
+  if (!todo.length) return { status: "skipped", skipped: `сводка за ${day} уже отправлена` };
   const due = new Date(`${addDays(day, 1)}T00:00:00Z`).getTime() + (conn.hour - MSK_OFFSET_H) * 3_600_000;
   if (now.getTime() < due) return { status: "skipped", skipped: `сводка за ${day} — в ${conn.hour}:00 МСК` };
   if (now.getTime() < due + WAIT_FOR_DATA_H * 3_600_000 && !(await digestReady(db, day))) return { status: "skipped", skipped: `сводка ждёт данные за ${day}` };
-  return withIngestRun(db, { source: "telegram", job: "digest", from: day, to: day }, async () => {
-    await sendDigest(db, cfg, day, fetchImpl, now);
-    await db.appSetting.upsert({ where: { key: DIGEST_SENT_KEY }, create: { key: DIGEST_SENT_KEY, value: day }, update: { value: day } });
-    return { rows: 1 };
-  });
+  let result: { status: string; error?: string } = { status: "ok" };
+  for (const kind of todo) {
+    const end = lastComplete(kind, now);
+    const r = await withIngestRun(db, { source: "telegram", job: JOB[kind], from: startOf(kind, end), to: end }, async () => {
+      await sendDigest(db, cfg, end, fetchImpl, now, kind);
+      await db.appSetting.upsert({ where: { key: SENT_KEY[kind] }, create: { key: SENT_KEY[kind], value: end }, update: { value: end } });
+      return { rows: 1 };
+    });
+    if (r.status === "failed" && result.status !== "failed") result = r;
+  }
+  return result;
 }
 
-/** «Отправить сейчас»: yesterday's digest at once, whatever the hour; logged like the scheduled one. */
-export async function sendDigestNow(db: PrismaClient, cfg: Config, fetchImpl: TgFetch = defaultFetch, now = new Date()): Promise<string> {
-  const day = yesterdayOf(now);
-  const r = await withIngestRun(db, { source: "telegram", job: "digest", from: day, to: day }, async () => { await sendDigest(db, cfg, day, fetchImpl, now); return { rows: 1 }; });
+/** «Отправить сейчас»: the last complete day, week or month at once, whatever the hour; logged like the scheduled one. */
+export async function sendDigestNow(db: PrismaClient, cfg: Config, fetchImpl: TgFetch = defaultFetch, now = new Date(), kind: DigestKind = "day"): Promise<string> {
+  const end = lastComplete(kind, now);
+  const r = await withIngestRun(db, { source: "telegram", job: JOB[kind], from: startOf(kind, end), to: end }, async () => { await sendDigest(db, cfg, end, fetchImpl, now, kind); return { rows: 1 }; });
   if (r.status === "failed") throw new RuleError("telegram", r.error ?? "Не удалось отправить");
-  return day;
+  return end;
 }

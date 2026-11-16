@@ -8,8 +8,8 @@ import { buildDigest, digestPlain, digestProblems } from "@/lib/digest";
 import { config } from "@/server/config";
 import { LocalRawStore } from "@/server/ingest/raw-store";
 import { runJob, SCHEDULES } from "@/server/jobs/handlers";
-import { digestData, digestReady } from "@/server/queries/digest";
-import { DIGEST_SENT_KEY, RETRY_MS, TELEGRAM_SETTING, chatsFromUpdates, checkTelegramLink, digestTick, disconnectTelegram, findTelegramChats, getTelegram, parseProxy,
+import { digestData, digestReady, marginPlan, reportPeriod } from "@/server/queries/digest";
+import { DIGEST_SENT_KEY, RETRY_MS, lastComplete, TELEGRAM_SETTING, chatsFromUpdates, checkTelegramLink, digestTick, disconnectTelegram, findTelegramChats, getTelegram, parseProxy,
   resolveTelegramChat, saveTelegramProxy, saveTelegramSettings, saveTelegramToken, sendDigestNow, telegramView } from "@/server/services/telegram";
 import { resetDb, testDb } from "./helpers";
 
@@ -118,6 +118,31 @@ describe("digest numbers", () => {
     expect(digestPlain(msg)).toContain("🧩 Форматы (AdSpyglass, без фикс-дилов)\n             выруч.  доля 20.09\nPopunder        $14   78%     —\nБаннер           $4   22% +233%");
   });
 
+  it("the margin plan: the month's operating expenses against the margin so far; a month without entries takes the last one with them", async () => {
+    expect(await marginPlan(db, "2026-09-21")).toBeNull(); // nothing entered anywhere
+    await db.opexEntry.create({ data: { month: D("2026-08-01"), title: "Сервера", category: "HOSTING", amount: "60" } });
+    await db.opexEntry.create({ data: { month: D("2026-12-01"), title: "Будущее", amount: "999" } }); // a future month never stands in
+    const margin = Number((await db.$queryRaw<{ m: number }[]>`SELECT SUM(margin)::float8 m FROM v_site_geo_daily WHERE date BETWEEN '2026-09-01' AND '2026-09-21'`)[0].m);
+    expect(await marginPlan(db, "2026-09-21")).toEqual({ month: "2026-09-01", target: 60, margin, asOf: "2026-09-21", copiedFrom: "2026-08-01" });
+    await db.opexEntry.createMany({ data: [{ month: D("2026-09-01"), title: "Сервера", category: "HOSTING", amount: "70" }, { month: D("2026-09-01"), title: "Зарплаты", amount: "30" }] });
+    expect(await marginPlan(db, "2026-09-21")).toMatchObject({ target: 100, copiedFrom: null });
+    expect((await digestData(db, "2026-09-21")).plan).toMatchObject({ month: "2026-09-01", target: 100 });
+  });
+
+  it("week and month periods: Monday–Sunday against the week before, a month against the month before", async () => {
+    expect(reportPeriod("day", "2026-09-21")).toEqual({ from: "2026-09-21", to: "2026-09-21", prevFrom: "2026-09-20", prevTo: "2026-09-20" });
+    expect(reportPeriod("week", "2026-09-20")).toEqual({ from: "2026-09-14", to: "2026-09-20", prevFrom: "2026-09-07", prevTo: "2026-09-13" });
+    expect(reportPeriod("month", "2026-09-30")).toEqual({ from: "2026-09-01", to: "2026-09-30", prevFrom: "2026-08-01", prevTo: "2026-08-31" });
+    expect([lastComplete("week", new Date("2026-09-22T06:00:00Z")), lastComplete("week", new Date("2026-09-21T06:00:00Z")), lastComplete("month", new Date("2026-10-05T06:00:00Z"))])
+      .toEqual(["2026-09-20", "2026-09-20", "2026-09-30"]);
+    const month = await digestData(db, "2026-09-30", new Date(), "month"); // both factory days are in September
+    const day1 = await digestData(db, "2026-09-20"), day2 = await digestData(db, "2026-09-21");
+    expect([month.kind, month.from, month.baseDays]).toEqual(["month", "2026-09-01", 0]);
+    expect(month.total.revenue).toBeCloseTo(day1.total.revenue + day2.total.revenue, 6);
+    const week = await digestData(db, "2026-09-27", new Date(), "week"); // 09-21…09-27 against 09-14…09-20
+    expect([week.from, week.baseDays, week.total.revenue, week.prev.revenue]).toEqual(["2026-09-21", 1, day2.total.revenue, day1.total.revenue]);
+  });
+
   it("ready = the per-site cut for the day and a derive run after the day ended", async () => {
     expect(await digestReady(db, "2026-09-21")).toBe(false);
     await db.ingestRun.create({ data: { source: "derive", job: "derive", dateFrom: D("2026-09-18"), dateTo: D("2026-09-21"), status: "ok", startedAt: new Date("2026-09-21T04:45:00Z") } });
@@ -138,14 +163,14 @@ describe("telegram connection", () => {
     const stored = (await db.appSetting.findUniqueOrThrow({ where: { key: TELEGRAM_SETTING } })).value;
     expect(stored).not.toContain(TOKEN.split(":")[1]);
     expect((await getTelegram(db, cfg))!.token).toBe(TOKEN);
-    expect(await telegramView(db, cfg)).toEqual({ bot: "tubestat_bot", chatId: null, chatTitle: null, hour: 9, minAmount: 30, problemMin: 10, enabled: true, proxy: null });
+    expect(await telegramView(db, cfg)).toEqual({ bot: "tubestat_bot", chatId: null, chatTitle: null, hour: 9, minAmount: 30, problemMin: 10, enabled: true, weekly: true, monthly: true, proxy: null });
     expect(JSON.stringify(await telegramView(db, cfg))).not.toContain("AAtest");
     expect(await findTelegramChats(db, cfg, tg.fetchImpl)).toEqual([{ id: "-100777", title: "TubeStat team", type: "supergroup" }, { id: "4242", title: "Alex G", type: "private" }]); // groups first
     await expect(saveTelegramSettings(db, { chatId: "abc", hour: 9, minAmount: 30, enabled: true })).rejects.toThrow(/чат/);
     await expect(saveTelegramSettings(db, { chatId: "4242", hour: 3, minAmount: 30, enabled: true })).rejects.toThrow(/время/);
     await saveTelegramSettings(db, { chatId: "-100777", chatTitle: "TubeStat team", hour: 10, minAmount: 50, enabled: true });
     await saveTelegramSettings(db, { hour: 11, minAmount: 50, enabled: false }); // no chat in the form: the chosen one stays
-    expect(await telegramView(db, cfg)).toEqual({ bot: "tubestat_bot", chatId: "-100777", chatTitle: "TubeStat team", hour: 11, minAmount: 50, problemMin: 10, enabled: false, proxy: null });
+    expect(await telegramView(db, cfg)).toEqual({ bot: "tubestat_bot", chatId: "-100777", chatTitle: "TubeStat team", hour: 11, minAmount: 50, problemMin: 10, enabled: false, weekly: true, monthly: true, proxy: null });
     expect(await db.auditLog.count({ where: { entityId: TELEGRAM_SETTING } })).toBe(3);
     // The same bot again keeps the chat; a wrong token is refused with a clear text and without the token in it.
     await saveTelegramToken(db, cfg, TOKEN, tg.fetchImpl);
@@ -300,6 +325,36 @@ describe("digest job", () => {
     expect([run.job, run.status, run.dateTo.toISOString().slice(0, 10)]).toEqual(["digest", "ok", "2026-09-21"]);
     expect((await digestTick(db, cfg, tg.fetchImpl, at("07:00"))).skipped).toContain("уже отправлена");
     expect(tg.calls).toHaveLength(1);
+  });
+
+  it("on Mondays the week goes too, on the 1st the month — each its own message and run, once; switched off in the settings — only the day", async () => {
+    await connect();
+    await db.ingestRun.create({ data: { source: "derive", job: "derive", dateFrom: D("2026-09-17"), dateTo: D("2026-09-20"), status: "ok", startedAt: new Date("2026-09-21T04:45:00Z") } });
+    const tg = fakeTelegram();
+    const monday = new Date("2026-09-21T06:00:00Z"); // yesterday is Sunday 09-20
+    expect((await digestTick(db, cfg, tg.fetchImpl, monday)).status).toBe("ok");
+    const texts = tg.calls.map((c) => String(c.body!.text));
+    expect(texts[0]).toContain("TubeStat · воскресенье, 20 сентября");
+    expect(texts.at(-1)).toContain("TubeStat · неделя 14–20 сентября");
+    expect((await db.ingestRun.findMany({ where: { source: "telegram" }, orderBy: { startedAt: "asc" } })).map((r) => [r.job, r.dateFrom.toISOString().slice(0, 10), r.dateTo.toISOString().slice(0, 10)]))
+      .toEqual([["digest", "2026-09-20", "2026-09-20"], ["digest:week", "2026-09-14", "2026-09-20"]]);
+    expect((await digestTick(db, cfg, tg.fetchImpl, new Date("2026-09-21T06:30:00Z"))).skipped).toContain("уже отправлена");
+    // The 1st: yesterday's day and the month just ended. No data for 09-30 — after three hours both go, marked incomplete.
+    const first = fakeTelegram();
+    expect((await digestTick(db, cfg, first.fetchImpl, new Date("2026-10-01T09:00:00Z"))).status).toBe("ok");
+    expect(first.calls.map((c) => String(c.body!.text).split("\n")[0])).toEqual(["📊 <b>TubeStat · среда, 30 сентября</b>", "🗓 <b>TubeStat · сентябрь 2026</b>"]);
+    expect((await db.appSetting.findUniqueOrThrow({ where: { key: "telegram_monthly_sent" } })).value).toBe("2026-09-30");
+    // Switched off: the next Monday sends only its day.
+    await saveTelegramSettings(db, { hour: 9, minAmount: 30, enabled: true, weekly: false, monthly: false });
+    expect(await telegramView(db, cfg)).toMatchObject({ weekly: false, monthly: false });
+    const next = fakeTelegram();
+    await digestTick(db, cfg, next.fetchImpl, new Date("2026-09-28T09:00:00Z"));
+    expect(next.calls.map((c) => String(c.body!.text).split("\n")[0])).toEqual(["📊 <b>TubeStat · воскресенье, 27 сентября</b>"]);
+    // «Отправить сейчас» for the last complete week and month.
+    const now2 = fakeTelegram();
+    expect(await sendDigestNow(db, cfg, now2.fetchImpl, new Date("2026-09-23T12:00:00Z"), "week")).toBe("2026-09-20");
+    expect(await sendDigestNow(db, cfg, now2.fetchImpl, new Date("2026-09-23T12:00:00Z"), "month")).toBe("2026-08-31");
+    expect(now2.calls.map((c) => String(c.body!.text).split("\n")[0])).toEqual(["📅 <b>TubeStat · неделя 14–20 сентября</b>", "🗓 <b>TubeStat · август 2026</b>"]);
   });
 
   it("data still missing three hours later — goes out marked as incomplete", async () => {

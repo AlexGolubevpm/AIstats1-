@@ -6,8 +6,8 @@ import { config } from "@/server/config";
 import { db } from "@/server/db";
 import { RuleError } from "@/server/domain/errors";
 import { checkSite, withAsg } from "@/server/ingest/probe";
-import { digestPlain } from "@/lib/digest";
-import { checkTelegramLink, digestText, disconnectTelegram, findTelegramChats, resolveTelegramChat, saveTelegramProxy, saveTelegramSettings, saveTelegramToken, sendDigestNow, telegramView } from "@/server/services/telegram";
+import { digestPlain, type DigestKind } from "@/lib/digest";
+import { REPORT_LABEL, checkTelegramLink, digestText, lastComplete, disconnectTelegram, findTelegramChats, resolveTelegramChat, saveTelegramProxy, saveTelegramSettings, saveTelegramToken, sendDigestNow, telegramView } from "@/server/services/telegram";
 import { SPEEDS, asgBudget, resumeAsg, setAsgBudget, setAsgSpeed, type AsgSpeedPreset } from "@/server/ingest/run";
 import { JOB_NAMES, type JobName } from "@/server/jobs/handlers";
 import { BACKFILL_MODES, cancelBackfill, daysBetween, requestsPerDay, startBackfill, type BackfillMode } from "@/server/jobs/backfill";
@@ -427,28 +427,32 @@ export async function saveTelegramSettingsAction(_: ActionResult, f: FormData): 
     let [chatId, chatTitle]: (string | null)[] = str(f, "chat") ? [str(f, "chat").split("|")[0], str(f, "chat").split("|").slice(1).join("|")] : [null, null];
     if (str(f, "manualChat")) { const c = await resolveTelegramChat(db, config(), str(f, "manualChat")); [chatId, chatTitle] = [c.id, c.title]; }
     await saveTelegramSettings(db, { chatId, chatTitle, hour: Number(str(f, "hour")), minAmount: Number(money(f, "minAmount") || "0"),
-      problemMin: money(f, "problemMin") === "" ? undefined : Number(money(f, "problemMin")), enabled: f.get("enabled") === "1" });
+      problemMin: money(f, "problemMin") === "" ? undefined : Number(money(f, "problemMin")), enabled: f.get("enabled") === "1",
+      weekly: f.get("weekly") === "1", monthly: f.get("monthly") === "1" });
     revalidatePath("/settings/integrations");
     return { ok: true, message: "Настройки сводки сохранены" };
   });
 }
 
-/** Preview: yesterday's digest as it would be sent now (plain text). */
-export async function previewDigestAction(): Promise<ActionResult> {
+const kindOf = (v: unknown): DigestKind => (v === "week" || v === "month" ? v : "day");
+
+/** Preview: the last complete day / week / month as it would be sent now (plain text). */
+export async function previewDigestAction(kind?: string): Promise<ActionResult> {
   await requireSession();
   return guarded(async () => {
-    const day = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
-    const v = await telegramView(db, config());
-    return { ok: true, data: { text: digestPlain(await digestText(db, config(), day, v?.minAmount, new Date(), v?.problemMin)) } };
+    const k = kindOf(kind), v = await telegramView(db, config());
+    const day = lastComplete(k, new Date());
+    return { ok: true, data: { text: digestPlain(await digestText(db, config(), day, v?.minAmount, new Date(), v?.problemMin, k)) } };
   });
 }
 
-export async function sendDigestNowAction(): Promise<ActionResult> {
+export async function sendDigestNowAction(kind?: string): Promise<ActionResult> {
   await requireSession();
   return guarded(async () => {
-    const day = await sendDigestNow(db, config());
+    const k = kindOf(kind);
+    const day = await sendDigestNow(db, config(), undefined, new Date(), k);
     revalidatePath("/settings/integrations");
-    return { ok: true, message: `Сводка за ${day} отправлена в Telegram` };
+    return { ok: true, message: `${REPORT_LABEL[k]} (по ${day}) отправлен${k === "day" ? "а" : ""} в Telegram` };
   });
 }
 
