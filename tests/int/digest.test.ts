@@ -85,19 +85,37 @@ describe("digest numbers", () => {
     expect(problems).toContain("<b>one.test</b> не отдал ни одной загрузки. Обычно 20 000 загрузок и $21 в день — проверьте сайт и код ADOK.");
     expect(problems).toContain("<b>Выручка сети упала на 66%</b>: $22 вместо обычных $64 в день.");
     expect(problems).toContain("<b>two.test</b>: выручка $2 вместо обычных $20 (−90%, −$18).");
-    // Alerts come as groups per rule, with the alerts themselves (new and costly first) and what to do.
+    // Alerts come as groups per rule, with the alerts themselves (costliest first) and what to do.
     expect(d.alerts.map((g) => [g.level, g.rule, g.count, g.newCount, Math.round(g.moneyAtRisk * 10) / 10, g.items.map((i) => i.title)])).toEqual([
-      ["CRITICAL", "loss_geo", 2, 1, 10.5, ["Убыточное гео US на two.test", "Убыточное гео JP на two.test"]],
+      ["CRITICAL", "loss_geo", 2, 1, 10.5, ["Убыточное гео JP на two.test", "Убыточное гео US на two.test"]],
       ["CRITICAL", "ingest_down", 1, 0, 0, ["Метрика: ингест упал"]],
       ["WARNING", "discrepancy", 1, 1, 0, ["Дискрепанси AdPulsar"]],
       ["WARNING", "low_fill", 1, 0, 0, ["Старый алерт"]],
     ]);
     const text = digestPlain(buildDigest(d, { minAmount: 5 }));
-    expect(text).toContain("Метрика: ингест упал"); // a critical alert stays in the digest while it is active
-    expect(text).toContain("Дискрепанси — наши показы и показы сетки расходятся\n▪️ AdPulsar"); // a warning — on the day it appeared, under the rule in words
-    expect(text).not.toMatch(/Старый алерт|Решённый/); // an old warning is not news; a resolved alert is gone
+    expect(text).toContain("Метрика: ингест упал"); // the load is broken: shown whatever the money
+    expect(text).not.toMatch(/AdPulsar|two\.test \(|Старый алерт|Решённый/); // below $10 a day, or resolved
+    expect(text).toContain("ℹ️ Ещё 4 алерта меньше $10/день — все алерты"); // 5 active, 1 shown
+    expect(digestPlain(buildDigest(d, { problemMin: 1 }))).toContain("JP на two.test · ≈$1/день"); // $7 over 7 days passes a $1 bar
     await db.site.update({ where: { id: "s1" }, data: { status: "ARCHIVED" } });
     expect(digestProblems(await digestData(db, "2026-09-22"), 5).map((p) => p.text).join("|")).not.toContain("one.test");
+  });
+
+  it("formats: AdSpyglass revenue by format for the day against the 7 days before — the ad_type cut where it exists, zones elsewhere", async () => {
+    // Factory: a BANNER zone on s1 for 09-20 only. Add the ad_type cut for 09-21 on s1 and s2.
+    await db.factRevenueFormat.createMany({ data: [
+      { date: D("2026-09-21"), siteId: "s1", format: "POPUNDER", pageLoads: 10_000, impsOwn: 5_000, revenueReported: "8" },
+      { date: D("2026-09-21"), siteId: "s2", format: "POPUNDER", pageLoads: 10_000, impsOwn: 5_000, revenueReported: "6" },
+      { date: D("2026-09-21"), siteId: "s2", format: "BANNER", pageLoads: 10_000, impsOwn: 5_000, revenueReported: "4" },
+    ] });
+    const d = await digestData(db, "2026-09-21");
+    const zone = await db.factRevenueZone.aggregate({ _sum: { revenueReported: true }, where: { date: D("2026-09-20") } });
+    expect(d.formats.sort((a, b) => a.format.localeCompare(b.format))).toEqual([
+      { format: "BANNER", revenue: 4, avgRevenue: Number(zone._sum.revenueReported) }, // 09-20 had zones only: the zone sum is the base
+      { format: "POPUNDER", revenue: 14, avgRevenue: 0 },
+    ]);
+    const [msg] = buildDigest(d);
+    expect(digestPlain(msg)).toContain("🧩 Форматы (AdSpyglass, без фикс-дилов)\n             выруч.  доля 7 дн.\nPopunder        $14   78%     —\nБаннер           $4   22% +233%");
   });
 
   it("ready = the per-site cut for the day and a derive run after the day ended", async () => {
@@ -120,14 +138,14 @@ describe("telegram connection", () => {
     const stored = (await db.appSetting.findUniqueOrThrow({ where: { key: TELEGRAM_SETTING } })).value;
     expect(stored).not.toContain(TOKEN.split(":")[1]);
     expect((await getTelegram(db, cfg))!.token).toBe(TOKEN);
-    expect(await telegramView(db, cfg)).toEqual({ bot: "tubestat_bot", chatId: null, chatTitle: null, hour: 9, minAmount: 30, enabled: true, proxy: null });
+    expect(await telegramView(db, cfg)).toEqual({ bot: "tubestat_bot", chatId: null, chatTitle: null, hour: 9, minAmount: 30, problemMin: 10, enabled: true, proxy: null });
     expect(JSON.stringify(await telegramView(db, cfg))).not.toContain("AAtest");
     expect(await findTelegramChats(db, cfg, tg.fetchImpl)).toEqual([{ id: "-100777", title: "TubeStat team", type: "supergroup" }, { id: "4242", title: "Alex G", type: "private" }]); // groups first
     await expect(saveTelegramSettings(db, { chatId: "abc", hour: 9, minAmount: 30, enabled: true })).rejects.toThrow(/чат/);
     await expect(saveTelegramSettings(db, { chatId: "4242", hour: 3, minAmount: 30, enabled: true })).rejects.toThrow(/время/);
     await saveTelegramSettings(db, { chatId: "-100777", chatTitle: "TubeStat team", hour: 10, minAmount: 50, enabled: true });
     await saveTelegramSettings(db, { hour: 11, minAmount: 50, enabled: false }); // no chat in the form: the chosen one stays
-    expect(await telegramView(db, cfg)).toEqual({ bot: "tubestat_bot", chatId: "-100777", chatTitle: "TubeStat team", hour: 11, minAmount: 50, enabled: false, proxy: null });
+    expect(await telegramView(db, cfg)).toEqual({ bot: "tubestat_bot", chatId: "-100777", chatTitle: "TubeStat team", hour: 11, minAmount: 50, problemMin: 10, enabled: false, proxy: null });
     expect(await db.auditLog.count({ where: { entityId: TELEGRAM_SETTING } })).toBe(3);
     // The same bot again keeps the chat; a wrong token is refused with a clear text and without the token in it.
     await saveTelegramToken(db, cfg, TOKEN, tg.fetchImpl);

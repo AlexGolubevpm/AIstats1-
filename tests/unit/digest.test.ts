@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RULE_LABEL, TABLE_WIDTH, shortTitle, buildDigest, dayLabel, digestChanges, digestPlain, digestProblems, plural, usd, type DigestAlert, type DigestData } from "@/lib/digest";
+import { RISK_DAYS, RULE_LABEL, TABLE_WIDTH, perDay, shortTitle, buildDigest, dayLabel, digestChanges, digestPlain, digestProblems, plural, usd, type DigestAlert, type DigestData } from "@/lib/digest";
 
 const base = (over: Partial<DigestData> = {}): DigestData => ({
   day: "2026-11-15", baseDays: 7,
@@ -10,6 +10,7 @@ const base = (over: Partial<DigestData> = {}): DigestData => ({
     { name: "Asian", revenue: 1105, margin: 640, avgRevenue: 1140 },
   ],
   bundlesOverlap: false,
+  formats: [{ format: "POPUNDER", revenue: 2100, avgRevenue: 1980 }, { format: "BANNER", revenue: 900, avgRevenue: 940 }, { format: "OTHER", revenue: 0, avgRevenue: 0 }],
   sites: [
     { name: "gay-tube.com", revenue: 830, margin: 600, avgRevenue: 620, pageLoads: 90_000, avgLoads: 80_000 },
     { name: "japan-tube.com", revenue: 500, margin: 300, avgRevenue: 640, pageLoads: 50_000, avgLoads: 60_000 },
@@ -41,6 +42,11 @@ describe("digest text", () => {
       "Gay          $1 420   $980  +18%",
       "Asian        $1 105   $640   −3%",
       "",
+      "🧩 Форматы (AdSpyglass, без фикс-дилов)",
+      "             выруч.  доля 7 дн.",
+      "Popunder     $2 100   70%   +6%",
+      "Баннер         $900   30%   −4%",
+      "",
       "🚦 Расход на трафик",
       "TubeCrown              $820  59%",
       "TrafficX               $410  30%",
@@ -51,7 +57,7 @@ describe("digest text", () => {
       "▲ gay-tube.com +$210 (+34%)",
       "▼ japan-tube.com −$140 (−22%)",
       "",
-      "✅ Без просадок и сбоев",
+      "✅ Крупных проблем нет",
       "",
       "Открыть сводку →",
     ]);
@@ -85,10 +91,15 @@ describe("digest text", () => {
       sites: [
         { name: "dead.com", revenue: 0, margin: 0, avgRevenue: 300, pageLoads: 0, avgLoads: 40_000 },
         { name: "japan-tube.com", revenue: 300, margin: 100, avgRevenue: 640, pageLoads: 30_000, avgLoads: 60_000 },
-        { name: "small.com", revenue: 5, margin: 5, avgRevenue: 20, pageLoads: 100, avgLoads: 400 }, // −75% but $15: noise
+        { name: "small.com", revenue: 5, margin: 5, avgRevenue: 12, pageLoads: 100, avgLoads: 400 }, // −58% but $7 a day: below $10
       ],
       bundles: [{ name: "Asian", revenue: 500, margin: 200, avgRevenue: 1100 }],
     });
+    expect(digestProblems(d, 400).map((p) => p.text)).toEqual([ // a high bar: only the load (always) and what loses $400+ a day
+      "AdSpyglass на паузе до 07:00 UTC: 429",
+      "<b>Выручка сети упала на 50%</b>: $2 000 вместо обычных $3 970 в день.",
+      "<b>бандл Asian</b>: выручка $500 вместо обычных $1 100 (−55%, −$600).",
+    ]);
     expect(digestProblems(d).map((p) => `${p.icon} ${p.text}`)).toEqual([
       "🔴 AdSpyglass на паузе до 07:00 UTC: 429",
       "🔴 <b>dead.com</b> не отдал ни одной загрузки. Обычно 40 000 загрузок и $300 в день — проверьте сайт и код ADOK.",
@@ -97,42 +108,55 @@ describe("digest text", () => {
       "🟡 <b>japan-tube.com</b>: выручка $300 вместо обычных $640 (−53%, −$340).",
     ]);
     const t = digestPlain(buildDigest(d));
-    expect(t).toContain("⚠️ Проблемы — 3 критичные, 2 предупреждения");
+    expect(t).toContain("⚠️ Проблемы от $10/день — 3 критичные, 2 предупреждения");
     expect(t).not.toContain("▼ japan-tube.com"); // listed as a problem — not again as a change
     expect(t).not.toContain("✅");
+    expect(t).not.toContain("small.com");
   });
 
-  it("an alert group: the rule in words, how many, the money, the first two in full, the rest folded in an expandable quote, what to do", () => {
+  it("alerts: only what costs $10+ a day, in $ a day; the rest is one link; the rule in words, two in full, the rest folded, what to do", () => {
     const d = base({ alerts: [
-      alert({ level: "CRITICAL", rule: "deal_ending", count: 1, newCount: 1, moneyAtRisk: 75, action: "Продлить дил.",
-        items: [item("Фикс-дил «Banner» закончился 7 дн. назад", 75, true, "Flat $10/день · hentaismile.com · до 2026-11-08.")] }),
-      alert({ rule: "discrepancy", count: 6, newCount: 4, moneyAtRisk: 13, items: [
-        item("Дискрепанси -132.2%: TrafficStars на pride.com", 9), item("Дискрепанси -35.5%: TrafficStars на adult.com", 2),
-        item("Дискрепанси -30.0%: TrafficStars на a<b>.com", 1), item("Дискрепанси -21.0%: TrafficStars на c.com", 1),
-        item("Дискрепанси -40.0%: TrafficStars на old.com", 5, false), item("Дискрепанси -41.0%: TrafficStars на older.com", 5, false)] }),
-      alert({ rule: "low_fill", count: 3, newCount: 0, items: [item("Низкий фил на x.com", 1, false)] }), // nothing new — stays on the alerts page
+      alert({ level: "CRITICAL", rule: "deal_ending", count: 2, newCount: 1, moneyAtRisk: 375, action: "Продлить дил.", items: [
+        item("Фикс-дил «Banner» закончился 7 дн. назад", 300, true, "Flat $10/день · hentaismile.com · до 2026-11-08."), // $300 / 30 days = $10 a day
+        item("Фикс-дил «Small» закончился", 75, false)] }), // $2.5 a day — below the bar
+      alert({ rule: "discrepancy", count: 6, newCount: 4, moneyAtRisk: 200, items: [ // window 2 days
+        item("Дискрепанси -132.2%: TrafficStars на pride.com", 90), item("Дискрепанси -35.5%: TrafficStars на adult.com", 40, false),
+        item("Дискрепанси -30.0%: TrafficStars на a<b>.com", 30), item("Дискрепанси -21.0%: TrafficStars на c.com", 20),
+        item("Дискрепанси -40.0%: TrafficStars на d.com", 10), item("Дискрепанси -41.0%: TrafficStars на e.com", 10, false)] }),
+      alert({ rule: "low_fill", count: 3, newCount: 0, items: [item("Низкий фил на x.com", 60, false)] }), // $60 over 7 days — below
+      alert({ level: "CRITICAL", rule: "ingest_down", count: 1, newCount: 0, action: "Проверить ключи.", items: [item("Ингест metrika не работает", 0, false, "Последний запуск упал.")] }),
     ] });
     const [msg] = buildDigest(d, { appUrl: "https://stat.test" });
     const t = digestPlain(msg);
-    expect(t).toContain(`🔴 ${RULE_LABEL.deal_ending} · под риском $75 · новое\n▪️ Фикс-дил «Banner» закончился 7 дн. назад · $75\nFlat $10/день · hentaismile.com · до 2026-11-08.\n👉 Продлить дил.`);
-    expect(t).toContain(`🟡 ${RULE_LABEL.discrepancy} · 4 случая · под риском $13\n▪️ TrafficStars на pride.com (−132.2%) · $9\nПодробности: Дискрепанси -132.2%: TrafficStars на pride.com\n▪️ TrafficStars на adult.com (−35.5%) · $2`);
-    expect(msg).toContain("<blockquote expandable>▪️ TrafficStars на a&lt;b&gt;.com (−30.0%) · $1\n▪️ TrafficStars на c.com (−21.0%) · $1</blockquote>\n👉 Сверить счётчики.");
-    expect(t).not.toContain("old.com"); // old warnings are not news
+    expect(t).toContain(`🔴 ${RULE_LABEL.deal_ending} · ≈$10/день · новое\n▪️ Фикс-дил «Banner» закончился 7 дн. назад · ≈$10/день\nFlat $10/день · hentaismile.com · до 2026-11-08.\n👉 Продлить дил.`);
+    expect(t).not.toContain("«Small»");
+    expect(t).toContain(`🟡 ${RULE_LABEL.discrepancy} · 4 случая · ≈$90/день · новых 3\n▪️ TrafficStars на pride.com (−132.2%) · ≈$45/день`);
+    expect(msg).toContain("<blockquote expandable>▪️ TrafficStars на a&lt;b&gt;.com (−30.0%) · ≈$15/день\n▪️ TrafficStars на c.com (−21.0%) · ≈$10/день</blockquote>\n👉 Сверить счётчики.");
+    expect(t).not.toContain("d.com");
     expect(t).not.toContain(RULE_LABEL.low_fill);
-    expect(t).toContain("⚠️ Проблемы — 1 критичная, 1 предупреждение");
-    expect(t).toContain("Все алерты →");
+    expect(t).toContain(`🔴 ${RULE_LABEL.ingest_down}\n▪️ Ингест metrika не работает`); // shown whatever the money
+    expect(t).toContain("⚠️ Проблемы от $10/день — 2 критичные, 1 предупреждение");
+    expect(t).toContain("ℹ️ Ещё 6 алертов меньше $10/день — все алерты →"); // 12 active − 6 shown
+    expect(msg).toContain('<a href="https://stat.test/alerts">все алерты</a>');
     expect(tags(msg)).toBe(true);
+    // A higher bar from the settings: nothing passes but the always-shown rule.
+    expect(digestPlain(buildDigest(d, { problemMin: 1000 }))).toContain("ℹ️ Ещё 11 алертов меньше $1 000/день — все алерты");
+    // Nothing big at all.
+    expect(digestPlain(buildDigest(base({ alerts: [alert({ rule: "low_fill", count: 3, items: [item("x", 7)] })] }), { appUrl: "https://stat.test" })))
+      .toContain("✅ Крупных проблем нет · 3 алерта меньше $10/день — все алерты →");
+    expect([perDay("loss_geo", 70), perDay("discrepancy", 20), perDay("dead_zone", 300), perDay("overdue_payment", 50), perDay("new_rule", 70)]).toEqual([10, 10, 10, 50, 10]);
+    expect(RISK_DAYS.deal_ending).toBe(30);
   });
 
   it("a long day: alert details fold first; still too long — the numbers and the problems go as separate messages, each within the limit, tags closed", () => {
-    const long = (i: number) => item(`Убыточное гео ${i} на site-${i}.com`, 50 - i, true, "За 7 дней выручка $120.00 при расходе $180.00 (ROMI −33.3%, 40 000 загрузок). ".repeat(3));
+    const long = (i: number) => item(`Убыточное гео ${i} на site-${i}.com`, 500 - i, true, "За 7 дней выручка $120.00 при расходе $180.00 (ROMI −33.3%, 40 000 загрузок). ".repeat(3));
     const groups = ["loss_geo", "waterfall_inversion", "dead_zone", "invisible_zone", "overdue_payment"].map((rule) =>
       alert({ level: "CRITICAL", rule, count: 20, newCount: 20, moneyAtRisk: 500, items: Array.from({ length: 20 }, (_, i) => long(i)) }));
     const msgs = buildDigest(base({ alerts: groups, bundles: Array.from({ length: 30 }, (_, i) => ({ name: `Bundle ${i}`, revenue: 100, margin: 50, avgRevenue: 100 })) }));
     expect(msgs.length).toBeGreaterThan(1);
     for (const m of msgs) { expect(m.length).toBeLessThanOrEqual(4000); expect(tags(m)).toBe(true); }
     expect(msgs[0]).toContain("📊 <b>TubeStat");
-    expect(msgs.slice(1).join("")).toContain("⚠️ <b>Проблемы</b>");
+    expect(msgs.slice(1).join("")).toContain("⚠️ <b>Проблемы от $10/день</b>");
     const all = msgs.join("\n");
     for (const rule of ["loss_geo", "waterfall_inversion", "dead_zone", "invisible_zone", "overdue_payment"]) expect(all).toContain(RULE_LABEL[rule]); // nothing dropped
     expect(all).toContain("19 на site-19.com"); // the 20th alert of a group is there, folded
@@ -140,6 +164,7 @@ describe("digest text", () => {
 
   it("incomplete data is said under the date; without a comparison base there are no deltas and no changes", () => {
     const t = digestPlain(buildDigest(base({ incomplete: true, baseDays: 0 })));
+    expect(t).toContain("Popunder     $2 100   70%"); // formats still listed, without the 7-day column
     expect(t.split("\n")[1]).toBe("⚠️ Данные за вчера загружены не полностью — цифры ещё изменятся");
     expect(t).not.toContain("к ср. 7 дн.");
     expect(t).not.toContain("Изменения");

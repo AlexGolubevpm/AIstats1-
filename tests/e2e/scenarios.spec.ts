@@ -513,9 +513,12 @@ test("integrations: Telegram — the bot token, the chat found by the bot, a pre
     await block.getByRole("button", { name: "Найти чат" }).click();
     await block.locator("select[name=chat]").selectOption({ label: "TubeStat team · группа" });
     await block.locator("select[name=hour]").selectOption("10");
+    await block.locator("input[name=problemMin]").fill("25");
     await block.getByRole("button", { name: "Сохранить", exact: true }).click();
     await expect(page.getByText("Настройки сводки сохранены")).toBeVisible();
     await expect(page.getByTestId("telegram-chat")).toHaveText("→ TubeStat team");
+    await expect(block.locator("input[name=problemMin]")).toHaveValue("25");
+    await block.locator("input[name=problemMin]").fill("10");
 
     // A chat typed by hand is checked with getChat and replaces the picked one.
     await block.locator("input[name=manualChat]").fill("-100555");
@@ -541,8 +544,11 @@ test("integrations: Telegram — the bot token, the chat found by the bot, a pre
     await expect(preview).toContainText(/Фикс-дилы +\$[\d ]+ [▓░]{10} +\d+%/);
     await expect(preview).toContainText("🗂 Бандлы");
     await expect(preview).toContainText("выруч.  маржа");
-    await expect(preview).toContainText("⚠️ Проблемы"); // demo data has alerts: grouped, in words, with what to do
+    await expect(preview).toContainText("🧩 Форматы (AdSpyglass, без фикс-дилов)");
+    await expect(preview).toContainText("⚠️ Проблемы от $10/день"); // demo data has big alerts: grouped, in $ a day, with what to do
+    await expect(preview).toContainText("/день");
     await expect(preview).toContainText("👉");
+    await expect(preview).toContainText(/ℹ️ Ещё \d+ алерт/); // the small ones are one line
     await expect(preview).not.toContainText(/и ещё \d+$/m);
 
     await block.getByRole("button", { name: "Отправить сейчас" }).click();

@@ -426,7 +426,8 @@ export async function saveTelegramSettingsAction(_: ActionResult, f: FormData): 
   return guarded(async () => {
     let [chatId, chatTitle]: (string | null)[] = str(f, "chat") ? [str(f, "chat").split("|")[0], str(f, "chat").split("|").slice(1).join("|")] : [null, null];
     if (str(f, "manualChat")) { const c = await resolveTelegramChat(db, config(), str(f, "manualChat")); [chatId, chatTitle] = [c.id, c.title]; }
-    await saveTelegramSettings(db, { chatId, chatTitle, hour: Number(str(f, "hour")), minAmount: Number(money(f, "minAmount") || "0"), enabled: f.get("enabled") === "1" });
+    await saveTelegramSettings(db, { chatId, chatTitle, hour: Number(str(f, "hour")), minAmount: Number(money(f, "minAmount") || "0"),
+      problemMin: money(f, "problemMin") === "" ? undefined : Number(money(f, "problemMin")), enabled: f.get("enabled") === "1" });
     revalidatePath("/settings/integrations");
     return { ok: true, message: "Настройки сводки сохранены" };
   });
@@ -438,7 +439,7 @@ export async function previewDigestAction(): Promise<ActionResult> {
   return guarded(async () => {
     const day = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
     const v = await telegramView(db, config());
-    return { ok: true, data: { text: digestPlain(await digestText(db, config(), day, v?.minAmount)) } };
+    return { ok: true, data: { text: digestPlain(await digestText(db, config(), day, v?.minAmount, new Date(), v?.problemMin)) } };
   });
 }
 
