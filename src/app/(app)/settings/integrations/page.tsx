@@ -46,7 +46,7 @@ export default async function Integrations({ searchParams }: { searchParams: Pro
     : metrika.kind === "app" ? `приложение …${metrika.clientId.slice(-4)} сохранено, токена ещё нет — получите код ниже`
     : metrika.kind === "env" ? `токен из .env: ${tail(cfg.metrika.token)}`
     : metrika.kind === "broken" ? metrika.error : "не подключена — блок «Яндекс Метрика» ниже";
-  const [backfill, plan, budget, speed, telegram] = await Promise.all([readBackfill(db), readPlan(db), asgBudget(db, cfg.asg.dailyBudget), asgSpeed(db, cfg.asg.minIntervalMs), telegramView(db)]);
+  const [backfill, plan, budget, speed, telegram] = await Promise.all([readBackfill(db), readPlan(db), asgBudget(db, cfg.asg.dailyBudget), asgSpeed(db, cfg.asg.minIntervalMs), telegramView(db, cfg)]);
   const today = new Date().toISOString().slice(0, 10);
   const asgSites = sites.filter((s) => s.status === "ACTIVE" && s.adsgSiteId).length;
   const nSites = backfill?.siteId ? 1 : Math.max(1, asgSites);
