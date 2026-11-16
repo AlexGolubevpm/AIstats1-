@@ -56,7 +56,7 @@ describe("AsgClient", () => {
     const starts: number[] = [];
     const f = (async () => {
       starts.push(Date.now()); active++; peak = Math.max(peak, active);
-      await new Promise((r) => setTimeout(r, 40));
+      await new Promise((r) => setTimeout(r, 100)); // long enough that three overlap even on a loaded runner
       active--;
       return new Response("[]");
     }) as unknown as typeof fetch;
@@ -64,7 +64,9 @@ describe("AsgClient", () => {
     await Promise.all(Array.from({ length: 9 }, (_, i) => c.report({ from: "a", to: "a", groupBy: String(i) })));
     expect(c.requests).toBe(9);
     expect(peak).toBe(3); // never more than three at once
-    expect(starts.slice(1).every((t, i) => t - starts[i] >= 8)).toBe(true); // ~10 ms apart (timer slack)
+    // Starts are reserved 10 ms apart; timers can only fire late, so the last start is ≥ 8 slots after the first (the first goes at once).
+    const sorted = [...starts].sort((a, b) => a - b);
+    expect(sorted[8] - sorted[0]).toBeGreaterThanOrEqual(8 * 10 - 2);
   });
 
   it("stops when the daily budget is exhausted", async () => {
