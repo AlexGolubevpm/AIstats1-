@@ -52,6 +52,7 @@ test("4. new deal → enter period → payment → paid in the payments register
   await page.locator("input[name=endsAt]").fill("2026-08-31");
   await page.getByRole("button", { name: "Создать дил" }).click();
   await expect(page).toHaveURL(/\/deals\/[a-z0-9]+$/);
+  const dealUrl = page.url();
   await expect(page.getByRole("heading", { name: /E2E Media · E2E баннер/ })).toBeVisible();
   await expect(page.getByText(/Tablink 1 · флэт|Tablink 1 · /).first()).toBeVisible();
   // The forecast is there at once (no night run): the deal card lists its August periods with money.
@@ -60,7 +61,7 @@ test("4. new deal → enter period → payment → paid in the payments register
   await expect(page.getByRole("row", { name: /E2E Media · E2E баннер/ })).toContainText("01.08.2026 — 31.08.2026");
   await page.getByRole("button", { name: "Пересчитать прогноз" }).click();
   await expect(page.getByText(/Прогноз пересчитан/)).toBeVisible();
-  await page.goBack(); await page.goBack();
+  await page.goto(dealUrl); // back to the card (two goBack() in a row could abort the first navigation)
 
   await page.getByRole("button", { name: "Внести", exact: true }).first().click();
   const amount = page.locator("input[name=amountInvoiced]");
