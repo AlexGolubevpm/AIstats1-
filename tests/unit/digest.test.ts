@@ -1,20 +1,20 @@
 import { describe, expect, it } from "vitest";
-import { RISK_DAYS, RULE_LABEL, TABLE_WIDTH, perDay, shortTitle, buildDigest, dayLabel, digestChanges, digestPlain, digestProblems, plural, usd, type DigestAlert, type DigestData } from "@/lib/digest";
+import { RISK_DAYS, RULE_LABEL, TABLE_WIDTH, perDay, prevLabel, shortTitle, buildDigest, dayLabel, digestChanges, digestPlain, digestProblems, plural, usd, type DigestAlert, type DigestData } from "@/lib/digest";
 
 const base = (over: Partial<DigestData> = {}): DigestData => ({
   day: "2026-11-15", baseDays: 7,
   total: { revenue: 4210, mediated: 3650, direct: 560, cost: 1380, margin: 2830 },
-  avg: { revenue: 3970, cost: 1300, margin: 2670 },
+  prev: { revenue: 3970, cost: 1300, margin: 2670 },
   bundles: [
-    { name: "Gay", revenue: 1420, margin: 980, avgRevenue: 1200 },
-    { name: "Asian", revenue: 1105, margin: 640, avgRevenue: 1140 },
+    { name: "Gay", revenue: 1420, margin: 980, prevRevenue: 1200 },
+    { name: "Asian", revenue: 1105, margin: 640, prevRevenue: 1140 },
   ],
   bundlesOverlap: false,
-  formats: [{ format: "POPUNDER", revenue: 2100, avgRevenue: 1980 }, { format: "BANNER", revenue: 900, avgRevenue: 940 }, { format: "OTHER", revenue: 0, avgRevenue: 0 }],
+  formats: [{ format: "POPUNDER", revenue: 2100, prevRevenue: 1980 }, { format: "BANNER", revenue: 900, prevRevenue: 940 }, { format: "OTHER", revenue: 0, prevRevenue: 0 }],
   sites: [
-    { name: "gay-tube.com", revenue: 830, margin: 600, avgRevenue: 620, pageLoads: 90_000, avgLoads: 80_000 },
-    { name: "japan-tube.com", revenue: 500, margin: 300, avgRevenue: 640, pageLoads: 50_000, avgLoads: 60_000 },
-    { name: "quiet.com", revenue: 100, margin: 60, avgRevenue: 98, pageLoads: 10_000, avgLoads: 10_000 },
+    { name: "gay-tube.com", revenue: 830, margin: 600, prevRevenue: 620, pageLoads: 90_000, prevLoads: 80_000 },
+    { name: "japan-tube.com", revenue: 500, margin: 300, prevRevenue: 640, pageLoads: 50_000, prevLoads: 60_000 },
+    { name: "quiet.com", revenue: 100, margin: 60, prevRevenue: 98, pageLoads: 10_000, prevLoads: 10_000 },
   ],
   costs: [{ title: "TubeCrown", cost: 820 }, { title: "TrafficX", cost: 410 }, { title: "A", cost: 100 }, { title: "B", cost: 50 }],
   alerts: [], health: [], incomplete: false, ...over,
@@ -30,7 +30,7 @@ describe("digest text", () => {
     expect(digestPlain(msgs).split("\n")).toEqual([
       "📊 TubeStat · воскресенье, 15 ноября",
       "",
-      "💰 Выручка $4 210  ▲ 6% к ср. 7 дн.",
+      "💰 Выручка $4 210  ▲ 6% к 14.11",
       "💸 Расход $1 380",
       "📈 Маржа $2 830  ROMI 205%",
       "",
@@ -38,12 +38,12 @@ describe("digest text", () => {
       "Фикс-дилы    $560 ▓░░░░░░░░░  13%",
       "",
       "🗂 Бандлы",
-      "             выруч.  маржа 7 дн.",
+      "             выруч.  маржа 14.11",
       "Gay          $1 420   $980  +18%",
       "Asian        $1 105   $640   −3%",
       "",
       "🧩 Форматы (AdSpyglass, без фикс-дилов)",
-      "             выруч.  доля 7 дн.",
+      "             выруч.  доля 14.11",
       "Popunder     $2 100   70%   +6%",
       "Баннер         $900   30%   −4%",
       "",
@@ -53,7 +53,7 @@ describe("digest text", () => {
       "A                      $100   7%",
       "B                       $50   4%",
       "",
-      "🔀 Изменения к среднему за 7 дней",
+      "🔀 Изменения к 14.11",
       "▲ gay-tube.com +$210 (+34%)",
       "▼ japan-tube.com −$140 (−22%)",
       "",
@@ -61,13 +61,13 @@ describe("digest text", () => {
       "",
       "Открыть сводку →",
     ]);
-    expect(msgs[0]).toContain("<pre>             выруч.  маржа 7 дн.\nGay          $1 420   $980  +18%"); // tables are monospace blocks
+    expect(msgs[0]).toContain("<pre>             выруч.  маржа 14.11\nGay          $1 420   $980  +18%"); // tables are monospace blocks
     expect(msgs[0]).toContain('<a href="https://stat.test/?preset=yesterday">Открыть сводку</a>');
     expect(buildDigest(base())[0]).not.toContain("<a "); // no public address — no links
   });
 
   it("no «…и ещё N»: all bundles are listed; tables stay within the phone width; long names are shortened; names are escaped", () => {
-    const many = Array.from({ length: 9 }, (_, i) => ({ name: `B<${i}> & a very long bundle name`, revenue: 1000 - i * 10, margin: 500, avgRevenue: 1000 }));
+    const many = Array.from({ length: 9 }, (_, i) => ({ name: `B<${i}> & a very long bundle name`, revenue: 1000 - i * 10, margin: 500, prevRevenue: 1000 }));
     const [msg] = buildDigest(base({ bundles: many, bundlesOverlap: true }));
     expect(msg).not.toMatch(/ещё \d/);
     expect(msg).toContain("(сайт может быть в нескольких)");
@@ -89,23 +89,23 @@ describe("digest text", () => {
       total: { revenue: 2000, mediated: 1800, direct: 200, cost: 900, margin: 1100 },
       health: ["AdSpyglass на паузе до 07:00 UTC: 429"],
       sites: [
-        { name: "dead.com", revenue: 0, margin: 0, avgRevenue: 300, pageLoads: 0, avgLoads: 40_000 },
-        { name: "japan-tube.com", revenue: 300, margin: 100, avgRevenue: 640, pageLoads: 30_000, avgLoads: 60_000 },
-        { name: "small.com", revenue: 5, margin: 5, avgRevenue: 12, pageLoads: 100, avgLoads: 400 }, // −58% but $7 a day: below $10
+        { name: "dead.com", revenue: 0, margin: 0, prevRevenue: 300, pageLoads: 0, prevLoads: 40_000 },
+        { name: "japan-tube.com", revenue: 300, margin: 100, prevRevenue: 640, pageLoads: 30_000, prevLoads: 60_000 },
+        { name: "small.com", revenue: 5, margin: 5, prevRevenue: 12, pageLoads: 100, prevLoads: 400 }, // −58% but $7 a day: below $10
       ],
-      bundles: [{ name: "Asian", revenue: 500, margin: 200, avgRevenue: 1100 }],
+      bundles: [{ name: "Asian", revenue: 500, margin: 200, prevRevenue: 1100 }],
     });
     expect(digestProblems(d, 400).map((p) => p.text)).toEqual([ // a high bar: only the load (always) and what loses $400+ a day
       "AdSpyglass на паузе до 07:00 UTC: 429",
-      "<b>Выручка сети упала на 50%</b>: $2 000 вместо обычных $3 970 в день.",
-      "<b>бандл Asian</b>: выручка $500 вместо обычных $1 100 (−55%, −$600).",
+      "<b>Выручка сети упала на 50%</b>: $2 000 против $3 970 14.11.",
+      "<b>бандл Asian</b>: выручка $500 против $1 100 14.11 (−55%, −$600).",
     ]);
     expect(digestProblems(d).map((p) => `${p.icon} ${p.text}`)).toEqual([
       "🔴 AdSpyglass на паузе до 07:00 UTC: 429",
-      "🔴 <b>dead.com</b> не отдал ни одной загрузки. Обычно 40 000 загрузок и $300 в день — проверьте сайт и код ADOK.",
-      "🔴 <b>Выручка сети упала на 50%</b>: $2 000 вместо обычных $3 970 в день.",
-      "🟡 <b>бандл Asian</b>: выручка $500 вместо обычных $1 100 (−55%, −$600).",
-      "🟡 <b>japan-tube.com</b>: выручка $300 вместо обычных $640 (−53%, −$340).",
+      "🔴 <b>dead.com</b> не отдал ни одной загрузки. 14.11 было 40 000 загрузок и $300 — проверьте сайт и код ADOK.",
+      "🔴 <b>Выручка сети упала на 50%</b>: $2 000 против $3 970 14.11.",
+      "🟡 <b>бандл Asian</b>: выручка $500 против $1 100 14.11 (−55%, −$600).",
+      "🟡 <b>japan-tube.com</b>: выручка $300 против $640 14.11 (−53%, −$340).",
     ]);
     const t = digestPlain(buildDigest(d));
     expect(t).toContain("⚠️ Проблемы от $10/день — 3 критичные, 2 предупреждения");
@@ -152,7 +152,7 @@ describe("digest text", () => {
     const long = (i: number) => item(`Убыточное гео ${i} на site-${i}.com`, 500 - i, true, "За 7 дней выручка $120.00 при расходе $180.00 (ROMI −33.3%, 40 000 загрузок). ".repeat(3));
     const groups = ["loss_geo", "waterfall_inversion", "dead_zone", "invisible_zone", "overdue_payment"].map((rule) =>
       alert({ level: "CRITICAL", rule, count: 20, newCount: 20, moneyAtRisk: 500, items: Array.from({ length: 20 }, (_, i) => long(i)) }));
-    const msgs = buildDigest(base({ alerts: groups, bundles: Array.from({ length: 30 }, (_, i) => ({ name: `Bundle ${i}`, revenue: 100, margin: 50, avgRevenue: 100 })) }));
+    const msgs = buildDigest(base({ alerts: groups, bundles: Array.from({ length: 30 }, (_, i) => ({ name: `Bundle ${i}`, revenue: 100, margin: 50, prevRevenue: 100 })) }));
     expect(msgs.length).toBeGreaterThan(1);
     for (const m of msgs) { expect(m.length).toBeLessThanOrEqual(4000); expect(tags(m)).toBe(true); }
     expect(msgs[0]).toContain("📊 <b>TubeStat");
@@ -166,7 +166,7 @@ describe("digest text", () => {
     const t = digestPlain(buildDigest(base({ incomplete: true, baseDays: 0 })));
     expect(t).toContain("Popunder     $2 100   70%"); // formats still listed, without the 7-day column
     expect(t.split("\n")[1]).toBe("⚠️ Данные за вчера загружены не полностью — цифры ещё изменятся");
-    expect(t).not.toContain("к ср. 7 дн.");
+    expect(t).not.toContain("к 14.11");
     expect(t).not.toContain("Изменения");
   });
 
@@ -183,6 +183,7 @@ describe("digest text", () => {
 
   it("words and money: date, plurals, whole dollars with a real minus", () => {
     expect([dayLabel("2026-11-15"), dayLabel("2026-01-01")]).toEqual(["воскресенье, 15 ноября", "четверг, 1 января"]);
+    expect([prevLabel("2026-11-16"), prevLabel("2026-01-01"), prevLabel("2026-03-01")]).toEqual(["15.11", "31.12", "28.02"]); // the comparison day
     expect([1, 2, 5, 11, 21, 104].map((n) => plural(n, "случай", "случая", "случаев"))).toEqual(["1 случай", "2 случая", "5 случаев", "11 случаев", "21 случай", "104 случая"]);
     expect([usd(4210.4), usd(-140.2), usd(0), usd(-0.3), usd(1234567)]).toEqual(["$4 210", "−$140", "$0", "$0", "$1 234 567"]);
   });

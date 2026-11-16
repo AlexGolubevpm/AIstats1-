@@ -52,14 +52,14 @@ describe("digest numbers", () => {
     // 09-21: 3 sites × 2 countries × $10 mediated; the DIRECT deal adds $3 on s3. 09-20 is the only base day: $62 mediated (own_deals inside) + $3.
     expect(d.baseDays).toBe(1);
     expect(d.total).toEqual({ revenue: 63, mediated: 60, direct: 3, cost: 51, margin: 12 });
-    expect(d.avg.revenue).toBe(65);
-    expect(d.bundles.map((b) => [b.name, b.revenue, b.margin, b.avgRevenue]).sort()).toEqual([["Hentai", 43, 9, 43], ["JAV", 40, 6, 42]]);
+    expect(d.prev.revenue).toBe(65);
+    expect(d.bundles.map((b) => [b.name, b.revenue, b.margin, b.prevRevenue]).sort()).toEqual([["Hentai", 43, 9, 43], ["JAV", 40, 6, 42]]);
     expect(d.bundlesOverlap).toBe(true); // s2 is in both: 40 + 43 > 63
     expect(d.sites.map((s) => [s.name, s.revenue, s.pageLoads]).sort()).toEqual([["one.test", 20, 20_000], ["three.test", 23, 20_000], ["two.test", 20, 20_000]]);
     expect(d.costs).toEqual([{ title: (await db.costSource.findUniqueOrThrow({ where: { slug: "tubecrown" } })).title, cost: 51 }]);
     expect(d.incomplete).toBe(true); // no derive run yet
     const text = digestPlain(buildDigest(d, { appUrl: cfg.appUrl }));
-    expect(text).toContain("💰 Выручка $63  ▼ 3% к ср. 7 дн.\n💸 Расход $51\n📈 Маржа $12");
+    expect(text).toContain("💰 Выручка $63  ▼ 3% к 20.09\n💸 Расход $51\n📈 Маржа $12");
     expect(text).toContain("AdSpyglass    $60 ▓▓▓▓▓▓▓▓▓▓  95%\nФикс-дилы      $3 ▓░░░░░░░░░   5%");
     expect(text).toContain("(сайт может быть в нескольких)");
   });
@@ -79,12 +79,12 @@ describe("digest numbers", () => {
     const { pauseAsg } = await import("@/server/ingest/run");
     await pauseAsg(db, 60, "AdSpyglass ограничил частоту запросов (429)");
     const d = await digestData(db, "2026-09-22", new Date("2026-09-23T06:00:00Z"));
-    expect(d.baseDays).toBe(2);
+    expect(d.baseDays).toBe(1); // the day before is the base
     const problems = digestProblems(d, 5).map((p) => p.text);
     expect(problems[0]).toMatch(/^AdSpyglass на паузе до \d\d:\d\d UTC: AdSpyglass ограничил/);
-    expect(problems).toContain("<b>one.test</b> не отдал ни одной загрузки. Обычно 20 000 загрузок и $21 в день — проверьте сайт и код ADOK.");
-    expect(problems).toContain("<b>Выручка сети упала на 66%</b>: $22 вместо обычных $64 в день.");
-    expect(problems).toContain("<b>two.test</b>: выручка $2 вместо обычных $20 (−90%, −$18).");
+    expect(problems).toContain("<b>one.test</b> не отдал ни одной загрузки. 21.09 было 20 000 загрузок и $20 — проверьте сайт и код ADOK.");
+    expect(problems).toContain("<b>Выручка сети упала на 65%</b>: $22 против $63 21.09.");
+    expect(problems).toContain("<b>two.test</b>: выручка $2 против $20 21.09 (−90%, −$18).");
     // Alerts come as groups per rule, with the alerts themselves (costliest first) and what to do.
     expect(d.alerts.map((g) => [g.level, g.rule, g.count, g.newCount, Math.round(g.moneyAtRisk * 10) / 10, g.items.map((i) => i.title)])).toEqual([
       ["CRITICAL", "loss_geo", 2, 1, 10.5, ["Убыточное гео JP на two.test", "Убыточное гео US на two.test"]],
@@ -111,11 +111,11 @@ describe("digest numbers", () => {
     const d = await digestData(db, "2026-09-21");
     const zone = await db.factRevenueZone.aggregate({ _sum: { revenueReported: true }, where: { date: D("2026-09-20") } });
     expect(d.formats.sort((a, b) => a.format.localeCompare(b.format))).toEqual([
-      { format: "BANNER", revenue: 4, avgRevenue: Number(zone._sum.revenueReported) }, // 09-20 had zones only: the zone sum is the base
-      { format: "POPUNDER", revenue: 14, avgRevenue: 0 },
+      { format: "BANNER", revenue: 4, prevRevenue: Number(zone._sum.revenueReported) }, // 09-20 had zones only: the zone sum is the base
+      { format: "POPUNDER", revenue: 14, prevRevenue: 0 },
     ]);
     const [msg] = buildDigest(d);
-    expect(digestPlain(msg)).toContain("🧩 Форматы (AdSpyglass, без фикс-дилов)\n             выруч.  доля 7 дн.\nPopunder        $14   78%     —\nБаннер           $4   22% +233%");
+    expect(digestPlain(msg)).toContain("🧩 Форматы (AdSpyglass, без фикс-дилов)\n             выруч.  доля 20.09\nPopunder        $14   78%     —\nБаннер           $4   22% +233%");
   });
 
   it("ready = the per-site cut for the day and a derive run after the day ended", async () => {

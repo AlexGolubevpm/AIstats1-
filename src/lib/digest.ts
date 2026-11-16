@@ -5,20 +5,21 @@
 import { FORMAT_LABEL } from "@/lib/labels";
 import { delta, romi } from "@/lib/metrics";
 
-export interface DigestLine { name: string; revenue: number; margin: number; avgRevenue: number }
-export interface DigestSite extends DigestLine { pageLoads: number; avgLoads: number }
+export interface DigestLine { name: string; revenue: number; margin: number; prevRevenue: number }
+export interface DigestSite extends DigestLine { pageLoads: number; prevLoads: number }
 export interface DigestAlertItem { title: string; message: string; moneyAtRisk: number; isNew: boolean }
 /** Active alerts of one rule and level: how many, how many new, the money at risk, what to do, the alerts themselves (new and costly first). */
 export interface DigestAlert { level: "CRITICAL" | "WARNING"; rule: string; count: number; newCount: number; moneyAtRisk: number; action: string; items: DigestAlertItem[] }
 export interface DigestData {
   day: string;
-  /** Days with data among the 7 before `day`: the comparison base. 0 — nothing to compare with. */
+  /** 1 when the day before `day` has data — the comparison base (the digest goes day after day); 0 — nothing to compare with. */
   baseDays: number;
   total: { revenue: number; mediated: number; direct: number; cost: number; margin: number };
-  avg: { revenue: number; cost: number; margin: number };
+  /** The day before: what every «▲ / ▼» compares with. */
+  prev: { revenue: number; cost: number; margin: number };
   bundles: DigestLine[];
   /** AdSpyglass revenue by format (ADOK ad_type cut, zones where it is missing): fix deals are not in it. */
-  formats: { format: string; revenue: number; avgRevenue: number }[];
+  formats: { format: string; revenue: number; prevRevenue: number }[];
   /** A site sits in several bundles: bundle lines do not add up to the network total. */
   bundlesOverlap: boolean;
   sites: DigestSite[];
@@ -49,7 +50,7 @@ export const RISK_DAYS: Record<string, number> = {
 /** Rules shown whatever the money: while they are on, the numbers of the digest themselves are wrong. */
 export const ALWAYS_SHOWN = new Set(["ingest_down"]);
 export const perDay = (rule: string, money: number) => money / (RISK_DAYS[rule] ?? 7);
-/** Notable change of a site against its 7-day average, in percent. */
+/** Notable change of a site against the day before, in percent. */
 export const CHANGE_PCT = 20;
 /** A drop that is a problem, in percent. */
 export const DROP_PCT = 30;
@@ -82,6 +83,8 @@ export const usd = (v: number) => `${v < 0 && Math.round(v) !== 0 ? "−" : ""}$
 const signedUsd = (v: number) => `${Math.round(v) > 0 ? "+" : Math.round(v) < 0 ? "−" : ""}$${group(v)}`;
 const pct = (v: number | null) => (v == null ? "" : `${Math.round(v) > 0 ? "+" : Math.round(v) < 0 ? "−" : ""}${Math.round(Math.abs(v))}%`);
 const arrow = (v: number | null) => (v == null ? "" : Math.round(v) > 0 ? `▲ ${Math.round(v)}%` : Math.round(v) < 0 ? `▼ ${Math.round(-v)}%` : "= 0%");
+/** "15.11" — the day before `day`, the comparison base. */
+export const prevLabel = (day: string) => { const d = new Date(new Date(`${day}T00:00:00Z`).getTime() - 86_400_000); return `${String(d.getUTCDate()).padStart(2, "0")}.${String(d.getUTCMonth() + 1).padStart(2, "0")}`; };
 export const dayLabel = (day: string) => { const d = new Date(`${day}T00:00:00Z`); return `${WEEKDAY[d.getUTCDay()]}, ${d.getUTCDate()} ${MONTH[d.getUTCMonth()]}`; };
 /** "1 случай / 2 случая / 5 случаев". */
 export const plural = (n: number, one: string, few: string, many: string) => {
@@ -102,19 +105,19 @@ export function digestProblems(d: DigestData, problemMin: number = DIGEST_DEFAUL
   const out: DigestProblem[] = d.health.map((text) => ({ icon: "🔴" as const, text: esc(text) }));
   if (d.baseDays === 0) return out;
   for (const s of d.sites) {
-    if (s.pageLoads === 0 && s.avgLoads > 0 && s.avgRevenue >= problemMin) {
-      out.push({ icon: "🔴", site: s.name, text: `<b>${esc(s.name)}</b> не отдал ни одной загрузки. Обычно ${group(s.avgLoads)} загрузок и ${usd(s.avgRevenue)} в день — проверьте сайт и код ADOK.` });
+    if (s.pageLoads === 0 && s.prevLoads > 0 && s.prevRevenue >= problemMin) {
+      out.push({ icon: "🔴", site: s.name, text: `<b>${esc(s.name)}</b> не отдал ни одной загрузки. ${prevLabel(d.day)} было ${group(s.prevLoads)} загрузок и ${usd(s.prevRevenue)} — проверьте сайт и код ADOK.` });
     }
   }
-  const net = delta(d.total.revenue, d.avg.revenue, "percent");
-  if (net != null && net <= -DROP_PCT && d.avg.revenue - d.total.revenue >= problemMin) out.push({ icon: "🔴", text: `<b>Выручка сети упала на ${Math.round(-net)}%</b>: ${usd(d.total.revenue)} вместо обычных ${usd(d.avg.revenue)} в день.` });
+  const net = delta(d.total.revenue, d.prev.revenue, "percent");
+  if (net != null && net <= -DROP_PCT && d.prev.revenue - d.total.revenue >= problemMin) out.push({ icon: "🔴", text: `<b>Выручка сети упала на ${Math.round(-net)}%</b>: ${usd(d.total.revenue)} против ${usd(d.prev.revenue)} ${prevLabel(d.day)}.` });
   const drops = [
     ...d.bundles.map((b) => ({ ...b, label: `бандл ${b.name}`, site: undefined as string | undefined })),
-    ...d.sites.filter((s) => !(s.pageLoads === 0 && s.avgLoads > 0)).map((s) => ({ ...s, label: s.name, site: s.name as string | undefined })),
-  ].map((x) => ({ ...x, diff: x.revenue - x.avgRevenue, p: delta(x.revenue, x.avgRevenue, "percent") }))
+    ...d.sites.filter((s) => !(s.pageLoads === 0 && s.prevLoads > 0)).map((s) => ({ ...s, label: s.name, site: s.name as string | undefined })),
+  ].map((x) => ({ ...x, diff: x.revenue - x.prevRevenue, p: delta(x.revenue, x.prevRevenue, "percent") }))
     .filter((x) => x.p != null && x.p <= -DROP_PCT && -x.diff >= problemMin)
     .sort((a, b) => a.diff - b.diff);
-  for (const x of drops) out.push({ icon: "🟡", site: x.site, text: `<b>${esc(x.label)}</b>: выручка ${usd(x.revenue)} вместо обычных ${usd(x.avgRevenue)} (${pct(x.p)}, ${signedUsd(x.diff)}).` });
+  for (const x of drops) out.push({ icon: "🟡", site: x.site, text: `<b>${esc(x.label)}</b>: выручка ${usd(x.revenue)} против ${usd(x.prevRevenue)} ${prevLabel(d.day)} (${pct(x.p)}, ${signedUsd(x.diff)}).` });
   return out;
 }
 
@@ -134,11 +137,11 @@ export function digestAlertGroups(d: DigestData, problemMin: number = DIGEST_DEF
   return { groups, hidden: total - shown };
 }
 
-/** Sites that moved notably against their 7-day average and are not already listed as a problem. */
+/** Sites that moved notably against the day before and are not already listed as a problem. */
 export function digestChanges(d: DigestData, minAmount: number = DIGEST_DEFAULTS.minAmount, skip: Set<string> = new Set()) {
   if (d.baseDays === 0) return { up: [], down: [] };
   const moved = d.sites.filter((s) => !skip.has(s.name))
-    .map((s) => ({ name: s.name, diff: s.revenue - s.avgRevenue, p: delta(s.revenue, s.avgRevenue, "percent") }))
+    .map((s) => ({ name: s.name, diff: s.revenue - s.prevRevenue, p: delta(s.revenue, s.prevRevenue, "percent") }))
     .filter((x) => Math.abs(x.diff) >= minAmount && (x.p == null ? x.diff > 0 : Math.abs(x.p) >= CHANGE_PCT));
   return { up: moved.filter((x) => x.diff > 0).sort((a, b) => b.diff - a.diff), down: moved.filter((x) => x.diff < 0).sort((a, b) => a.diff - b.diff) };
 }
@@ -190,11 +193,11 @@ function blocks(d: DigestData, o: Required<Pick<DigestOptions, "minAmount" | "pr
   const cmp = d.baseDays > 0;
   const head: string[] = [];
   const r = romi(d.total.revenue, d.total.cost);
-  const vs = cmp ? arrow(delta(d.total.revenue, d.avg.revenue, "percent")) : "";
+  const vs = cmp ? arrow(delta(d.total.revenue, d.prev.revenue, "percent")) : "";
   head.push([`📊 <b>TubeStat · ${dayLabel(d.day)}</b>`,
     ...(d.incomplete ? ["⚠️ <i>Данные за вчера загружены не полностью — цифры ещё изменятся</i>"] : []),
     "",
-    `💰 Выручка <b>${usd(d.total.revenue)}</b>${vs ? `  ${vs} к ср. 7 дн.` : ""}`,
+    `💰 Выручка <b>${usd(d.total.revenue)}</b>${vs ? `  ${vs} к ${prevLabel(d.day)}` : ""}`,
     `💸 Расход <b>${usd(d.total.cost)}</b>`,
     `📈 Маржа <b>${usd(d.total.margin)}</b>${r == null ? "" : `  ROMI ${Math.round(r)}%`}`].join("\n"));
   if (d.total.revenue > 0) {
@@ -209,19 +212,19 @@ function blocks(d: DigestData, o: Required<Pick<DigestOptions, "minAmount" | "pr
   if (bundles.length) {
     const w = [12, 6, 6, 5];
     head.push(`🗂 <b>Бандлы</b>${d.bundlesOverlap ? " <i>(сайт может быть в нескольких)</i>" : ""}\n` + pre([
-      row(["", "выруч.", "маржа", cmp ? "7 дн." : ""], w),
-      ...bundles.map((b) => row([b.name, usd(b.revenue), usd(b.margin), cmp ? pct(delta(b.revenue, b.avgRevenue, "percent")) || "—" : ""], w)),
+      row(["", "выруч.", "маржа", cmp ? prevLabel(d.day) : ""], w),
+      ...bundles.map((b) => row([b.name, usd(b.revenue), usd(b.margin), cmp ? pct(delta(b.revenue, b.prevRevenue, "percent")) || "—" : ""], w)),
     ]));
   }
 
-  const formats = d.formats.filter((f) => Math.round(f.revenue) !== 0 || Math.round(f.avgRevenue) !== 0).sort((a, b) => b.revenue - a.revenue);
+  const formats = d.formats.filter((f) => Math.round(f.revenue) !== 0 || Math.round(f.prevRevenue) !== 0).sort((a, b) => b.revenue - a.revenue);
   const fmtSum = formats.reduce((t, f) => t + f.revenue, 0); // display only: shares of the rows shown
   if (formats.length) {
     const w = [12, 6, 5, 5];
     head.push(`🧩 <b>Форматы</b> <i>(AdSpyglass, без фикс-дилов)</i>\n` + pre([
-      row(["", "выруч.", "доля", cmp ? "7 дн." : ""], w),
+      row(["", "выруч.", "доля", cmp ? prevLabel(d.day) : ""], w),
       ...formats.map((f) => row([FORMAT_LABEL[f.format] ?? f.format, usd(f.revenue), fmtSum > 0 ? `${Math.round((f.revenue / fmtSum) * 100)}%` : "",
-        cmp ? pct(delta(f.revenue, f.avgRevenue, "percent")) || "—" : ""], w)),
+        cmp ? pct(delta(f.revenue, f.prevRevenue, "percent")) || "—" : ""], w)),
     ]));
   }
 
@@ -235,7 +238,7 @@ function blocks(d: DigestData, o: Required<Pick<DigestOptions, "minAmount" | "pr
   const ch = digestChanges(d, o.minAmount, new Set(own.map((p) => p.site).filter((s): s is string => Boolean(s))));
   const moves = [...ch.up.map((x) => `▲ ${esc(x.name)} ${signedUsd(x.diff)}${x.p == null ? "" : ` (${pct(x.p)})`}`),
     ...ch.down.map((x) => `▼ ${esc(x.name)} ${signedUsd(x.diff)}${x.p == null ? "" : ` (${pct(x.p)})`}`)];
-  if (moves.length) head.push(["🔀 <b>Изменения</b> <i>к среднему за 7 дней</i>", ...moves].join("\n"));
+  if (moves.length) head.push([`🔀 <b>Изменения</b> <i>к ${prevLabel(d.day)}</i>`, ...moves].join("\n"));
 
   const { groups, hidden } = digestAlertGroups(d, o.problemMin);
   const problems: string[] = [];
