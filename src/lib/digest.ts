@@ -23,6 +23,17 @@ export interface DigestPlan {
   /** Null when the month's own entries are there; otherwise the month whose entries stand in (nothing entered yet). */
   copiedFrom: string | null;
 }
+/** A sum in the report's days (`cur`) and in the days it compares with (`prev`), with its page loads when it has them. */
+export interface Change { cur: number; prev: number; curLoads?: number; prevLoads?: number }
+type Keyed = Change & { key: string };
+type Parted = Keyed & { part: string };
+/** What moved and why (src/server/queries/digest.ts digestBreakdown): AdSpyglass money with loads, its parts, sources, fix deals. */
+export interface DigestBreakdown {
+  network: Change; sites: Keyed[]; bundles: Keyed[]; formats: Keyed[]; networks: Keyed[]; countries: Keyed[];
+  bundleSites: Parted[]; bundleNetworks: Parted[]; formatSites: Parted[];
+  sources: Keyed[];
+  deals: (Keyed & { status: string; endsAt: string | null; flat: boolean })[];
+}
 export interface DigestData {
   /** The last day of the report (the day itself for a daily digest). */
   day: string;
@@ -31,6 +42,7 @@ export interface DigestData {
   /** First day of the report; = `day` for a daily digest. */
   from?: string;
   plan?: DigestPlan | null;
+  breakdown?: DigestBreakdown | null;
   /** 1 when the day before `day` has data — the comparison base (the digest goes day after day); 0 — nothing to compare with. */
   baseDays: number;
   total: { revenue: number; mediated: number; direct: number; cost: number; margin: number };
@@ -155,6 +167,97 @@ const moneyWidth = (vs: number[]) => Math.max(6, ...vs.map((v) => usd(v).length)
 /** The name column takes what the other columns leave of the phone width (one space between columns), at least 8. */
 const nameWidth = (others: number[]) => Math.max(8, Math.min(12 + (others.length === 2 ? 7 : 0), TABLE_WIDTH - others.reduce((a, w) => a + w + 1, 0)));
 const bar = (share: number, cells = 10) => { const n = share <= 0 ? 0 : Math.max(1, Math.min(cells, Math.round(share * cells))); return "▓".repeat(n) + "░".repeat(cells - n); };
+
+/**
+ * An AdSpyglass change split exactly into traffic and monetisation: revenue = loads × revenue per 1000
+ * loads, so Δ = (loads₁ − loads₀) × rpl₀ + loads₁ × (rpl₁ − rpl₀). Without loads on either side the whole
+ * change is one part. Display arithmetic on sums that came from SQL.
+ */
+export function explainChange(c: Change) {
+  const diff = c.cur - c.prev;
+  const l0 = c.prevLoads ?? 0, l1 = c.curLoads ?? 0;
+  if (!(l0 > 0) || !(l1 > 0)) return { diff, traffic: null as number | null, rate: null as number | null, loadsPct: null as number | null, ratePct: null as number | null };
+  const r0 = c.prev / l0, r1 = c.cur / l1;
+  return { diff, traffic: (l1 - l0) * r0, rate: l1 * (r1 - r0), loadsPct: ((l1 - l0) / l0) * 100, ratePct: r0 > 0 ? ((r1 - r0) / r0) * 100 : null };
+}
+
+/** «трафик −6% (−$13), доход на 1000 загрузок −2% (−$7)»: the parts that carry at least a fifth of the change. */
+function causeText(c: Change, long = false): string {
+  const e = explainChange(c);
+  if (e.traffic == null || e.rate == null) return "";
+  const big = (v: number) => Math.abs(v) >= Math.abs(e.diff) * 0.2 || Math.abs(e.diff) < 1;
+  const parts = [
+    big(e.traffic) && e.loadsPct != null ? `трафик ${pct(e.loadsPct)} (${signedUsd(e.traffic)})` : "",
+    big(e.rate) && e.ratePct != null ? `${long ? "доход на 1000 загрузок" : "доход/1000"} ${pct(e.ratePct)} (${signedUsd(e.rate)})` : "",
+  ].filter(Boolean);
+  return parts.join(", ");
+}
+
+/** The biggest contributors to a change: at least a quarter of it or half the bar, up to `top`, the sign of the change first. */
+function drivers(parts: { label: string; diff: number }[], total: number, bar: number, top: number): string[] {
+  return parts.filter((x) => Math.abs(x.diff) >= Math.min(Math.abs(total) * 0.25, bar / 2) && Math.round(x.diff) !== 0)
+    .sort((a, b) => Number(Math.sign(b.diff) === Math.sign(total)) - Number(Math.sign(a.diff) === Math.sign(total)) || Math.abs(b.diff) - Math.abs(a.diff))
+    .slice(0, top).map((x) => `${esc(x.label)} ${signedUsd(x.diff)}`);
+}
+
+/**
+ * «🔍 Почему»: the network's change split into traffic and monetisation and its biggest networks, countries
+ * and sites; then every bundle, format, cost source and fix deal that moved at least `bar`, each with its cause.
+ */
+export function reasonsBlock(d: DigestData, bar: number, skipSites: Set<string> = new Set()): string | null {
+  const b = d.breakdown;
+  if (!b || d.baseDays === 0) return null;
+  const w = reportWords(d);
+  const diffOf = (x: Change) => x.cur - x.prev;
+  const total = d.total.revenue - d.prev.revenue;
+  const L: string[] = [`🔍 <b>Почему выручка ${signedUsd(total)} (${pct(delta(d.total.revenue, d.prev.revenue, "percent")) || "0%"})</b> <i>${w.to}</i>`];
+  const cause = causeText(b.network, true);
+  if (cause) L.push(cause[0].toUpperCase() + cause.slice(1));
+  L.push(`AdSpyglass ${signedUsd(diffOf(b.network))} · фикс-дилы ${signedUsd(d.total.direct - (d.prev.revenue - b.network.prev))}`);
+  const line = (title: string, items: string[]) => (items.length ? `${title}: ${items.join(" · ")}` : "");
+  const sites = b.sites.filter((x) => !skipSites.has(x.key)).map((x) => {
+    const e = explainChange(x);
+    const why = e.traffic != null && e.rate != null ? (Math.abs(e.traffic) >= Math.abs(e.rate) ? `трафик ${pct(e.loadsPct)}` : `доход/1000 ${pct(e.ratePct)}`) : "";
+    return { label: x.key, diff: diffOf(x), why };
+  });
+  const top = drivers(sites, diffOf(b.network), bar, 3);
+  L.push(...[
+    line("Сетки", drivers(b.networks.map((x) => ({ label: x.key, diff: diffOf(x) })), diffOf(b.network), bar, 3)),
+    line("Гео", drivers(b.countries.map((x) => ({ label: x.key, diff: diffOf(x) })), diffOf(b.network), bar, 3)),
+    line("Сайты", top.map((t) => { const s = sites.find((x) => t.startsWith(esc(x.label) + " ")); return s?.why ? `${t} (${s.why})` : t; })),
+  ].filter(Boolean));
+
+  const rows: string[] = [];
+  const entity = (label: string, c: Change, parts: string[]) => {
+    const diff = diffOf(c);
+    if (Math.abs(diff) < bar) return;
+    const cs = causeText(c);
+    rows.push(`${diff > 0 ? "▲" : "▼"} ${label} ${signedUsd(diff)} (${pct(delta(c.cur, c.prev, "percent")) || "новое"})${cs ? `: ${cs}` : ""}${parts.length ? ` — ${parts.join(", ")}` : ""}`);
+  };
+  for (const x of [...b.bundles].sort((p, q) => Math.abs(diffOf(q)) - Math.abs(diffOf(p)))) {
+    const parts = [...b.bundleSites.filter((s) => s.key === x.key).map((s) => ({ label: s.part, diff: diffOf(s) })),
+      ...b.bundleNetworks.filter((s) => s.key === x.key).map((s) => ({ label: s.part, diff: diffOf(s) }))];
+    entity(`<b>${esc(x.key)}</b>`, x, drivers(parts, diffOf(x), bar, 2));
+  }
+  for (const x of [...b.formats].sort((p, q) => Math.abs(diffOf(q)) - Math.abs(diffOf(p)))) {
+    entity(`<b>${esc(FORMAT_LABEL[x.key] ?? x.key)}</b>`, x, drivers(b.formatSites.filter((s) => s.key === x.key).map((s) => ({ label: s.part, diff: diffOf(s) })), diffOf(x), bar, 2));
+  }
+  for (const x of b.sources) {
+    const diff = diffOf(x);
+    if (Math.abs(diff) < bar) continue;
+    const lp = x.prevLoads && x.curLoads != null ? ((x.curLoads - x.prevLoads) / x.prevLoads) * 100 : null;
+    rows.push(`${diff > 0 ? "▲" : "▼"} Расход <b>${esc(x.key)}</b> ${signedUsd(diff)}${lp == null ? "" : `: загрузки источника ${pct(lp)}`}`);
+  }
+  for (const x of b.deals) {
+    const diff = diffOf(x);
+    if (Math.abs(diff) < bar) continue;
+    const ended = x.endsAt && x.endsAt < (d.from ?? d.day) ? `закончился ${prevLabel(addDay(x.endsAt))}` : "";
+    const why = ended || (x.status === "PAUSED" ? "на паузе" : x.status === "ENDED" ? "завершён" : x.prev === 0 ? "начал начисляться" : x.flat ? "флэт — сумма в день по договору" : causeText(x).replace("доход/1000", "цена"));
+    rows.push(`${diff > 0 ? "▲" : "▼"} Фикс-дил <b>«${esc(x.key)}»</b> ${signedUsd(diff)}${why ? `: ${why}` : ""}`);
+  }
+  if (rows.length) L.push("", ...rows);
+  return L.join("\n");
+}
 
 export interface DigestProblem { icon: "🔴" | "🟡"; text: string; site?: string }
 
@@ -302,10 +405,17 @@ function blocks(d: DigestData, o: Required<Pick<DigestOptions, "minAmount" | "pr
 
   // Week and month: the trends, not today's fires — no problem list, the change bar grows with the period.
   const own = kind === "day" ? digestProblems(d, o.problemMin) : [];
-  const ch = digestChanges(d, o.minAmount * (kind === "week" ? 7 : kind === "month" ? 30 : 1), new Set(own.map((p) => p.site).filter((s): s is string => Boolean(s))));
-  const moves = [...ch.up.map((x) => `▲ ${esc(x.name)} ${signedUsd(x.diff)}${x.p == null ? "" : ` (${pct(x.p)})`}`),
-    ...ch.down.map((x) => `▼ ${esc(x.name)} ${signedUsd(x.diff)}${x.p == null ? "" : ` (${pct(x.p)})`}`)];
-  if (moves.length) head.push([`🔀 <b>Изменения</b> <i>${w.to}</i>`, ...moves].join("\n"));
+  const moveBar = o.minAmount * (kind === "week" ? 7 : kind === "month" ? 30 : 1);
+  const skip = new Set(own.map((p) => p.site).filter((s): s is string => Boolean(s)));
+  const why = reasonsBlock(d, moveBar, skip);
+  if (why) head.push(why);
+  else {
+    // No breakdown (older callers): the sites that moved, as before.
+    const ch = digestChanges(d, moveBar, skip);
+    const moves = [...ch.up.map((x) => `▲ ${esc(x.name)} ${signedUsd(x.diff)}${x.p == null ? "" : ` (${pct(x.p)})`}`),
+      ...ch.down.map((x) => `▼ ${esc(x.name)} ${signedUsd(x.diff)}${x.p == null ? "" : ` (${pct(x.p)})`}`)];
+    if (moves.length) head.push([`🔀 <b>Изменения</b> <i>${w.to}</i>`, ...moves].join("\n"));
+  }
 
   const { groups, hidden } = digestAlertGroups(d, o.problemMin);
   const problems: string[] = [];

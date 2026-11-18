@@ -563,6 +563,8 @@ test("integrations: Telegram — the bot token, the chat found by the bot, a pre
     await block.getByRole("button", { name: "Предпросмотр" }).click();
     await expect(preview).toContainText(/📅 TubeStat · неделя \d+/);
     await expect(preview).toContainText("к прошлой неделе");
+    await expect(preview).toContainText(/🔍 Почему выручка [+−]\$[\d ]+/); // the change explained: traffic, revenue per 1000 loads, where
+    await expect(preview).toContainText(/Трафик [+−]?\d+%|доход на 1000 загрузок/);
     await block.getByTestId("telegram-kind").selectOption("month");
     await block.getByRole("button", { name: "Предпросмотр" }).click();
     await expect(preview).toContainText(/🗓 TubeStat · [а-я]+ \d{4}/);
