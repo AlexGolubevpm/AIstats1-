@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RISK_DAYS, RULE_LABEL, TABLE_WIDTH, perDay, planBlock, prevLabel, reportWords, shortTitle, buildDigest, dayLabel, digestChanges, digestPlain, digestProblems, plural, usd, type DigestAlert, type DigestData } from "@/lib/digest";
+import { RISK_DAYS, RULE_LABEL, TABLE_WIDTH, explainChange, perDay, planBlock, prevLabel, reasonsBlock, reportWords, shortTitle, type DigestBreakdown, buildDigest, dayLabel, digestChanges, digestPlain, digestProblems, plural, usd, type DigestAlert, type DigestData } from "@/lib/digest";
 
 const base = (over: Partial<DigestData> = {}): DigestData => ({
   day: "2026-11-15", baseDays: 7,
@@ -218,6 +218,54 @@ describe("digest text", () => {
     expect(t).not.toContain("▲ gay-tube.com"); // +$210 over a week is below $31 × 7
     expect(digestPlain(buildDigest(week, { minAmount: 30 }))).toContain("▲ gay-tube.com +$210"); // $30 × 7 = $210: just enough
     expect(msg).toContain('<a href="https://stat.test/?from=2026-11-09&to=2026-11-15">Открыть сводку</a>');
+  });
+
+  it("a change splits exactly into traffic and monetisation (revenue = loads × revenue per 1000 loads)", () => {
+    const e = explainChange({ cur: 233, prev: 250, curLoads: 470_000, prevLoads: 500_000 }); // −6% loads, rpl 0.5 → 0.4957
+    expect(e.traffic! + e.rate!).toBeCloseTo(e.diff, 9);
+    expect([Math.round(e.diff), Math.round(e.traffic!), Math.round(e.rate!), Math.round(e.loadsPct!), Math.round(e.ratePct! * 10) / 10]).toEqual([-17, -15, -2, -6, -0.9]);
+    expect(explainChange({ cur: 10, prev: 0, curLoads: 100, prevLoads: 0 })).toMatchObject({ diff: 10, traffic: null, rate: null }); // new: no split
+    expect(explainChange({ cur: 5, prev: 8 })).toMatchObject({ diff: -3, traffic: null });
+  });
+
+  it("«🔍 Почему»: the network's change in traffic and monetisation with its networks, countries and sites; then bundles, formats, sources and fix deals that moved, each with its cause", () => {
+    const bd: DigestBreakdown = {
+      network: { cur: 375, prev: 420, curLoads: 950_000, prevLoads: 1_000_000 },
+      sites: [{ key: "gaytube.com", cur: 100, prev: 125, curLoads: 220_000, prevLoads: 250_000 }, { key: "javmix.com", cur: 90, prev: 106, curLoads: 300_000, prevLoads: 300_000 },
+        { key: "quiet.com", cur: 50, prev: 51, curLoads: 1, prevLoads: 1 }],
+      bundles: [{ key: "Gay", cur: 233, prev: 253, curLoads: 470_000, prevLoads: 500_000 }, { key: "Javgg", cur: 74, prev: 74, curLoads: 1, prevLoads: 1 }],
+      formats: [{ key: "BANNER", cur: 39, prev: 48, curLoads: 300_000, prevLoads: 300_000 }],
+      networks: [{ key: "ExoClick", cur: 100, prev: 118 }, { key: "Clickadu", cur: 60, prev: 69 }, { key: "TrafficStars", cur: 50, prev: 44 }],
+      countries: [{ key: "US", cur: 80, prev: 94 }, { key: "JP", cur: 60, prev: 68 }],
+      bundleSites: [{ key: "Gay", part: "gaytube.com", cur: 100, prev: 125 }, { key: "Gay", part: "boys.com", cur: 133, prev: 128 }],
+      bundleNetworks: [{ key: "Gay", part: "ExoClick", cur: 50, prev: 59 }],
+      formatSites: [{ key: "BANNER", part: "hentaismile.com", cur: 10, prev: 16 }],
+      sources: [{ key: "TubeTraffic / ixxx", cur: 293, prev: 312, curLoads: 940_000, prevLoads: 1_000_000 }],
+      deals: [{ key: "Banner <X>", cur: 0, prev: 10, status: "ACTIVE", endsAt: "2026-11-15", flat: true }, { key: "Flat", cur: 10, prev: 10, status: "ACTIVE", endsAt: null, flat: true }],
+    };
+    const d = base({ day: "2026-11-17", total: { revenue: 375, mediated: 375, direct: 0, cost: 293, margin: 82 }, prev: { revenue: 430, cost: 312, margin: 118 }, breakdown: bd });
+    const t = digestPlain(reasonsBlock(d, 10)!);
+    expect(t.split("\n")).toEqual([
+      "🔍 Почему выручка −$55 (−13%) к 16.11",
+      "Трафик −5% (−$21), доход на 1000 загрузок −6% (−$24)",
+      "AdSpyglass −$45 · фикс-дилы −$10",
+      "Сетки: ExoClick −$18 · Clickadu −$9 · TrafficStars +$6", // drivers from half the bar ($5): the growth is named too
+      "Гео: US −$14 · JP −$8",
+      "Сайты: gaytube.com −$25 (трафик −12%) · javmix.com −$16 (доход/1000 −15%)",
+      "",
+      "▼ Gay −$20 (−8%): трафик −6% (−$15), доход/1000 −2% (−$5) — gaytube.com −$25, ExoClick −$9",
+      "▼ Баннер −$9 (−19%): доход/1000 −19% (−$9) — hentaismile.com −$6",
+      "▼ Расход TubeTraffic / ixxx −$19: загрузки источника −6%",
+      "▼ Фикс-дил «Banner <X>» −$10: закончился 15.11",
+    ].filter((l) => !l.startsWith("▼ Баннер"))); // $9 is under the $10 bar
+    expect(reasonsBlock(d, 10)).toContain("«Banner &lt;X&gt;»");
+    expect(digestPlain(reasonsBlock(d, 5)!)).toContain("▼ Баннер −$9 (−19%): доход/1000 −19% (−$9) — hentaismile.com −$6");
+    expect(digestPlain(reasonsBlock(d, 10, new Set(["gaytube.com"]))!)).toContain("Сайты: javmix.com −$16 (доход/1000 −15%)"); // a site in «Проблемы» is not repeated
+    expect(reasonsBlock({ ...d, baseDays: 0 }, 10)).toBeNull();
+    // In the digest it replaces «🔀 Изменения».
+    const msg = digestPlain(buildDigest(d, { minAmount: 10 }));
+    expect(msg).toContain("🔍 Почему выручка −$55");
+    expect(msg).not.toContain("🔀 Изменения");
   });
 
   it("words and money: date, plurals, whole dollars with a real minus", () => {

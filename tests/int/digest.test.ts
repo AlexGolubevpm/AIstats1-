@@ -8,7 +8,7 @@ import { buildDigest, digestPlain, digestProblems } from "@/lib/digest";
 import { config } from "@/server/config";
 import { LocalRawStore } from "@/server/ingest/raw-store";
 import { runJob, SCHEDULES } from "@/server/jobs/handlers";
-import { digestData, digestReady, marginPlan, reportPeriod } from "@/server/queries/digest";
+import { digestBreakdown, digestData, digestReady, marginPlan, reportPeriod } from "@/server/queries/digest";
 import { DIGEST_SENT_KEY, RETRY_MS, lastComplete, TELEGRAM_SETTING, chatsFromUpdates, checkTelegramLink, digestTick, disconnectTelegram, findTelegramChats, getTelegram, parseProxy,
   resolveTelegramChat, saveTelegramProxy, saveTelegramSettings, saveTelegramToken, sendDigestNow, telegramView } from "@/server/services/telegram";
 import { resetDb, testDb } from "./helpers";
@@ -141,6 +141,34 @@ describe("digest numbers", () => {
     expect(month.total.revenue).toBeCloseTo(day1.total.revenue + day2.total.revenue, 6);
     const week = await digestData(db, "2026-09-27", new Date(), "week"); // 09-21…09-27 against 09-14…09-20
     expect([week.from, week.baseDays, week.total.revenue, week.prev.revenue]).toEqual(["2026-09-21", 1, day2.total.revenue, day1.total.revenue]);
+  });
+
+  it("the breakdown: AdSpyglass money with loads by site, bundle, network and country — the parts add up to the network's change; fix deals one by one", async () => {
+    await db.factRevenueNetwork.createMany({ data: [
+      { date: D("2026-09-20"), siteId: "s1", networkId: net.net.id, pageLoads: 20_000, revenueReported: "20" },
+      { date: D("2026-09-21"), siteId: "s1", networkId: net.net.id, pageLoads: 20_000, revenueReported: "15" },
+    ] });
+    await db.site.update({ where: { id: "s3" }, data: { status: "ARCHIVED" } });
+    const b = await digestBreakdown(db, "day", "2026-09-21");
+    const diff = (x: { cur: number; prev: number }) => x.cur - x.prev;
+    // 09-20: s1 $22 (incl. own_deals $2), s2 $20; 09-21: $20 each. s3 is archived — not counted.
+    expect(b.network).toEqual({ cur: 40, prev: 42, curLoads: 40_000, prevLoads: 40_000 });
+    expect(b.sites.map((x) => [x.key, x.cur, x.prev]).sort()).toEqual([["one.test", 20, 22], ["two.test", 20, 20]]);
+    expect(b.sites.reduce((t, x) => t + diff(x), 0)).toBeCloseTo(diff(b.network), 9); // site parts add up to the network change
+    expect(b.countries.reduce((t, x) => t + diff(x), 0)).toBeCloseTo(diff(b.network), 9); // so do the countries
+    expect(b.networks).toEqual([{ key: net.net.title, cur: 15, prev: 20 }]);
+    expect(b.bundles.map((x) => [x.key, x.cur, x.prev]).sort()).toEqual([["Hentai", 20, 20], ["JAV", 40, 42]]);
+    expect(b.bundleSites.filter((x) => x.key === "JAV").map((x) => [x.part, x.cur, x.prev]).sort()).toEqual([["one.test", 20, 22], ["two.test", 20, 20]]);
+    expect(b.sources.map((x) => [x.key, x.cur, x.prev])).toEqual([["TubeCrown", 34, 34]]);
+    // The DIRECT deal (on s3, archived now) drops out; a deal on a live site shows with its terms.
+    expect(b.deals).toEqual([]);
+    await db.site.update({ where: { id: "s3" }, data: { status: "ACTIVE" } });
+    const deal = (await digestBreakdown(db, "day", "2026-09-21")).deals;
+    expect(deal.map((x) => [x.key, x.cur, x.prev, x.status, x.flat])).toEqual([[net.direct.title, 3, 3, net.direct.status, net.direct.paymentBasis.startsWith("FLAT")]]);
+    // In the digest: «🔍 Почему» with the network's change.
+    const text = digestPlain(buildDigest(await digestData(db, "2026-09-21"), { minAmount: 1 }));
+    expect(text).toContain("🔍 Почему выручка −$2 (−3%) к 20.09");
+    expect(text).toContain("AdSpyglass −$2 · фикс-дилы $0");
   });
 
   it("ready = the per-site cut for the day and a derive run after the day ended", async () => {
