@@ -8,7 +8,7 @@ import { buildDigest, digestPlain, digestProblems } from "@/lib/digest";
 import { config } from "@/server/config";
 import { LocalRawStore } from "@/server/ingest/raw-store";
 import { runJob, SCHEDULES } from "@/server/jobs/handlers";
-import { digestBreakdown, digestData, digestReady, marginPlan, reportPeriod } from "@/server/queries/digest";
+import { digestBreakdown, digestData, digestReady, digestTasks, marginPlan, reportPeriod } from "@/server/queries/digest";
 import { DIGEST_SENT_KEY, RETRY_MS, lastComplete, TELEGRAM_SETTING, chatsFromUpdates, checkTelegramLink, digestTick, disconnectTelegram, findTelegramChats, getTelegram, parseProxy,
   resolveTelegramChat, saveTelegramProxy, saveTelegramSettings, saveTelegramToken, sendDigestNow, telegramView } from "@/server/services/telegram";
 import { resetDb, testDb } from "./helpers";
@@ -169,6 +169,26 @@ describe("digest numbers", () => {
     const text = digestPlain(buildDigest(await digestData(db, "2026-09-21"), { minAmount: 1 }));
     expect(text).toContain("🔍 Почему выручка −$2 (−3%) к 20.09");
     expect(text).toContain("AdSpyglass −$2 · фикс-дилы $0");
+  });
+
+  it("tasks: open cards in board order with the site, cards done within the report's days", async () => {
+    await db.task.createMany({ data: [
+      { title: "B второй", status: "IN_PROGRESS", position: 2, assignee: "Иван" },
+      { title: "A первый", status: "IN_PROGRESS", position: 1, siteId: "s1", dueDate: D("2026-09-20"), impactMonth: "120.50", priority: "HIGH" },
+      { title: "План", status: "PLANNED", position: 1 },
+      { title: "Сделано вчера", status: "DONE", position: 1, doneAt: new Date("2026-09-21T15:00:00Z") },
+      { title: "Сделано раньше", status: "DONE", position: 2, doneAt: new Date("2026-09-15T10:00:00Z") },
+    ] });
+    const t = await digestTasks(db, "day", "2026-09-21");
+    expect(t.open.map((x) => x.title)).toEqual(["План", "A первый", "B второй"]); // PLANNED before IN_PROGRESS on the board; by position inside
+    expect(t.open[1]).toEqual({ title: "A первый", status: "IN_PROGRESS", assignee: null, dueDate: "2026-09-20", priority: "HIGH", impactMonth: 120.5, site: "one.test", doneAt: null });
+    expect(t.done.map((x) => x.title)).toEqual(["Сделано вчера"]);
+    expect((await digestTasks(db, "week", "2026-09-27")).done.map((x) => x.title)).toEqual(["Сделано вчера"]); // 21–27.09
+    expect((await digestTasks(db, "month", "2026-09-30")).done.map((x) => x.title)).toEqual(["Сделано раньше", "Сделано вчера"]);
+    const text = digestPlain(buildDigest(await digestData(db, "2026-09-21")));
+    expect(text).toContain("🗒 Задачи · в работе 2 · запланировано 1 · просрочено 1");
+    expect(text).toContain("🔥 Просрочено\n▪️ A первый — без исполнителя · 🔥 срок 20.09 · +$121/мес · one.test");
+    expect(text).toContain("🏁 Сделано вчера: 1\n▪️ Сделано вчера");
   });
 
   it("ready = the per-site cut for the day and a derive run after the day ended", async () => {

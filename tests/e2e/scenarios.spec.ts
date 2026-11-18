@@ -536,8 +536,19 @@ test("integrations: Telegram — the bot token, the chat found by the bot, a pre
     await block.getByRole("button", { name: /Как сделать воркер в Cloudflare/ }).click();
     await expect(page.getByTestId("telegram-worker")).toContainText('url.hostname = "api.telegram.org"');
 
+    // A task taken into work on the board shows in the digest under «В работе».
+    const taskTitle = `E2E задача в работе ${Date.now()}`;
+    await page.goto("/tasks");
+    await page.locator("[data-quick-add=IN_PROGRESS]").click();
+    await page.locator("[data-column=IN_PROGRESS] input[name=title]").fill(taskTitle);
+    await page.locator("[data-column=IN_PROGRESS]").getByRole("button", { name: "Добавить" }).click();
+    await expect(page.locator("[data-column=IN_PROGRESS] [data-task]", { hasText: taskTitle })).toBeVisible();
+    await page.goto("/settings/integrations");
+
     await block.getByRole("button", { name: "Предпросмотр" }).click();
     const preview = page.getByTestId("telegram-preview");
+    await expect(preview).toContainText("🗒 Задачи");
+    await expect(preview).toContainText(new RegExp(`⏳ В работе[\\s\\S]*${taskTitle}`));
     await expect(preview).toContainText("📊 TubeStat ·");
     await expect(preview).toContainText(/💰 Выручка \$[\d ]+/);
     await expect(preview).toContainText(/AdSpyglass +\$[\d ]+ [▓░]{10} +\d+%/);

@@ -4,7 +4,7 @@
 // `revenue_direct` — fix deals billed directly, so the two never overlap.
 import { Prisma, type PrismaClient } from "@/generated/prisma/client";
 import { addDays } from "@/lib/period";
-import type { Change, DigestAlert, DigestBreakdown, DigestData, DigestKind, DigestPlan } from "@/lib/digest";
+import type { Change, DigestAlert, DigestBreakdown, DigestData, DigestKind, DigestPlan, DigestTask } from "@/lib/digest";
 import { asgPause } from "@/server/ingest/run";
 
 const LIVE = Prisma.sql`(SELECT id FROM "Site" WHERE status <> 'ARCHIVED')`;
@@ -127,6 +127,22 @@ export async function digestBreakdown(db: PrismaClient, kind: DigestKind, day: s
   };
 }
 
+/** The task board for the digest: open cards in board order (column, position) and the cards done within the report's days. */
+export async function digestTasks(db: PrismaClient, kind: DigestKind, day: string): Promise<{ open: DigestTask[]; done: DigestTask[] }> {
+  const { from } = reportPeriod(kind, day);
+  const select = { title: true, status: true, assignee: true, dueDate: true, priority: true, impactMonth: true, doneAt: true, site: { select: { domain: true } } } as const;
+  const iso = (x: Date | null) => (x ? x.toISOString().slice(0, 10) : null);
+  const toTask = (x: { title: string; status: string; assignee: string | null; dueDate: Date | null; priority: string; impactMonth: unknown; doneAt: Date | null; site: { domain: string } | null }): DigestTask => ({
+    title: x.title, status: x.status as DigestTask["status"], assignee: x.assignee, dueDate: iso(x.dueDate), priority: x.priority as DigestTask["priority"],
+    impactMonth: x.impactMonth == null ? null : Number(x.impactMonth), site: x.site?.domain ?? null, doneAt: iso(x.doneAt),
+  });
+  const [open, done] = await Promise.all([
+    db.task.findMany({ where: { status: { not: "DONE" } }, select, orderBy: [{ status: "asc" }, { position: "asc" }] }),
+    db.task.findMany({ where: { status: "DONE", doneAt: { gte: new Date(`${from}T00:00:00Z`), lt: new Date(new Date(`${day}T00:00:00Z`).getTime() + 86_400_000) } }, select, orderBy: { doneAt: "asc" } }),
+  ]);
+  return { open: open.map(toTask), done: done.map(toTask) };
+}
+
 export async function digestData(db: PrismaClient, day: string, now = new Date(), kind: DigestKind = "day"): Promise<DigestData> {
   const { from: curFrom, prevFrom, prevTo } = reportPeriod(kind, day);
   const from = prevFrom;
@@ -134,7 +150,7 @@ export async function digestData(db: PrismaClient, day: string, now = new Date()
   const win = Prisma.sql`g.date BETWEEN ${from}::date AND ${day}::date AND g.site_id IN ${LIVE}`;
   const cur = Prisma.sql`FILTER (WHERE g.date >= ${curFrom}::date)`, prev = Prisma.sql`FILTER (WHERE g.date <= ${prevTo}::date)`;
   const fwin = Prisma.sql`f.date BETWEEN ${from}::date AND ${day}::date AND f.site_id IN ${LIVE}`;
-  const [[net], bundles, sites, costs, overlap, alerts, pause, [cov], lastDerive, ready, plan, breakdown, formats] = await Promise.all([
+  const [[net], bundles, sites, costs, overlap, alerts, pause, [cov], lastDerive, ready, plan, breakdown, tasks, formats] = await Promise.all([
     db.$queryRaw<Record<string, number | null>[]>`
       SELECT COUNT(DISTINCT g.date) FILTER (WHERE g.date <= ${prevTo}::date AND (g.revenue <> 0 OR g.page_loads > 0))::int base_days,
         SUM(g.revenue) ${cur}::float8 revenue, SUM(g.revenue_mediated) ${cur}::float8 mediated, SUM(g.revenue_direct) ${cur}::float8 direct,
@@ -166,6 +182,7 @@ export async function digestData(db: PrismaClient, day: string, now = new Date()
     digestReady(db, day),
     marginPlan(db, day),
     digestBreakdown(db, kind, day),
+    digestTasks(db, kind, day),
     // AdSpyglass revenue by format (v_format_daily: the ad_type cut, zones where it is missing) — own and fix deals are not in it.
     db.$queryRaw<{ format: string; revenue: number | null; p_revenue: number | null }[]>`
       SELECT f.format, SUM(f.revenue) FILTER (WHERE f.date >= ${curFrom}::date)::float8 revenue, SUM(f.revenue) FILTER (WHERE f.date <= ${prevTo}::date)::float8 p_revenue
@@ -178,7 +195,7 @@ export async function digestData(db: PrismaClient, day: string, now = new Date()
   if (n(cov?.missing) > 0) health.push(`Расход не загружен у ${cov!.missing} из ${cov!.sites} сайтов — маржа завышена`);
   if (lastDerive?.status === "failed") health.push("Ночной пересчёт (derive) упал — дилы и алерты не обновлены");
   return {
-    day, kind, from: curFrom, plan, breakdown, baseDays: base,
+    day, kind, from: curFrom, plan, breakdown, tasks, baseDays: base,
     total: { revenue: n(net?.revenue), mediated: n(net?.mediated), direct: n(net?.direct), cost: n(net?.cost), margin: n(net?.margin) },
     prev: { revenue: avg(net?.p_revenue), cost: avg(net?.p_cost), margin: avg(net?.p_margin) },
     bundles: bundles.map((b) => ({ name: b.name, revenue: n(b.revenue), margin: n(b.margin), prevRevenue: avg(b.p_revenue) })),

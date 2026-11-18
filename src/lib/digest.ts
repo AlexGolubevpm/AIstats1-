@@ -2,7 +2,7 @@
 // a line and in which order. Numbers come ready from SQL (src/server/queries/digest.ts); nothing here
 // adds money up, it only compares and formats. Nothing is cut to "…and N more": long lists fold into
 // an expandable quote, and a digest longer than one Telegram message goes out as several.
-import { FORMAT_LABEL } from "@/lib/labels";
+import { FORMAT_LABEL, TASK_STATUS_LABEL } from "@/lib/labels";
 import { delta, romi } from "@/lib/metrics";
 
 export interface DigestLine { name: string; revenue: number; margin: number; prevRevenue: number }
@@ -34,6 +34,11 @@ export interface DigestBreakdown {
   sources: Keyed[];
   deals: (Keyed & { status: string; endsAt: string | null; flat: boolean })[];
 }
+/** A card of the task board (/tasks, ADR 0021) as the digest needs it. Dates are ISO days. */
+export interface DigestTask {
+  title: string; status: keyof typeof TASK_STATUS_LABEL; assignee: string | null; dueDate: string | null;
+  priority: "LOW" | "NORMAL" | "HIGH"; impactMonth: number | null; site: string | null; doneAt: string | null;
+}
 export interface DigestData {
   /** The last day of the report (the day itself for a daily digest). */
   day: string;
@@ -43,6 +48,8 @@ export interface DigestData {
   from?: string;
   plan?: DigestPlan | null;
   breakdown?: DigestBreakdown | null;
+  /** Open cards in board order and the cards done within the report's days; null — the board is not read. */
+  tasks?: { open: DigestTask[]; done: DigestTask[] } | null;
   /** 1 when the day before `day` has data — the comparison base (the digest goes day after day); 0 — nothing to compare with. */
   baseDays: number;
   total: { revenue: number; mediated: number; direct: number; cost: number; margin: number };
@@ -150,6 +157,7 @@ export function planBlock(p: DigestPlan): string {
   if (p.copiedFrom) L.push(`<i>План — как в ${MONTH_PREP[mIdx(p.copiedFrom)]}: опер. расходы на ${MONTH_NOM[mIdx(p.month)]} не внесены</i>`);
   return L.join("\n");
 }
+const addDays = (iso: string, n: number) => new Date(new Date(`${iso}T00:00:00Z`).getTime() + n * 86_400_000).toISOString().slice(0, 10);
 const addDay = (iso: string) => new Date(new Date(`${iso}T00:00:00Z`).getTime() + 86_400_000).toISOString().slice(0, 10);
 
 /** "1 случай / 2 случая / 5 случаев". */
@@ -256,6 +264,53 @@ export function reasonsBlock(d: DigestData, bar: number, skipSites: Set<string> 
     rows.push(`${diff > 0 ? "▲" : "▼"} Фикс-дил <b>«${esc(x.key)}»</b> ${signedUsd(diff)}${why ? `: ${why}` : ""}`);
   }
   if (rows.length) L.push("", ...rows);
+  return L.join("\n");
+}
+
+/** Lines shown in full in a task list; the rest fold into an expandable quote. */
+export const TASKS_SHOWN = 5;
+
+/**
+ * «🗒 Задачи»: what is overdue, in progress and in test, what to do this week (due within 7 days or high
+ * priority) and what got done in the report's days. Every card is listed — long lists fold.
+ */
+export function tasksBlock(d: DigestData, appUrl?: string): string | null {
+  const t = d.tasks;
+  if (!t || (!t.open.length && !t.done.length)) return null;
+  const kind = d.kind ?? "day";
+  const today = addDay(d.day), weekEnd = addDays(today, 7);
+  const dm = (iso: string) => `${iso.slice(8, 10)}.${iso.slice(5, 7)}`;
+  const overdue = (x: DigestTask) => x.dueDate != null && x.dueDate < today;
+  const line = (x: DigestTask, withPriority = false) => [
+    `▪️ ${esc(x.title)} — ${x.assignee ? esc(x.assignee) : "<i>без исполнителя</i>"}`,
+    x.dueDate ? (overdue(x) ? `🔥 срок ${dm(x.dueDate)}` : `до ${dm(x.dueDate)}`) : "",
+    x.impactMonth && Math.round(x.impactMonth) !== 0 ? `${signedUsd(x.impactMonth)}/мес` : "",
+    x.site ? esc(x.site) : "",
+    withPriority && x.priority === "HIGH" ? "высокий приоритет" : "",
+  ].filter(Boolean).join(" · ");
+  const list = (title: string, xs: DigestTask[], withPriority = false) => {
+    if (!xs.length) return [];
+    const L = [title, ...xs.slice(0, TASKS_SHOWN).map((x) => line(x, withPriority))];
+    if (xs.length > TASKS_SHOWN) L.push(`<blockquote expandable>${xs.slice(TASKS_SHOWN).map((x) => line(x, withPriority)).join("\n")}</blockquote>`);
+    return L;
+  };
+  const late = t.open.filter(overdue).sort((a, b) => a.dueDate!.localeCompare(b.dueDate!) || Number(b.priority === "HIGH") - Number(a.priority === "HIGH"));
+  const lateSet = new Set(late);
+  const inWork = t.open.filter((x) => x.status === "IN_PROGRESS" && !lateSet.has(x));
+  const testing = t.open.filter((x) => x.status === "TESTING" && !lateSet.has(x));
+  const next = t.open.filter((x) => (x.status === "PLANNED" || x.status === "BACKLOG") && !lateSet.has(x)
+    && ((x.dueDate != null && x.dueDate <= weekEnd) || x.priority === "HIGH"))
+    .sort((a, b) => (a.dueDate ?? "9999").localeCompare(b.dueDate ?? "9999") || Number(b.priority === "HIGH") - Number(a.priority === "HIGH"));
+  const count = (s: DigestTask["status"]) => t.open.filter((x) => x.status === s).length;
+  const head = [`🗒 <b>Задачи</b>`, ...(["IN_PROGRESS", "TESTING", "PLANNED"] as const).filter((s) => count(s)).map((s) => `${TASK_STATUS_LABEL[s].toLowerCase()} ${count(s)}`),
+    late.length ? `просрочено ${late.length}` : ""].filter(Boolean).join(" · ");
+  const doneTitle = kind === "week" ? "Сделано за неделю" : kind === "month" ? "Сделано за месяц" : "Сделано вчера";
+  const done = t.done.length
+    ? [`🏁 ${doneTitle}: ${t.done.length}`, `<blockquote expandable>${t.done.map((x) => `▪️ ${esc(x.title)}${x.assignee ? ` — ${esc(x.assignee)}` : ""}`).join("\n")}</blockquote>`]
+    : [];
+  const L = [head, ...list("🔥 <b>Просрочено</b>", late), ...list("⏳ <b>В работе</b>", inWork), ...list("🧪 <b>Тест</b>", testing),
+    ...(kind === "day" ? list("📌 <b>Сделать на этой неделе</b>", next, true) : []), ...done];
+  if (appUrl) L.push(`<a href="${appUrl}/tasks">Задачи</a>`);
   return L.join("\n");
 }
 
@@ -432,6 +487,9 @@ function blocks(d: DigestData, o: Required<Pick<DigestOptions, "minAmount" | "pr
     for (const g of groups) problems.push(alertBlock(g, detailed));
     if (small) problems.push(`ℹ️ Ещё ${small} — ${alertsLink("все алерты")}`);
   } else problems.push(`✅ <b>Крупных проблем нет</b>${small ? ` · ${small} — ${alertsLink("все алерты")}` : ""}`);
+
+  const tasks = tasksBlock(d, o.appUrl);
+  if (tasks) problems.push(tasks);
 
   const tail = o.appUrl ? [`<a href="${o.appUrl}/?${kind === "day" ? "preset=yesterday" : `from=${d.from ?? d.day}&to=${d.day}`}">Открыть сводку</a>`] : [];
   return { head, problems, tail };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RISK_DAYS, RULE_LABEL, TABLE_WIDTH, explainChange, perDay, planBlock, prevLabel, reasonsBlock, reportWords, shortTitle, type DigestBreakdown, buildDigest, dayLabel, digestChanges, digestPlain, digestProblems, plural, usd, type DigestAlert, type DigestData } from "@/lib/digest";
+import { RISK_DAYS, RULE_LABEL, TABLE_WIDTH, TASKS_SHOWN, explainChange, tasksBlock, type DigestTask, perDay, planBlock, prevLabel, reasonsBlock, reportWords, shortTitle, type DigestBreakdown, buildDigest, dayLabel, digestChanges, digestPlain, digestProblems, plural, usd, type DigestAlert, type DigestData } from "@/lib/digest";
 
 const base = (over: Partial<DigestData> = {}): DigestData => ({
   day: "2026-11-15", baseDays: 7,
@@ -266,6 +266,55 @@ describe("digest text", () => {
     const msg = digestPlain(buildDigest(d, { minAmount: 10 }));
     expect(msg).toContain("🔍 Почему выручка −$55");
     expect(msg).not.toContain("🔀 Изменения");
+  });
+
+  it("«🗒 Задачи»: overdue first, in progress, in test, this week's to-dos (due within 7 days or high priority), done yesterday; long lists fold", () => {
+    const task = (title: string, over: Partial<DigestTask> = {}): DigestTask =>
+      ({ title, status: "IN_PROGRESS", assignee: "Иван", dueDate: null, priority: "NORMAL", impactMonth: null, site: null, doneAt: null, ...over });
+    const d = base({ day: "2026-11-17", tasks: {
+      open: [
+        task("Бэкфилл-сетка на слайдер", { dueDate: "2026-11-20", impactMonth: 480, site: "hentaismile.com" }),
+        task("Переставить <ExoClick>", { assignee: "Алексей", dueDate: "2026-11-15", impactMonth: 300 }), // overdue: shown once, under «Просрочено»
+        task("Новый попандер", { status: "TESTING", site: "gaytube.com" }),
+        task("Проверить дискрепанси", { status: "PLANNED", assignee: null, dueDate: "2026-11-22" }),
+        task("Договориться с рекламодателем", { status: "BACKLOG", priority: "HIGH" }),
+        task("Когда-нибудь", { status: "BACKLOG" }), // no date, normal priority — stays on the board
+        task("Через месяц", { status: "PLANNED", dueDate: "2026-12-20" }),
+        task("Сегодня срок", { dueDate: "2026-11-18" }), // due today — not late yet
+      ],
+      done: [task("Продлить «Banner»", { status: "DONE", doneAt: "2026-11-17" })],
+    } });
+    expect(digestPlain(tasksBlock(d, "https://stat.test")!).split("\n")).toEqual([
+      "🗒 Задачи · в работе 3 · тест 1 · запланировано 2 · просрочено 1",
+      "🔥 Просрочено",
+      "▪️ Переставить <ExoClick> — Алексей · 🔥 срок 15.11 · +$300/мес",
+      "⏳ В работе",
+      "▪️ Бэкфилл-сетка на слайдер — Иван · до 20.11 · +$480/мес · hentaismile.com",
+      "▪️ Сегодня срок — Иван · до 18.11",
+      "🧪 Тест",
+      "▪️ Новый попандер — Иван · gaytube.com",
+      "📌 Сделать на этой неделе",
+      "▪️ Проверить дискрепанси — без исполнителя · до 22.11",
+      "▪️ Договориться с рекламодателем — Иван · высокий приоритет",
+      "🏁 Сделано вчера: 1",
+      "▪️ Продлить «Banner» — Иван",
+      "Задачи →",
+    ]);
+    expect(tasksBlock(d)).toContain("Переставить &lt;ExoClick&gt;");
+    // Many in progress: the first ones shown, the rest folded — nothing hidden behind «…и ещё».
+    const many = base({ tasks: { open: Array.from({ length: TASKS_SHOWN + 3 }, (_, i) => task(`Задача ${i}`)), done: [] } });
+    const html = tasksBlock(many)!;
+    expect(html).toContain("<blockquote expandable>▪️ Задача 5 — Иван\n▪️ Задача 6 — Иван\n▪️ Задача 7 — Иван</blockquote>");
+    expect(html).not.toMatch(/ещё \d/);
+    expect(tasksBlock(base({ tasks: { open: [], done: [] } }))).toBeNull();
+    expect(tasksBlock(base())).toBeNull(); // the board not read
+    // A week: «Сделано за неделю», no «на этой неделе».
+    const week = digestPlain(tasksBlock({ ...d, kind: "week", from: "2026-11-09", day: "2026-11-15" })!);
+    expect(week).toContain("🏁 Сделано за неделю: 1");
+    expect(week).not.toContain("📌");
+    // In the digest: after the problems.
+    const msg = digestPlain(buildDigest(d));
+    expect(msg.indexOf("🗒 Задачи")).toBeGreaterThan(msg.indexOf("Крупных проблем нет"));
   });
 
   it("words and money: date, plurals, whole dollars with a real minus", () => {
