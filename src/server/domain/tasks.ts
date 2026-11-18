@@ -1,7 +1,7 @@
 // The team's task board (ADR 0021): columns, labels, periods and the order of cards. Pure — no database here.
 export const TASK_STATUSES = ["BACKLOG", "PLANNED", "IN_PROGRESS", "TESTING", "DONE"] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
-export const TASK_STATUS_LABEL: Record<TaskStatus, string> = { BACKLOG: "Бэклог", PLANNED: "Запланировано", IN_PROGRESS: "В работе", TESTING: "Тест", DONE: "Готово" };
+export { TASK_STATUS_LABEL } from "@/lib/labels";
 
 export const TASK_IMPACTS = ["REVENUE", "COST", "MARGIN", "TRAFFIC", "QUALITY", "OTHER"] as const;
 export type TaskImpact = (typeof TASK_IMPACTS)[number];
@@ -14,7 +14,7 @@ export const TASK_IMPACT_TONE: Record<TaskImpact, string> = {
 
 export const TASK_PRIORITIES = ["LOW", "NORMAL", "HIGH"] as const;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
-export const TASK_PRIORITY_LABEL: Record<TaskPriority, string> = { LOW: "Низкий", NORMAL: "Обычный", HIGH: "Высокий" };
+export { TASK_PRIORITY_LABEL } from "@/lib/labels";
 
 /** «На что влияем» from a hypothesis's metric: cost metrics → расходы, view rate → качество, the rest → выручка. */
 export function impactOfMetric(metric: string | null | undefined): TaskImpact {
