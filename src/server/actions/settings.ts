@@ -7,7 +7,7 @@ import { db } from "@/server/db";
 import { RuleError } from "@/server/domain/errors";
 import { checkSite, withAsg } from "@/server/ingest/probe";
 import { digestPlain, type DigestKind } from "@/lib/digest";
-import { disconnectSlack, listSlackChannels, saveSlackSettings, saveSlackToken, sendSlackNow } from "@/server/services/slack";
+import { checkSlackChannel, disconnectSlack, listSlackChannels, saveSlackSettings, saveSlackToken, sendSlackNow } from "@/server/services/slack";
 import { REPORT_LABEL, checkTelegramLink, digestText, lastComplete, disconnectTelegram, findTelegramChats, resolveTelegramChat, saveTelegramProxy, saveTelegramSettings, saveTelegramToken, sendDigestNow, telegramView } from "@/server/services/telegram";
 import { SPEEDS, asgBudget, resumeAsg, setAsgBudget, setAsgSpeed, type AsgSpeedPreset } from "@/server/ingest/run";
 import { JOB_NAMES, type JobName } from "@/server/jobs/handlers";
@@ -499,10 +499,14 @@ export async function listSlackChannelsAction(): Promise<ActionResult> {
 export async function saveSlackSettingsAction(_: ActionResult, f: FormData): Promise<ActionResult> {
   await requireSession();
   return guarded(async () => {
-    const [channelId, channelName] = str(f, "channel") ? [str(f, "channel").split("|")[0], str(f, "channel").split("|").slice(1).join("|")] : [null, null];
+    let [channelId, channelName]: (string | null)[] = str(f, "channel") ? [str(f, "channel").split("|")[0], str(f, "channel").split("|").slice(1).join("|")] : [null, null];
+    if (str(f, "channelId")) {
+      const ch = await checkSlackChannel(db, config(), str(f, "channelId"));
+      [channelId, channelName] = [ch.id, ch.name];
+    }
     await saveSlackSettings(db, { channelId, channelName, enabled: f.get("enabled") === "1" });
     revalidatePath("/settings/integrations");
-    return { ok: true, message: "Настройки Slack сохранены" };
+    return { ok: true, message: channelId ? `Настройки Slack сохранены: #${channelName}` : "Настройки Slack сохранены" };
   });
 }
 

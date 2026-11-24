@@ -415,11 +415,15 @@ export function SlackBlock({ view }: { view: SlackBlockView | null }) {
   const [editToken, setEditToken] = useState(!view);
   const [channels, setChannels] = useState<SlackCh[] | null>(null);
   const [kind, setKind] = useState<"day" | "week" | "month">("day");
+  const [q, setQ] = useState("");
   const find = () => start(async () => {
     const r = await listSlackChannelsAction();
     if (r.error) return toast(r.error, "error");
-    setChannels((r.data?.channels as SlackCh[]) ?? []);
+    const list = (r.data?.channels as SlackCh[]) ?? [];
+    setChannels(list);
+    toast(`Найдено каналов: ${list.length}. Нет нужного приватного — пригласите бота (/invite @${view?.bot ?? "бот"}) или введите ID канала`, "ok");
   });
+  const shown = (channels ?? []).filter((c) => !q || c.name.toLowerCase().includes(q.trim().toLowerCase().replace(/^#/, "")));
   return (
     <div className="flex flex-col gap-4" data-testid="slack-block">
       {editToken || !view ? (
@@ -440,14 +444,18 @@ export function SlackBlock({ view }: { view: SlackBlockView | null }) {
           <div className="rounded-lg border border-border p-3">
             <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
               <Button size="sm" disabled={busy} onClick={find}>{busy ? "Ищем…" : "Найти каналы"}</Button>
-              <span className="text-xs text-muted">публичные каналы — все; приватный появится, когда в нём пригласят бота: /invite @{view.bot}</span>
+              {channels && <Input aria-label="Поиск канала" placeholder="поиск по названию" value={q} onChange={(e) => setQ(e.target.value)} className="h-8 w-48" data-testid="slack-search" />}
+              <span className="text-xs text-muted">публичные каналы — все; приватный Slack покажет только после того, как в нём пригласят бота: /invite @{view.bot}</span>
             </div>
             <ActionForm action={saveSlackSettingsAction} submit="Сохранить" submitSize="sm" className="grid items-end gap-3 sm:grid-cols-2 [&>div:last-child]:col-span-full">
               <FormField name="channel" label="Канал">
-                <Select name="channel" defaultValue="" key={channels?.length ?? 0}>
+                <Select name="channel" defaultValue="" key={`${channels?.length ?? 0}:${q}`}>
                   <option value="">{view.channelId ? `#${view.channelName ?? view.channelId} (сейчас)` : channels ? "выберите канал" : "нажмите «Найти каналы»"}</option>
-                  {(channels ?? []).map((c) => <option key={c.id} value={`${c.id}|${c.name}`}>#{c.name}{c.private ? " · приватный" : ""}{c.member ? " · бот в канале" : ""}</option>)}
+                  {shown.map((c) => <option key={c.id} value={`${c.id}|${c.name}`}>#{c.name}{c.private ? " · приватный" : ""}{c.member ? " · бот в канале" : ""}</option>)}
                 </Select>
+              </FormField>
+              <FormField name="channelId" label="или ID канала / ссылка" hint="Slack: название канала → внизу «ID канала» (C… или G…). Приватный — сначала /invite бота">
+                <Input name="channelId" placeholder="C0123ABCD" className="font-mono" />
               </FormField>
               <label className="flex h-9 items-center gap-2 text-sm"><input type="checkbox" name="enabled" value="1" defaultChecked={view.enabled} data-testid="slack-enabled" /> отправлять сводку и отчёты в Slack</label>
             </ActionForm>

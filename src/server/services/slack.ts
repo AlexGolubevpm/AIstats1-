@@ -94,7 +94,7 @@ export async function listSlackChannels(db: PrismaClient, cfg: Config, fetchImpl
   type Ch = { id: string; name: string; is_private?: boolean; is_member?: boolean };
   const out: SlackChannel[] = [];
   let cursor = "";
-  for (let page = 0; page < 10; page++) {
+  for (let page = 0; page < 50; page++) {
     const r = await call<{ channels: Ch[]; response_metadata?: { next_cursor?: string } }>(cfg, t.token, "conversations.list", null,
       { types: "public_channel,private_channel", exclude_archived: "true", limit: "200", ...(cursor ? { cursor } : {}) }, fetchImpl);
     out.push(...r.channels.map((c) => ({ id: c.id, name: c.name, private: Boolean(c.is_private), member: Boolean(c.is_member) })));
@@ -102,6 +102,26 @@ export async function listSlackChannels(db: PrismaClient, cfg: Config, fetchImpl
     if (!cursor) break;
   }
   return out.sort((a, b) => Number(b.member) - Number(a.member) || a.name.localeCompare(b.name));
+}
+
+/** A channel ID (C…/G…) or a channel link (…/archives/C…) typed by hand. */
+export const parseSlackChannel = (raw: string): string | null => {
+  const m = raw.trim().match(/(?:archives\/)?([CG][A-Z0-9]{6,})\b/);
+  return m ? m[1] : null;
+};
+
+/** A channel typed by hand, checked with conversations.info: a private channel is visible only after the bot is invited. */
+export async function checkSlackChannel(db: PrismaClient, cfg: Config, raw: string, fetchImpl: TgFetch = defaultFetch): Promise<SlackChannel> {
+  const t = await token(db, cfg);
+  if (!t) throw new RuleError("token", "Сначала сохраните токен бота", "token");
+  const id = parseSlackChannel(raw);
+  if (!id) throw new RuleError("channelId", "Нужен ID канала вида C0123ABCD (Slack: название канала → внизу «ID канала») или ссылка на канал", "channelId");
+  type Ch = { id: string; name: string; is_private?: boolean; is_member?: boolean; is_archived?: boolean };
+  const r = await call<{ channel: Ch }>(cfg, t.token, "conversations.info", null, { channel: id }, fetchImpl).catch((e: Error) => {
+    throw new RuleError("channelId", /канал не найден/.test(e.message) ? "Slack: канал не найден — если он приватный, сначала пригласите бота: /invite @" + (t.s.bot ?? "бот") : e.message, "channelId");
+  });
+  if (r.channel.is_archived) throw new RuleError("channelId", "Slack: канал в архиве", "channelId");
+  return { id: r.channel.id, name: r.channel.name, private: Boolean(r.channel.is_private), member: Boolean(r.channel.is_member) };
 }
 
 /** Step 2: the channel and on/off. */
