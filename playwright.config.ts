@@ -8,6 +8,8 @@ export const E2E_LOGIN = "Admin";
 export const E2E_PASSWORD = "e2e-password-123";
 /** The fake Telegram Bot API the Telegram scenario starts (tests/e2e/scenarios.spec.ts). */
 export const E2E_TELEGRAM_PORT = PORT + 1;
+/** The fake Slack Web API of the Slack scenario. */
+export const E2E_SLACK_PORT = PORT + 2;
 
 export default defineConfig({
   testDir: "tests/e2e",
@@ -30,6 +32,6 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 120_000,
     env: { DATABASE_URL: E2E_DATABASE_URL, APP_LOGIN: E2E_LOGIN, APP_PASSWORD: E2E_PASSWORD, REDIS_URL: "redis://127.0.0.1:1", NODE_ENV: "production",
-      APP_SECRET: "e2e-app-secret", TELEGRAM_API_BASE: `http://127.0.0.1:${E2E_TELEGRAM_PORT}` },
+      APP_SECRET: "e2e-app-secret", TELEGRAM_API_BASE: `http://127.0.0.1:${E2E_TELEGRAM_PORT}`, SLACK_API_BASE: `http://127.0.0.1:${E2E_SLACK_PORT}` },
   },
 });

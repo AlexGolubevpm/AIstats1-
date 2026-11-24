@@ -7,7 +7,7 @@ import { Confirm } from "@/components/ui/sheet";
 import { useToast } from "@/components/ui/toast";
 import { applyMetrikaCountersAction, cancelBackfillAction, connectMetrikaAction, demoAction, disconnectMetrikaAction, mapAliasAction, metrikaCountersAction, resumeAsgAction, runJobAction,
   saveAsgBudgetAction, saveAsgPlanAction, saveAsgSpeedAction, disconnectTelegramAction, findTelegramChatsAction, previewDigestAction,
-  saveTelegramSettingsAction, saveTelegramTokenAction, sendDigestNowAction, saveTelegramProxyAction, checkTelegramLinkAction, saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
+  saveTelegramSettingsAction, saveTelegramTokenAction, sendDigestNowAction, saveSlackTokenAction, listSlackChannelsAction, saveSlackSettingsAction, sendSlackNowAction, disconnectSlackAction, saveTelegramProxyAction, checkTelegramLinkAction, saveMetrikaAppAction, startBackfillAction, testAsgAction } from "@/server/actions/settings";
 import { RESTATE_CHOICES, UNLIMITED, planCost, type AsgPlan, type CutKey } from "@/server/ingest/adspyglass/plan";
 import { DECISION_LABEL, type MatchRow } from "@/server/domain/metrika-match";
 import { fmtDate } from "@/lib/format";
@@ -398,6 +398,67 @@ export function TelegramBlock({ view, hours, error = null }: { view: TelegramBlo
             {!view.chatId && <span className="text-xs text-muted">выберите чат, чтобы отправить</span>}
           </div>
           {preview != null && <pre className="whitespace-pre-wrap rounded-lg border border-border bg-surface-2 p-3 text-sm" data-testid="telegram-preview">{preview}</pre>}
+        </>
+      )}
+    </div>
+  );
+}
+
+export interface SlackBlockView { team: string | null; bot: string | null; channelId: string | null; channelName: string | null; enabled: boolean }
+type SlackCh = { id: string; name: string; private: boolean; member: boolean };
+
+/** «Slack»: the bot token → the channel → on/off and «send now». Schedule and thresholds are the Telegram block's. */
+export function SlackBlock({ view }: { view: SlackBlockView | null }) {
+  const { pending, run } = useRun();
+  const toast = useToast();
+  const [busy, start] = useTransition();
+  const [editToken, setEditToken] = useState(!view);
+  const [channels, setChannels] = useState<SlackCh[] | null>(null);
+  const [kind, setKind] = useState<"day" | "week" | "month">("day");
+  const find = () => start(async () => {
+    const r = await listSlackChannelsAction();
+    if (r.error) return toast(r.error, "error");
+    setChannels((r.data?.channels as SlackCh[]) ?? []);
+  });
+  return (
+    <div className="flex flex-col gap-4" data-testid="slack-block">
+      {editToken || !view ? (
+        <ActionForm action={saveSlackTokenAction} submit="Подключить Slack" submitSize="sm" onDone={() => setEditToken(false)} cancel={view ? () => setEditToken(false) : undefined}
+          className="grid items-end gap-3 sm:grid-cols-[1fr_auto] [&>div:last-child]:col-span-full">
+          <FormField name="token" label="Bot User OAuth Token" hint="api.slack.com/apps → приложение → OAuth & Permissions → xoxb-…; хранится зашифрованным, в интерфейсе не показывается">
+            <Input name="token" type="password" autoComplete="new-password" className="font-mono" />
+          </FormField>
+        </ActionForm>
+      ) : (
+        <>
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <span data-testid="slack-team">{view.team} · бот {view.bot}</span>
+            <span className={view.channelId ? "" : "text-warning"} data-testid="slack-channel">{view.channelId ? `→ #${view.channelName ?? view.channelId}` : "канал не выбран"}</span>
+            <Button size="sm" variant="ghost" onClick={() => setEditToken(true)}>Сменить токен</Button>
+            <Button size="sm" variant="ghost" disabled={pending} onClick={() => run(disconnectSlackAction)}>Отключить</Button>
+          </div>
+          <div className="rounded-lg border border-border p-3">
+            <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
+              <Button size="sm" disabled={busy} onClick={find}>{busy ? "Ищем…" : "Найти каналы"}</Button>
+              <span className="text-xs text-muted">публичные каналы — все; приватный появится, когда в нём пригласят бота: /invite @{view.bot}</span>
+            </div>
+            <ActionForm action={saveSlackSettingsAction} submit="Сохранить" submitSize="sm" className="grid items-end gap-3 sm:grid-cols-2 [&>div:last-child]:col-span-full">
+              <FormField name="channel" label="Канал">
+                <Select name="channel" defaultValue="" key={channels?.length ?? 0}>
+                  <option value="">{view.channelId ? `#${view.channelName ?? view.channelId} (сейчас)` : channels ? "выберите канал" : "нажмите «Найти каналы»"}</option>
+                  {(channels ?? []).map((c) => <option key={c.id} value={`${c.id}|${c.name}`}>#{c.name}{c.private ? " · приватный" : ""}{c.member ? " · бот в канале" : ""}</option>)}
+                </Select>
+              </FormField>
+              <label className="flex h-9 items-center gap-2 text-sm"><input type="checkbox" name="enabled" value="1" defaultChecked={view.enabled} data-testid="slack-enabled" /> отправлять сводку и отчёты в Slack</label>
+            </ActionForm>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <Select aria-label="Какой отчёт в Slack" value={kind} onChange={(e) => setKind(e.target.value as "day")} className="w-auto" data-testid="slack-kind">
+              <option value="day">Сводка за вчера</option><option value="week">Отчёт за прошлую неделю</option><option value="month">Отчёт за прошлый месяц</option>
+            </Select>
+            <Button size="sm" variant="primary" disabled={pending || !view.channelId} onClick={() => run(() => sendSlackNowAction(kind))}>{pending ? "Отправляем…" : "Отправить в Slack"}</Button>
+            <span className="text-xs text-muted">время, пороги, неделя и месяц — как в блоке Telegram</span>
+          </div>
         </>
       )}
     </div>

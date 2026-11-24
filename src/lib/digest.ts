@@ -530,3 +530,14 @@ export function buildDigest(d: DigestData, opts: DigestOptions = {}): string[] {
 export const digestPlain = (html: string | string[]) => (Array.isArray(html) ? html : [html]).map((m) => m
   .replace(/<a href="[^"]*">([^<]*)<\/a>/g, "$1 →").replace(/<blockquote expandable>/g, "").replace(/<\/blockquote>/g, "")
   .replace(/<\/?(b|i|pre)>/g, "").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&amp;/g, "&")).join("\n\n— — —\n\n");
+
+/**
+ * The digest in Slack mrkdwn: *bold*, _italic_, ```code``` tables, quoted lists (Slack has no folded quote),
+ * <url|text> links. &amp; &lt; &gt; stay escaped — Slack reads the same three entities.
+ */
+export const digestToSlack = (html: string) => html
+  .replace(/<blockquote expandable>([\s\S]*?)<\/blockquote>/g, (_, body: string) => body.split("\n").map((l) => `> ${l}`).join("\n"))
+  .replace(/<pre>([\s\S]*?)<\/pre>/g, "```$1```")
+  .replace(/<a href="([^"]*)">([^<]*)<\/a>/g, "<$1|$2>")
+  .replace(/<b>([^<]*)<\/b>/g, "*$1*").replace(/<i>([^<]*)<\/i>/g, "_$1_")
+  .replace(/<\/?(b|i)>/g, "");

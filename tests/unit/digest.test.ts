@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RISK_DAYS, RULE_LABEL, TABLE_WIDTH, TASKS_SHOWN, explainChange, tasksBlock, type DigestTask, perDay, planBlock, prevLabel, reasonsBlock, reportWords, shortTitle, type DigestBreakdown, buildDigest, dayLabel, digestChanges, digestPlain, digestProblems, plural, usd, type DigestAlert, type DigestData } from "@/lib/digest";
+import { digestToSlack, RISK_DAYS, RULE_LABEL, TABLE_WIDTH, TASKS_SHOWN, explainChange, tasksBlock, type DigestTask, perDay, planBlock, prevLabel, reasonsBlock, reportWords, shortTitle, type DigestBreakdown, buildDigest, dayLabel, digestChanges, digestPlain, digestProblems, plural, usd, type DigestAlert, type DigestData } from "@/lib/digest";
 
 const base = (over: Partial<DigestData> = {}): DigestData => ({
   day: "2026-11-15", baseDays: 7,
@@ -315,6 +315,28 @@ describe("digest text", () => {
     // In the digest: after the problems.
     const msg = digestPlain(buildDigest(d));
     expect(msg.indexOf("🗒 Задачи")).toBeGreaterThan(msg.indexOf("Крупных проблем нет"));
+  });
+
+  it("Slack mrkdwn: bold, italic, code tables, quoted lists, <url|text> links; entities stay escaped", () => {
+    const html = [
+      "📊 <b>TubeStat · вторник, 17 ноября</b>",
+      "⚠️ <i>Данные загружены не полностью</i>",
+      "<pre>             выруч.  маржа 16.11\nGay            $233   $104   −8%</pre>",
+      "▪️ <b>A &lt;b&gt; &amp; c</b> · ≈$23/день",
+      "<blockquote expandable>▪️ x.com · ≈$10/день\n▪️ y.com · ≈$10/день</blockquote>",
+      '<a href="https://stat.test/alerts">все алерты</a>',
+    ].join("\n");
+    expect(digestToSlack(html).split("\n")).toEqual([
+      "📊 *TubeStat · вторник, 17 ноября*",
+      "⚠️ _Данные загружены не полностью_",
+      "```             выруч.  маржа 16.11",
+      "Gay            $233   $104   −8%```",
+      "▪️ *A &lt;b&gt; &amp; c* · ≈$23/день",
+      "> ▪️ x.com · ≈$10/день",
+      "> ▪️ y.com · ≈$10/день",
+      "<https://stat.test/alerts|все алерты>",
+    ]);
+    expect(digestToSlack(buildDigest(base(), { appUrl: "https://stat.test" })[0])).not.toMatch(/<\/?(b|i|pre|blockquote)/);
   });
 
   it("words and money: date, plurals, whole dollars with a real minus", () => {

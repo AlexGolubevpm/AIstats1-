@@ -75,14 +75,14 @@ export const TIMEOUT_MS = 30_000;
 /** Pauses before the 2nd and the 3rd attempt on a network error. */
 export const RETRY_MS = [2_000, 5_000];
 /** IPv4 first: a VPS with an AAAA record and no IPv6 route hangs on every IPv6 attempt. */
-const ipv4 = new Agent({ connect: { family: 4, timeout: 15_000 } });
-const dual = new Agent({ connect: { autoSelectFamily: true, timeout: 15_000 } });
+export const ipv4 = new Agent({ connect: { family: 4, timeout: 15_000 } });
+export const dual = new Agent({ connect: { autoSelectFamily: true, timeout: 15_000 } });
 const proxies = new Map<string, ProxyAgent>();
 const proxyAgent = (url: string) => { let a = proxies.get(url); if (!a) proxies.set(url, (a = new ProxyAgent({ uri: url, connect: { timeout: 15_000 } }))); return a; };
 
 export type TgFetch = (url: string, init: RequestInit & { dispatcher?: Dispatcher }) => Promise<Response>;
-const defaultFetch: TgFetch = (url, init) => undiciFetch(url, init as never) as unknown as Promise<Response>;
-const netCause = (e: unknown) => { const c = (e as { cause?: { code?: string; message?: string } }).cause; return c?.code ?? c?.message ?? (e as Error).message; };
+export const defaultFetch: TgFetch = (url, init) => undiciFetch(url, init as never) as unknown as Promise<Response>;
+export const netCause = (e: unknown) => { const c = (e as { cause?: { code?: string; message?: string } }).cause; return c?.code ?? c?.message ?? (e as Error).message; };
 
 /** One Bot API call: via the saved proxy, else directly (IPv4 first); network errors are retried twice. The token is scrubbed from every error text. */
 async function call<T>(cfg: Config, token: string, method: string, body: Record<string, unknown> | null, fetchImpl: TgFetch = defaultFetch,
@@ -265,8 +265,8 @@ export async function sendDigest(db: PrismaClient, cfg: Config, day: string, fet
   }
 }
 
-const yesterdayOf = (now: Date) => addDays(now.toISOString().slice(0, 10), -1);
-const dow = (iso: string) => new Date(`${iso}T00:00:00Z`).getUTCDay();
+export const yesterdayOf = (now: Date) => addDays(now.toISOString().slice(0, 10), -1);
+export const dow = (iso: string) => new Date(`${iso}T00:00:00Z`).getUTCDay();
 /** The last day of each report that is complete by `now`: yesterday, the last Sunday, the last day of the last month. */
 export function lastComplete(kind: DigestKind, now: Date): string {
   const y = yesterdayOf(now);
@@ -276,8 +276,8 @@ export function lastComplete(kind: DigestKind, now: Date): string {
 }
 export const REPORT_LABEL: Record<DigestKind, string> = { day: "Сводка за вчера", week: "Отчёт за неделю", month: "Отчёт за месяц" };
 const SENT_KEY: Record<DigestKind, string> = { day: DIGEST_SENT_KEY, week: "telegram_weekly_sent", month: "telegram_monthly_sent" };
-const JOB: Record<DigestKind, string> = { day: "digest", week: "digest:week", month: "digest:month" };
-const startOf = (kind: DigestKind, end: string) => (kind === "week" ? addDays(end, -6) : kind === "month" ? `${end.slice(0, 7)}-01` : end);
+export const JOB: Record<DigestKind, string> = { day: "digest", week: "digest:week", month: "digest:month" };
+export const startOf = (kind: DigestKind, end: string) => (kind === "week" ? addDays(end, -6) : kind === "month" ? `${end.slice(0, 7)}-01` : end);
 
 /**
  * The half-hourly tick: once a day, when the chosen hour (MSK) has come and yesterday is loaded

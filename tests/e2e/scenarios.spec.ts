@@ -1,7 +1,7 @@
 // The minimum E2E scenarios from docs/engineering/10-testing.md.
 import { expect, test } from "@playwright/test";
 import { createServer } from "node:http";
-import { E2E_TELEGRAM_PORT } from "../../playwright.config";
+import { E2E_SLACK_PORT, E2E_TELEGRAM_PORT } from "../../playwright.config";
 import { login } from "./helpers";
 
 test("1. password login → overview with non-empty KPIs; pages are closed without a session", async ({ page, request }) => {
@@ -595,6 +595,49 @@ test("integrations: Telegram — the bot token, the chat found by the bot, a pre
     await page.getByTestId("telegram-block").getByRole("button", { name: "Отключить" }).click();
     await expect(page.getByText("Бот отключён, токен удалён")).toBeVisible();
     await expect(page.getByTestId("telegram-block").locator("input[name=token]")).toBeVisible();
+  } finally { await new Promise((r) => api.close(r)); }
+});
+
+test("integrations: Slack — the bot token, a channel from the list, the week and the day sent in Slack mrkdwn", async ({ page }) => {
+  const posts: { channel: string; text: string }[] = [];
+  const api = createServer((req, res) => {
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      const method = (req.url ?? "").split("/").pop()!.split("?")[0];
+      if (method === "chat.postMessage") posts.push(JSON.parse(body));
+      const result = method === "auth.test" ? { team: "Mavs", user: "tubestat" }
+        : method === "conversations.list" ? { channels: [{ id: "C0E2E0001", name: "tube-stats", is_member: true }, { id: "G0E2E0002", name: "money", is_private: true }] } : { ts: "1.0" };
+      res.setHeader("Content-Type", "application/json").end(JSON.stringify({ ok: true, ...result }));
+    });
+  });
+  await new Promise<void>((r) => api.listen(E2E_SLACK_PORT, "127.0.0.1", r));
+  try {
+    await login(page, "/settings/integrations");
+    const block = page.getByTestId("slack-block");
+    await block.locator("input[name=token]").fill("xoxp-not-a-bot");
+    await block.getByRole("button", { name: "Подключить Slack" }).click();
+    await expect(block.getByText(/Нужен Bot User OAuth Token/)).toBeVisible();
+    await block.locator("input[name=token]").fill(["xoxb", "1111111111", "2222222222222", "e2etoken".repeat(3)].join("-"));
+    await block.getByRole("button", { name: "Подключить Slack" }).click();
+    await expect(page.getByTestId("slack-team")).toHaveText("Mavs · бот tubestat");
+    await expect(page.locator("body")).not.toContainText("e2etoken");
+    await block.getByRole("button", { name: "Найти каналы" }).click();
+    await block.locator("select[name=channel]").selectOption({ label: "#tube-stats · бот в канале" });
+    await block.getByRole("button", { name: "Сохранить", exact: true }).click();
+    await expect(page.getByTestId("slack-channel")).toHaveText("→ #tube-stats");
+    await block.getByTestId("slack-kind").selectOption("week");
+    await block.getByRole("button", { name: "Отправить в Slack" }).click();
+    await expect(page.getByText(/Отчёт за неделю \(по \d{4}-\d{2}-\d{2}\) отправлен в Slack/)).toBeVisible();
+    await block.getByTestId("slack-kind").selectOption("day");
+    await block.getByRole("button", { name: "Отправить в Slack" }).click();
+    await expect(page.getByText(/Сводка за вчера \(по \d{4}-\d{2}-\d{2}\) отправлена в Slack/)).toBeVisible();
+    expect(posts[0].text.startsWith("📅 *TubeStat · неделя")).toBe(true);
+    expect(posts.slice(1).some((p) => p.text.startsWith("📊 *TubeStat · "))).toBe(true);
+    expect(posts.every((p) => p.channel === "C0E2E0001" && !/<\/?(b|i|pre)>/.test(p.text))).toBe(true);
+    expect(posts.filter((p) => p.text.startsWith("📅") || p.text.startsWith("📊")).every((p) => p.text.includes("```"))).toBe(true);
+    await block.getByRole("button", { name: "Отключить" }).click();
+    await expect(page.getByText("Slack отключён, токен удалён")).toBeVisible();
   } finally { await new Promise((r) => api.close(r)); }
 });
 

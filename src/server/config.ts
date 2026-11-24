@@ -22,6 +22,10 @@ export function config(env: Record<string, string | undefined> = process.env) {
       // for a proxy when the hosting cannot reach api.telegram.org.
       apiBase: (env.TELEGRAM_API_BASE ?? "").trim().replace(/\/$/, "") || "https://api.telegram.org",
     },
+    slack: {
+      // The bot token is entered in the UI and stored encrypted (ADR 0022); this is only the Web API address (tests point it at a fake).
+      apiBase: (env.SLACK_API_BASE ?? "").trim().replace(/\/$/, "") || "https://slack.com/api",
+    },
     /** Key for secrets stored in the database (src/server/crypto.ts); the deploy generates it once. */
     appSecret: (env.APP_SECRET ?? "").trim(),
     /** Public https address of the app incl. the base path (deploy/apply-env.sh): absolute links, the Metrika OAuth callback. */
