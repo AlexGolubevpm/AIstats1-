@@ -19,6 +19,7 @@ import { forecastDeals } from "@/server/services/deals";
 import { generateHypotheses } from "@/server/services/hypotheses";
 import { ensureFreshToken, metrikaToken } from "@/server/services/metrika-connection";
 import { digestTick } from "@/server/services/telegram";
+import { slackTick } from "@/server/services/slack";
 
 /** Sources the alert «ингест упал» watches: ADOK from .env, Metrika from the UI connection or .env (ADR 0018). */
 export async function configuredSources(db: PrismaClient, cfg: Config): Promise<string[]> {
@@ -109,8 +110,13 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
     });
   }
   if (name === "digest") {
-    // The morning Telegram digest (ADR 0022): sends once a day at the chosen hour, when yesterday is loaded.
-    return digestTick(db, cfg, ctx.fetchImpl, ctx.now ?? (ctx.today ? new Date(`${ctx.today}T12:00:00Z`) : new Date()));
+    // The morning digest (ADR 0022) to Telegram and Slack: once a day at the chosen hour, when yesterday is loaded.
+    const now = ctx.now ?? (ctx.today ? new Date(`${ctx.today}T12:00:00Z`) : new Date());
+    const [tg, sl] = [await digestTick(db, cfg, ctx.fetchImpl, now), await slackTick(db, cfg, ctx.fetchImpl, now)];
+    const failed = [tg, sl].find((r) => r.status === "failed");
+    if (failed) return failed;
+    if (tg.status === "ok" || sl.status === "ok") return { status: "ok" };
+    return { status: "skipped", skipped: [tg.skipped, sl.skipped].filter(Boolean).join("; ") };
   }
   if (name === "raw:prune") {
     // Disk: gzip old plain files, drop superseded runs of final days and everything past 90 days (ADR 0019).

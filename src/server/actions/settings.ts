@@ -7,6 +7,7 @@ import { db } from "@/server/db";
 import { RuleError } from "@/server/domain/errors";
 import { checkSite, withAsg } from "@/server/ingest/probe";
 import { digestPlain, type DigestKind } from "@/lib/digest";
+import { disconnectSlack, listSlackChannels, saveSlackSettings, saveSlackToken, sendSlackNow } from "@/server/services/slack";
 import { REPORT_LABEL, checkTelegramLink, digestText, lastComplete, disconnectTelegram, findTelegramChats, resolveTelegramChat, saveTelegramProxy, saveTelegramSettings, saveTelegramToken, sendDigestNow, telegramView } from "@/server/services/telegram";
 import { SPEEDS, asgBudget, resumeAsg, setAsgBudget, setAsgSpeed, type AsgSpeedPreset } from "@/server/ingest/run";
 import { JOB_NAMES, type JobName } from "@/server/jobs/handlers";
@@ -475,4 +476,47 @@ export async function saveTelegramProxyAction(_: ActionResult, f: FormData): Pro
 export async function checkTelegramLinkAction(): Promise<ActionResult> {
   await requireSession();
   return guarded(async () => ({ ok: true, data: { rows: await checkTelegramLink(db, config()) } }));
+}
+
+/** «Slack» step 1: the bot token (xoxb-…), checked with auth.test, stored encrypted. */
+export async function saveSlackTokenAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const team = await saveSlackToken(db, config(), str(f, "token"));
+    revalidatePath("/settings/integrations");
+    return { ok: true, message: `Slack подключён: ${team}. Нажмите «Найти каналы» и выберите канал` };
+  });
+}
+
+export async function listSlackChannelsAction(): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const channels = await listSlackChannels(db, config());
+    return channels.length ? { ok: true, message: `Каналов: ${channels.length}`, data: { channels } } : { error: "Каналов не найдено: пригласите бота в канал (/invite @бот) и повторите" };
+  });
+}
+
+export async function saveSlackSettingsAction(_: ActionResult, f: FormData): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const [channelId, channelName] = str(f, "channel") ? [str(f, "channel").split("|")[0], str(f, "channel").split("|").slice(1).join("|")] : [null, null];
+    await saveSlackSettings(db, { channelId, channelName, enabled: f.get("enabled") === "1" });
+    revalidatePath("/settings/integrations");
+    return { ok: true, message: "Настройки Slack сохранены" };
+  });
+}
+
+export async function sendSlackNowAction(kind?: string): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => {
+    const k = kindOf(kind);
+    const day = await sendSlackNow(db, config(), undefined, new Date(), k);
+    revalidatePath("/settings/integrations");
+    return { ok: true, message: `${REPORT_LABEL[k]} (по ${day}) отправлен${k === "day" ? "а" : ""} в Slack` };
+  });
+}
+
+export async function disconnectSlackAction(): Promise<ActionResult> {
+  await requireSession();
+  return guarded(async () => { await disconnectSlack(db); revalidatePath("/settings/integrations"); return { ok: true, message: "Slack отключён, токен удалён" }; });
 }

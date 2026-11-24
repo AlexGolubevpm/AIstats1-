@@ -13,7 +13,8 @@ import { isDemo } from "@/server/seed/demo";
 import { authorizeUrl } from "@/server/ingest/metrika/oauth";
 import { metrikaCallbackUrl, metrikaStatus } from "@/server/services/metrika-connection";
 import { withBase } from "@/lib/base-path";
-import { AliasRow, BackfillBlock, BudgetForm, SpeedForm, CutsPlanner, DemoButtons, MetrikaBlock, ReprocessButton, ResumeAsg, RunJobForm, TelegramBlock, TestAsg } from "./client";
+import { AliasRow, BackfillBlock, BudgetForm, SpeedForm, CutsPlanner, DemoButtons, MetrikaBlock, ReprocessButton, ResumeAsg, RunJobForm, SlackBlock, TelegramBlock, TestAsg } from "./client";
+import { slackView } from "@/server/services/slack";
 import { DIGEST_HOURS, telegramView } from "@/server/services/telegram";
 
 const JOB_LABEL: Record<string, string> = {
@@ -46,7 +47,7 @@ export default async function Integrations({ searchParams }: { searchParams: Pro
     : metrika.kind === "app" ? `приложение …${metrika.clientId.slice(-4)} сохранено, токена ещё нет — получите код ниже`
     : metrika.kind === "env" ? `токен из .env: ${tail(cfg.metrika.token)}`
     : metrika.kind === "broken" ? metrika.error : "не подключена — блок «Яндекс Метрика» ниже";
-  const [backfill, plan, budget, speed, telegram] = await Promise.all([readBackfill(db), readPlan(db), asgBudget(db, cfg.asg.dailyBudget), asgSpeed(db, cfg.asg.minIntervalMs), telegramView(db, cfg)]);
+  const [backfill, plan, budget, speed, telegram, slack] = await Promise.all([readBackfill(db), readPlan(db), asgBudget(db, cfg.asg.dailyBudget), asgSpeed(db, cfg.asg.minIntervalMs), telegramView(db, cfg), slackView(db)]);
   const today = new Date().toISOString().slice(0, 10);
   const asgSites = sites.filter((s) => s.status === "ACTIVE" && s.adsgSiteId).length;
   const nSites = backfill?.siteId ? 1 : Math.max(1, asgSites);
@@ -89,6 +90,12 @@ export default async function Integrations({ searchParams }: { searchParams: Pro
       <div id="telegram" className="scroll-mt-20">
       <Section title="Telegram" sub="Утренняя сводка за вчера одним сообщением: выручка, расход и маржа сети, AdSpyglass и фикс-дилы, бандлы, расход по источникам, заметные изменения и проблемы. Бот только отправляет — создайте его в @BotFather и вставьте токен сюда">
         <TelegramBlock view={telegram} hours={[...DIGEST_HOURS]} />
+      </Section>
+      </div>
+
+      <div id="slack" className="scroll-mt-20">
+      <Section title="Slack" sub="Та же сводка, отчёт за неделю и за месяц — в канал Slack. Приложение создаётся из манифеста (docs/product/05-settings.md); бот только отправляет">
+        <SlackBlock view={slack} />
       </Section>
       </div>
 
