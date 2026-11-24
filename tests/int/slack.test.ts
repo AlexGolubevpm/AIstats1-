@@ -3,7 +3,7 @@ import { buildNetwork } from "@tests/factories/network";
 import { config } from "@/server/config";
 import { runJob } from "@/server/jobs/handlers";
 import { LocalRawStore } from "@/server/ingest/raw-store";
-import { SLACK_SETTING, disconnectSlack, listSlackChannels, saveSlackSettings, saveSlackToken, sendSlackNow, slackTick, slackView } from "@/server/services/slack";
+import { SLACK_SETTING, checkSlackChannel, disconnectSlack, parseSlackChannel, listSlackChannels, saveSlackSettings, saveSlackToken, sendSlackNow, slackTick, slackView } from "@/server/services/slack";
 import { saveTelegramSettings, saveTelegramToken } from "@/server/services/telegram";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -94,5 +94,25 @@ describe("slack", () => {
     expect((await slackTick(db, cfg, sl.fetchImpl, new Date("2026-09-22T08:30:00Z"))).skipped).toContain("уже отправлена");
     await saveSlackSettings(db, { enabled: false });
     expect((await slackTick(db, cfg, sl.fetchImpl, new Date("2026-09-23T08:30:00Z"))).skipped).toContain("выключена");
+  });
+
+  it("a channel typed by hand (ID or link) is checked with conversations.info; a private one without the bot says to invite it; the list goes past 10 pages", async () => {
+    const sl = fakeSlack({
+      "conversations.info": () => Response.json({ ok: true, channel: { id: "G0PRIV001", name: "stat-private", is_private: true, is_member: true } }),
+    });
+    await saveSlackToken(db, cfg, TOKEN, sl.fetchImpl);
+    expect(parseSlackChannel(" https://mavs.slack.com/archives/G0PRIV001 ")).toBe("G0PRIV001");
+    expect(parseSlackChannel("#stat")).toBeNull();
+    await expect(checkSlackChannel(db, cfg, "#stat", sl.fetchImpl)).rejects.toThrow(/ID канала/);
+    expect(await checkSlackChannel(db, cfg, "https://mavs.slack.com/archives/G0PRIV001", sl.fetchImpl)).toEqual({ id: "G0PRIV001", name: "stat-private", private: true, member: true });
+    expect(sl.calls.at(-1)!.url).toBe("https://slack.com/api/conversations.info?channel=G0PRIV001");
+
+    const missing = fakeSlack({ "conversations.info": () => Response.json({ ok: false, error: "channel_not_found" }) });
+    await expect(checkSlackChannel(db, cfg, "G0PRIV002", missing.fetchImpl)).rejects.toThrow("Slack: канал не найден — если он приватный, сначала пригласите бота: /invite @tubestat");
+
+    let n = 0;
+    const many = fakeSlack({ "conversations.list": () => Response.json({ ok: true, channels: n++ === 14 ? [{ id: "G0LATE001", name: "late", is_private: true, is_member: true }] : [],
+      response_metadata: { next_cursor: n <= 14 ? `p${n}` : "" } }) });
+    expect((await listSlackChannels(db, cfg, many.fetchImpl)).map((c) => c.name)).toEqual(["late"]);
   });
 });

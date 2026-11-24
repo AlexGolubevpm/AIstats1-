@@ -607,6 +607,7 @@ test("integrations: Slack — the bot token, a channel from the list, the week a
       const method = (req.url ?? "").split("/").pop()!.split("?")[0];
       if (method === "chat.postMessage") posts.push(JSON.parse(body));
       const result = method === "auth.test" ? { team: "Mavs", user: "tubestat" }
+        : method === "conversations.info" ? { channel: { id: "G0E2E0009", name: "stat-private", is_private: true, is_member: true } }
         : method === "conversations.list" ? { channels: [{ id: "C0E2E0001", name: "tube-stats", is_member: true }, { id: "G0E2E0002", name: "money", is_private: true }] } : { ts: "1.0" };
       res.setHeader("Content-Type", "application/json").end(JSON.stringify({ ok: true, ...result }));
     });
@@ -623,6 +624,14 @@ test("integrations: Slack — the bot token, a channel from the list, the week a
     await expect(page.getByTestId("slack-team")).toHaveText("Mavs · бот tubestat");
     await expect(page.locator("body")).not.toContainText("e2etoken");
     await block.getByRole("button", { name: "Найти каналы" }).click();
+    await block.locator("select[name=channel]").selectOption({ label: "#tube-stats · бот в канале" });
+    await block.getByRole("button", { name: "Сохранить", exact: true }).click();
+    await expect(page.getByTestId("slack-channel")).toHaveText("→ #tube-stats");
+    await block.locator("input[name=channelId]").fill("https://mavs.slack.com/archives/G0E2E0009");
+    await block.getByRole("button", { name: "Сохранить", exact: true }).click();
+    await expect(page.getByTestId("slack-channel")).toHaveText("→ #stat-private");
+    await block.getByRole("button", { name: "Найти каналы" }).click();
+    await block.getByTestId("slack-search").fill("tube");
     await block.locator("select[name=channel]").selectOption({ label: "#tube-stats · бот в канале" });
     await block.getByRole("button", { name: "Сохранить", exact: true }).click();
     await expect(page.getByTestId("slack-channel")).toHaveText("→ #tube-stats");
