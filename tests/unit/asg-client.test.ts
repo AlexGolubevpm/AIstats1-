@@ -87,4 +87,13 @@ describe("AsgClient", () => {
     const flaky = vi.fn(async () => { if (n++ === 0) throw new Error("ETIMEDOUT"); return new Response("[1]", { status: 200 }); }) as unknown as typeof fetch;
     expect(await new AsgClient(opts(flaky)).report({ from: "a", to: "a", groupBy: "w" })).toEqual([1]);
   });
+
+  it("an array filter is sent as repeated parameters, a string one once (ADR 0023)", async () => {
+    const f = fakeFetch([json([])]);
+    await new AsgClient(opts(f.fn)).report({ from: "a", to: "a", groupBy: "country", websiteId: 7, extra: { "spots_ids[]": ["11", "12"], tz: "UTC" } });
+    const u = new URL(String(f.calls[0]));
+    expect(u.searchParams.getAll("spots_ids[]")).toEqual(["11", "12"]);
+    expect(u.searchParams.get("tz")).toBe("UTC");
+    expect(u.searchParams.get("platforms_ids[]")).toBe("7");
+  });
 });

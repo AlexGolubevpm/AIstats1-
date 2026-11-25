@@ -4,7 +4,7 @@ import { login } from "./helpers";
 // Phone layout: the sidebar is a drawer behind a top bar, nothing overflows the viewport sideways.
 test.use({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
 
-const PAGES = ["/", "/finance", "/forecast", "/sites", "/geo", "/deals", "/deals?tab=payments", "/inventory", "/alerts", "/hypotheses", "/settings/sites", "/settings/bundles", "/settings/networks", "/settings/costs", "/settings/integrations", "/settings/access"];
+const PAGES = ["/", "/finance", "/forecast", "/sites", "/geo", "/buying", "/deals", "/deals?tab=payments", "/inventory", "/alerts", "/hypotheses", "/settings/sites", "/settings/bundles", "/settings/networks", "/settings/costs", "/settings/integrations", "/settings/access"];
 
 test("mobile: drawer menu, no horizontal overflow on every page", async ({ page }) => {
   await login(page, "/sites");

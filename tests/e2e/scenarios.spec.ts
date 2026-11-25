@@ -686,6 +686,24 @@ test("integrations: the daily ADOK budget is ours to change — a number, or «�
   await expect(page.getByText(/Суточный бюджет: 800 запросов/)).toBeVisible();
 });
 
+test("buying T1/T2: the verdict with the price and the bid limit, site and margin in the URL, the ADOK filter check reports its result", async ({ page }) => {
+  await login(page, "/buying");
+  await expect(page.getByRole("heading", { name: "Закупка T1/T2" })).toBeVisible();
+  await expect(page.getByTestId("buying-verdict")).toBeVisible();
+  await expect(page.getByTestId("buying-filters")).toContainText("Попсы по странам: фильтр не найден");
+  const sites = await page.getByTestId("buying-site").locator("option").allTextContents();
+  await page.getByTestId("buying-site").selectOption(sites[sites.length - 1]);
+  await expect(page).toHaveURL(new RegExp(`site=${sites[sites.length - 1].replace(/\./g, "\\.")}`));
+  await page.getByTestId("buying-margin").fill("30");
+  await page.getByTestId("buying-margin").press("Enter");
+  await expect(page).toHaveURL(/margin=30/);
+  await expect(page.getByText("Предел бида (маржа 30%)")).toBeVisible();
+  await page.getByTestId("buying-check").click();
+  await expect(page.getByText(/ASG_AUTH_EMAIL/).last()).toBeVisible(); // no ADOK credentials in E2E: the check says so instead of guessing
+  await page.getByRole("link", { name: "Закупка T1/T2" }).first().click();
+  await expect(page).toHaveURL(/\/buying/);
+});
+
 test("site page: KPI cards compare with the bundle and the network, «Динамика» draws the cut by day, «Качество данных» lists the sources", async ({ page }) => {
   await login(page, "/sites/japan-tube.demo?preset=30d");
   await expect(page.locator("[data-compare]").first()).toBeVisible();
