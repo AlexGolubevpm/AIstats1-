@@ -4,7 +4,7 @@
 import type { PrismaClient } from "@/generated/prisma/client";
 
 export const PLAN_KEY = "asg_cuts";
-export type CutKey = "country" | "network" | "device" | "traffic_source" | "ad_type" | "spot_site" | "hour" | "platform" | "browser";
+export type CutKey = "country" | "network" | "device" | "traffic_source" | "ad_type" | "spot_site" | "hour" | "platform" | "browser" | "popunder_geo" | "source_t12";
 export interface CutInfo { key: CutKey; groupBy: string; title: string; what: string; required?: boolean }
 /** Per-site cuts in request order. `country` is the base of the geo pages and the alerts: it cannot be turned off. */
 export const CUTS: CutInfo[] = [
@@ -17,6 +17,9 @@ export const CUTS: CutInfo[] = [
   { key: "hour", groupBy: "hour", title: "Часы", what: "профиль дня: загрузки и выручка по часам (вкладка «Часы»)" },
   { key: "platform", groupBy: "platform", title: "Платформы (ОС)", what: "Windows / Android / iOS…: вкладка «Платформы»" },
   { key: "browser", groupBy: "browser", title: "Браузеры", what: "Chrome / Safari…: на той же вкладке; выключен по умолчанию" },
+  // ADR 0023: both need a filter ADOK accepts, found by «Проверить фильтры» on /buying; turned on by that check.
+  { key: "popunder_geo", groupBy: "country", title: "Попсы по странам", what: "страны с фильтром по зонам попсов: отчёт «Закупка T1/T2»" },
+  { key: "source_t12", groupBy: "traffic_source", title: "Источники на T1/T2", what: "источники трафика с фильтром по странам T1/T2: расход и загрузки закупки T1/T2" },
 ];
 /** Account-level requests a day: website totals (the per-site reference) and, unless zones are pulled per site, the account spot cut. */
 export const accountRequestsPerDay = (plan: AsgPlan) => 1 + (plan.cuts.spot_site ? 0 : 1);
@@ -27,7 +30,7 @@ export const PLAN_MARGIN = 30;
 
 export interface AsgPlan { cuts: Record<CutKey, boolean>; restateDays: number; hourlyToday: boolean }
 export const DEFAULT_PLAN: AsgPlan = {
-  cuts: { country: true, network: true, device: true, traffic_source: true, ad_type: true, spot_site: true, hour: true, platform: true, browser: false },
+  cuts: { country: true, network: true, device: true, traffic_source: true, ad_type: true, spot_site: true, hour: true, platform: true, browser: false, popunder_geo: false, source_t12: false },
   restateDays: 3, hourlyToday: true,
 };
 export const RESTATE_CHOICES = [1, 2, 3] as const;

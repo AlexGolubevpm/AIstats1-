@@ -329,7 +329,7 @@ describe("format cut and the request plan (ADR 0016)", () => {
       ];
       return [];
     });
-    const plan = { cuts: { country: true, network: false, device: false, traffic_source: false, ad_type: true, spot_site: false, hour: false, platform: false, browser: false }, restateDays: 3, hourlyToday: true };
+    const plan = { cuts: { country: true, network: false, device: false, traffic_source: false, ad_type: true, spot_site: false, hour: false, platform: false, browser: false, popunder_geo: false, source_t12: false }, restateDays: 3, hourlyToday: true };
     const r = await ingestSiteGeo({ db, client, raw, runId: "f1" }, [DATE], "a", plan);
     expect(r.failed).toEqual([]);
     expect(seen).toEqual(["website", "country", "ad_type"]); // network, device and traffic_source are off in this plan

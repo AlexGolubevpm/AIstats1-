@@ -34,7 +34,8 @@ export interface AsgClientOptions {
   now?: () => number;
 }
 
-export interface ReportParams { from: string; to: string; groupBy: string; websiteId?: number; extra?: Record<string, string> }
+/** `extra`: more filters; an array value is sent as repeated parameters (`spots_ids[]=1&spots_ids[]=2`). */
+export interface ReportParams { from: string; to: string; groupBy: string; websiteId?: number; extra?: Record<string, string | string[]> }
 
 export class AsgClient {
   private queue: Promise<unknown> = Promise.resolve();
@@ -70,7 +71,9 @@ export class AsgClient {
     url.searchParams.set("group_by", p.groupBy);
     // ADOK calls sites "platforms"; website_id and similar names are silently ignored.
     if (p.websiteId) url.searchParams.set("platforms_ids[]", String(p.websiteId));
-    for (const [k, v] of Object.entries(p.extra ?? {})) url.searchParams.set(k, v);
+    for (const [k, v] of Object.entries(p.extra ?? {})) {
+      if (Array.isArray(v)) { url.searchParams.delete(k); for (const x of v) url.searchParams.append(k, x); } else url.searchParams.set(k, v);
+    }
 
     const delays = this.o.retryDelaysMs ?? [60_000, 300_000];
     for (let attempt = 0; ; attempt++) {

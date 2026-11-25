@@ -4,7 +4,7 @@
 // 2 h, red when the last run failed.
 import {
   ArrowLeftRight, BarChart3, ChevronDown, ChevronsLeft, ChevronsRight, CircleDollarSign, Globe, LayoutDashboard, Layers, LogOut, Menu, Moon, Settings,
-  FlaskConical, KanbanSquare, LayoutGrid, Sun, TrendingUp, TriangleAlert, X,
+  FlaskConical, KanbanSquare, LayoutGrid, ShoppingCart, Sun, TrendingUp, TriangleAlert, X,
 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
@@ -29,6 +29,7 @@ const NAV = [
   { href: "/bundles", label: "Бандлы", icon: Layers, bundles: true },
   { href: "/sites", label: "Сайты", icon: BarChart3 },
   { href: "/geo", label: "Гео", icon: Globe },
+  { href: "/buying", label: "Закупка T1/T2", icon: ShoppingCart },
   { href: "/deals", label: "Фикс-дилы", icon: ArrowLeftRight, count: "deals" as const },
   { href: "/inventory", label: "Форматы", icon: LayoutGrid },
   { href: "/alerts", label: "Алерты", icon: TriangleAlert, count: "alerts" as const },

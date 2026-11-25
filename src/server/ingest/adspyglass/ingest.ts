@@ -25,6 +25,7 @@ import { AsgClient, AsgError } from "./client";
 import { allocateBroker, mapCountryRows, mapDeviceRows, mapFormatRows, mapHourRows, mapNetworkRows, mapSpotRows, mapTechRows, mapTrafficSourceRows, mapWebsiteRows, optionalFields,
   type DeviceCell, type FormatCell, type GeoCell, type HourCell, type Measures, type NetworkCell, type TechCell, type TrafficSourceCell } from "./map";
 import { DEFAULT_PLAN, type AsgPlan } from "./plan";
+import { T12, T12_TIERS, countryValues, popunderScoped, readBuyingFilters, spotValues, t12Revenue, t12Scoped } from "./filters";
 
 export interface AsgIngestDeps { db: PrismaClient; client: AsgClient; raw: RawStore; runId: string }
 
@@ -122,6 +123,9 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
   const sites = await db.site.findMany({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(siteFilter ? { id: siteFilter } : {}) } });
   const resolver = await loadResolver(db);
   const netId = await networkId(db);
+  // «Закупка T1/T2» (ADR 0023): only with the filters «Проверить фильтры» found.
+  const filters = on.popunder_geo || on.source_t12 ? await readBuyingFilters(db) : {};
+  const t12 = new Set(on.source_t12 ? (await db.country.findMany({ where: { tier: { in: T12_TIERS } }, select: { code: true } })).map((c) => c.code) : []);
   let rows = 0;
   const failed: string[] = [];
   try {
@@ -133,6 +137,7 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
     const totals = new Map(siteRows.map((t) => [t.adsgSiteId!, t.m.pageLoads]));
     for (const s of sites) {
       try {
+        let fmtsOfDay: FormatCell[] | null = null, srcsOfDay: TrafficSourceCell[] | null = null;
         const body = await client.report({ from: date, to: date, groupBy: "country", websiteId: s.adsgSiteId! });
         const rawCells = mapCountryRows(body, resolver);
         const cells = allocateBroker(rawCells, siteTotal.get(s.adsgSiteId!));
@@ -172,6 +177,7 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
           if (scopedToSite(srcs.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
             await raw.put(rawKey("adspyglass", `traffic_source/${s.adsgSiteId}`, date, runId), srcBody);
             rows += await writeTrafficSources(db, date, s.id, srcs);
+            srcsOfDay = srcs;
           } else failed.push(`${s.domain} ${date}: источники трафика не по сайту — пропущены`);
         }
         if (on.ad_type) {
@@ -181,7 +187,37 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
           if (scopedToSite(fmts.reduce((a, c) => a + c.m.pageLoads, 0), totals.get(s.adsgSiteId!))) {
             await raw.put(rawKey("adspyglass", `ad_type/${s.adsgSiteId}`, date, runId), fmtBody);
             rows += await writeFormats(db, date, s.id, fmts);
+            fmtsOfDay = fmts;
           } else failed.push(`${s.domain} ${date}: форматы не по сайту — пропущены`);
+        }
+        if (on.popunder_geo && filters.spots) {
+          const zoneIds = (await db.zone.findMany({ where: { siteId: s.id, format: "POPUNDER", isActive: true }, select: { adsgZoneId: true } })).map((z) => z.adsgZoneId);
+          const values = spotValues(filters.spots, zoneIds);
+          if (values.length) {
+            const popBody = await client.report({ from: date, to: date, groupBy: "country", websiteId: s.adsgSiteId!, extra: { [filters.spots.param]: values } });
+            const popTotal = fmtsOfDay?.find((f) => f.format === "POPUNDER")?.m ?? (await popunderTotal(db, date, s.id));
+            const v = popunderScoped(popBody, popTotal, siteTotal.get(s.adsgSiteId!) ?? null);
+            if (v.ok) {
+              await raw.put(rawKey("adspyglass", `popunder_geo/${s.adsgSiteId}`, date, runId), popBody);
+              const cells = mapCountryRows(popBody, resolver);
+              // broker_income is spread from the popunder total by predicted_income; without a total ADOK's own estimate stands in.
+              rows += await writeFormatGeo(db, date, s.id, "POPUNDER", popTotal ? allocateBroker(cells, popTotal) : cells.map((c) => ({ ...c, m: { ...c.m, revenue: c.m.predicted } })));
+            } else failed.push(`${s.domain} ${date}: попсы по странам — ${v.why}, пропущено`);
+          } else failed.push(`${s.domain} ${date}: попсы по странам — у сайта нет зон попсов`);
+        }
+        if (on.source_t12 && filters.countries) {
+          const values = countryValues(filters.countries, body, t12);
+          if (values.length) {
+            const tBody = await client.report({ from: date, to: date, groupBy: "traffic_source", websiteId: s.adsgSiteId!, extra: { [filters.countries.param]: values } });
+            const t12Loads = cells.filter((c) => t12.has(c.countryCode)).reduce((a, c) => a + c.m.pageLoads, 0);
+            const v = t12Scoped(tBody, t12Loads, totals.get(s.adsgSiteId!) ?? null);
+            if (v.ok) {
+              await raw.put(rawKey("adspyglass", `source_t12/${s.adsgSiteId}`, date, runId), tBody);
+              const all = new Map((srcsOfDay ?? []).map((x) => [x.slug, x.m]));
+              const srcs = mapTrafficSourceRows(tBody).map((x) => ({ ...x, m: { ...x.m, revenue: t12Revenue(x.m, all.get(x.slug)) } }));
+              rows += await writeTrafficSourceTier(db, date, s.id, T12, srcs);
+            } else failed.push(`${s.domain} ${date}: источники T1/T2 — ${v.why}, пропущено`);
+          }
         }
         if (on.hour) {
           const hourBody = await client.report({ from: date, to: date, groupBy: "hour", websiteId: s.adsgSiteId! });
@@ -288,6 +324,39 @@ export async function sourceSlugs(db: PrismaClient, cells: TrafficSourceCell[]):
     out.set(c.slug, s.slug);
   }
   return out;
+}
+
+/** The format's own total of a day, for spreading its revenue over countries when the ad_type cut is not in this run. */
+async function popunderTotal(db: PrismaClient, date: string, siteId: string): Promise<Measures | null> {
+  const f = await db.factRevenueFormat.findUnique({ where: { date_siteId_format: { date: d(date), siteId, format: "POPUNDER" } } });
+  return f ? { pageLoads: f.pageLoads, impsOwn: f.impsOwn, impsNetwork: f.impsNetwork, clicks: f.clicks, revenue: Number(f.revenueReported), predicted: Number(f.predictedIncome ?? 0) } : null;
+}
+
+/** Replaces one format's country rows of (date, site): ADR 0023. */
+export async function writeFormatGeo(db: PrismaClient, date: string, siteId: string, format: FormatCell["format"], cells: GeoCell[]): Promise<number> {
+  const data = cells.filter((c) => c.m.pageLoads || c.m.impsOwn || c.m.revenue).map((c) => ({
+    date: d(date), siteId, format, countryCode: c.countryCode, pageLoads: c.m.pageLoads, impsOwn: c.m.impsOwn, clicks: c.m.clicks,
+    revenueReported: dec(c.m.revenue), predictedIncome: c.m.predicted ? dec(c.m.predicted) : null,
+  }));
+  await db.$transaction([
+    db.factRevenueFormatGeo.deleteMany({ where: { date: d(date), siteId, format } }),
+    db.factRevenueFormatGeo.createMany({ data }),
+  ]);
+  return data.length;
+}
+
+/** Replaces the traffic source rows of a tier group of (date, site): ADR 0023. */
+export async function writeTrafficSourceTier(db: PrismaClient, date: string, siteId: string, tierGroup: string, cells: TrafficSourceCell[]): Promise<number> {
+  const slugs = await sourceSlugs(db, cells);
+  const data = cells.filter((c) => c.m.pageLoads || c.m.revenue).map((c) => ({
+    date: d(date), siteId, sourceSlug: slugs.get(c.slug)!, tierGroup, pageLoads: c.m.pageLoads, revenueReported: dec(c.m.revenue),
+    predictedIncome: c.m.predicted ? dec(c.m.predicted) : null,
+  }));
+  await db.$transaction([
+    db.factTrafficSourceTier.deleteMany({ where: { date: d(date), siteId, tierGroup } }),
+    db.factTrafficSourceTier.createMany({ data }),
+  ]);
+  return data.length;
 }
 
 /** Replaces the traffic source rows of (date, site). */
