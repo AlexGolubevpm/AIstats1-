@@ -11,6 +11,7 @@ import type { RawStore } from "@/server/ingest/raw-store";
 import { pruneRaw } from "@/server/ingest/raw-retention";
 import { AsgError } from "@/server/ingest/adspyglass/client";
 import { asgBudget, asgPause, asgRequestsToday, asgSpeed, pauseAsg, slowDownAsg, takeAsgBudget, withIngestRun } from "@/server/ingest/run";
+import { siteSliceWith } from "@/server/services/buying";
 import { daysThatFit, defaultWindow, nextStage, readBackfill, requestsPerDay, saveBackfill, startBackfill, type BackfillMode } from "./backfill";
 import { DEFAULT_PLAN, corePlan, planCost, readPlan, type AsgPlan } from "@/server/ingest/adspyglass/plan";
 import { recalcCosts, revshareCosts } from "@/server/services/costs";
@@ -29,7 +30,7 @@ export async function configuredSources(db: PrismaClient, cfg: Config): Promise<
 export interface JobContext { db: PrismaClient; cfg: Config; raw: RawStore; today?: string; fetchImpl?: typeof fetch; now?: Date }
 export interface JobData { from?: string; to?: string; siteId?: string; mode?: BackfillMode }
 
-export const JOB_NAMES = ["asg:totals", "asg:sites", "asg:backfill", "metrika", "derive", "geo:reprocess", "raw:prune", "digest"] as const;
+export const JOB_NAMES = ["asg:totals", "asg:sites", "asg:backfill", "asg:buying", "metrika", "derive", "geo:reprocess", "raw:prune", "digest"] as const;
 export type JobName = (typeof JOB_NAMES)[number];
 
 const todayOf = (ctx: JobContext) => ctx.today ?? new Date().toISOString().slice(0, 10);
@@ -59,6 +60,7 @@ export function windowFor(name: JobName, ctx: JobContext, data: JobData, plan: A
     case "asg:totals": return { from: plan.hourlyToday ? t : addDays(t, -1), to: t };
     case "asg:sites": return { from: addDays(t, -plan.restateDays), to: addDays(t, -1) };
     case "asg:backfill": return defaultWindow(t, data.mode);
+    case "asg:buying": return { from: addDays(t, -30), to: addDays(t, -1) }; // the default period of /buying
     case "metrika": return { from: addDays(t, -1), to: t };
     case "derive": return { from: addDays(t, -4), to: addDays(t, -1) };
     case "geo:reprocess": return { from: addDays(t, -90), to: t };
@@ -77,6 +79,21 @@ export async function runJob(name: JobName, ctx: JobContext, data: JobData = {})
     if (pause) return { status: "skipped", skipped: `AdSpyglass на паузе до ${pause.until}: ${pause.reason}` };
     const { client, parallel } = await asgClient(ctx);
     if (name === "asg:backfill") return runBackfill(ctx, client, w, data, plan, parallel);
+    if (name === "asg:buying") {
+      // «Окупаемость закупки»: the exact tiers × formats slice of every site for the period (ADR 0023), one site after another.
+      return withIngestRun(db, { source: "adspyglass", job: name, ...w }, async () => {
+        const sites = await db.site.findMany({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(data.siteId ? { id: data.siteId } : {}) }, orderBy: { domain: "asc" } });
+        const partial: string[] = [];
+        let done = 0;
+        for (const s of sites) {
+          try { await siteSliceWith(db, (p) => client.report(p), { siteId: s.id, ...w }); done++; } catch (e) {
+            if (e instanceof AsgError && (e.pausesQueue || e.kind === "budget")) { if (e.pausesQueue) await pauseAsg(db, 60, e.message); partial.push(`остановлено на ${s.domain}: ${e.message}`); break; }
+            partial.push(`${s.domain}: ${(e as Error).message}`);
+          }
+        }
+        return { rows: done, requests: client.requests, partial };
+      });
+    }
     return withIngestRun(db, { source: "adspyglass", job: name, ...w }, async (runId) => {
       const deps = { db, client, raw, runId };
       if (name === "asg:totals") {

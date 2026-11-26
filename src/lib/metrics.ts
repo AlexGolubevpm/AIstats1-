@@ -64,36 +64,7 @@ export function discrepancyLevel(value: Num): DiscrepancyLevel {
   return a <= 0.1 ? "ok" : a <= 0.25 ? "warning" : "negative";
 }
 
-// ---------- «Окупаемость закупки»: may the bid go up? (ADR 0023, docs/product/06-metrics.md#bid) ----------
-
-export interface BidInput {
-  /** Revenue of the chosen formats on the slice's traffic, $. */ popRevenue: number;
-  /** All ADOK revenue on the same traffic, $ (context). */ allRevenue: number;
-  /** Page loads the revenue was earned on. */ loads: number;
-  /** What the bought traffic cost, $. */ cost: number;
-  /** Page loads that were paid for. */ paidLoads: number;
-}
-export type BidVerdict = "raise" | "edge" | "hold" | "no_data";
-export interface BidAdvice {
-  popPer1k: Num; allPer1k: Num; costPer1k: Num;
-  /** Popunder revenue minus the price, per 1000 bought loads. */ popMarginPer1k: Num;
-  /** The price of 1000 loads popunder alone still pays with the target margin. */ maxBid: Num;
-  /** maxBid against today's price: +0.25 = the bid may go up 25%. */ headroom: Num;
-  verdict: BidVerdict;
-}
-
-/**
- * Compares the price of 1000 bought T1/T2 loads with the popunder revenue they bring. A bought load
- * is assumed to earn like the site's average T1/T2 load (same pages, same waterfall). Ratios of sums.
- */
-export function bidAdvice(x: BidInput, targetMargin = 0.2): BidAdvice {
-  const popPer1k = revPer1kLoads(x.popRevenue, x.loads), allPer1k = revPer1kLoads(x.allRevenue, x.loads), costPer1k = ratio(x.cost, x.paidLoads, 1000);
-  const maxBid = popPer1k == null ? null : popPer1k * (1 - targetMargin);
-  const popMarginPer1k = popPer1k == null || costPer1k == null ? null : popPer1k - costPer1k;
-  const headroom = maxBid == null || costPer1k == null || costPer1k <= 0 ? null : maxBid / costPer1k - 1;
-  const verdict: BidVerdict = headroom == null ? "no_data" : headroom > 0.05 ? "raise" : headroom >= -0.05 ? "edge" : "hold";
-  return { popPer1k, allPer1k, costPer1k, popMarginPer1k, maxBid, headroom, verdict };
-}
+// ---------- «Окупаемость закупки» (ADR 0023, docs/product/06-metrics.md#bid) ----------
 
 /** The price of 1000 page loads of a source bought at a CPM bid per 1000 visits: a visit makes `loadsPerVisit` loads. */
 export const bidCostPer1kLoads = (cpm: number, loadsPerVisit: number): Num => ratio(cpm, loadsPerVisit);
