@@ -64,14 +64,14 @@ export function discrepancyLevel(value: Num): DiscrepancyLevel {
   return a <= 0.1 ? "ok" : a <= 0.25 ? "warning" : "negative";
 }
 
-// ---------- «Закупка T1/T2»: may the bid go up? (ADR 0023, docs/product/06-metrics.md#bid) ----------
+// ---------- «Окупаемость закупки»: may the bid go up? (ADR 0023, docs/product/06-metrics.md#bid) ----------
 
 export interface BidInput {
-  /** Popunder revenue on T1/T2 traffic, $. */ popRevenue: number;
-  /** All ADOK revenue on T1/T2 traffic, $ (context: a bought load also earns banners). */ allRevenue: number;
-  /** T1/T2 page loads (country cut). */ loads: number;
-  /** What the paid sources' T1/T2 traffic cost, $. */ cost: number;
-  /** T1/T2 loads of the paid sources. */ paidLoads: number;
+  /** Revenue of the chosen formats on the slice's traffic, $. */ popRevenue: number;
+  /** All ADOK revenue on the same traffic, $ (context). */ allRevenue: number;
+  /** Page loads the revenue was earned on. */ loads: number;
+  /** What the bought traffic cost, $. */ cost: number;
+  /** Page loads that were paid for. */ paidLoads: number;
 }
 export type BidVerdict = "raise" | "edge" | "hold" | "no_data";
 export interface BidAdvice {
@@ -95,20 +95,5 @@ export function bidAdvice(x: BidInput, targetMargin = 0.2): BidAdvice {
   return { popPer1k, allPer1k, costPer1k, popMarginPer1k, maxBid, headroom, verdict };
 }
 
-export interface BidDay { loads: number; popRevenue: number; cost: number; paidLoads: number }
-/**
- * What happened on dearer days: days with a known price are split at the median price of 1000 loads;
- * the dearer half against the cheaper one — price, loads a day and popunder revenue per 1000 loads.
- * Null below 4 such days.
- */
-export function bidElasticity(days: BidDay[]): { priceChange: Num; loadsChange: Num; popPer1kChange: Num; days: number } | null {
-  const priced = days.filter((d) => d.paidLoads > 0 && d.cost > 0 && d.loads > 0).map((d) => ({ ...d, price: d.cost / d.paidLoads }));
-  if (priced.length < 4) return null;
-  priced.sort((a, b) => a.price - b.price);
-  const half = Math.floor(priced.length / 2), low = priced.slice(0, half), high = priced.slice(priced.length - half);
-  const sum = (xs: typeof priced, k: "loads" | "popRevenue" | "cost" | "paidLoads") => xs.reduce((a, d) => a + d[k], 0);
-  const price = (xs: typeof priced) => ratio(sum(xs, "cost"), sum(xs, "paidLoads"), 1000);
-  const per1k = (xs: typeof priced) => revPer1kLoads(sum(xs, "popRevenue"), sum(xs, "loads"));
-  const ch = (a: Num, b: Num) => (a == null || b == null || b === 0 ? null : a / b - 1);
-  return { priceChange: ch(price(high), price(low)), loadsChange: ch(sum(high, "loads") / high.length, sum(low, "loads") / low.length), popPer1kChange: ch(per1k(high), per1k(low)), days: priced.length };
-}
+/** The price of 1000 page loads of a source bought at a CPM bid per 1000 visits: a visit makes `loadsPerVisit` loads. */
+export const bidCostPer1kLoads = (cpm: number, loadsPerVisit: number): Num => ratio(cpm, loadsPerVisit);

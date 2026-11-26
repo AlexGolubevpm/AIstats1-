@@ -454,6 +454,32 @@ model CostRate {
   @@index([sourceSlug, validFrom])
 }
 
+// The CPM bid of a bought traffic source by tier (ADR 0023): what 1000 visits cost. ADOK counts page
+// loads, so `loadsPerVisit` turns the bid into the price of 1000 loads.
+model BidRate {
+  id            String   @id @default(cuid())
+  sourceSlug    String
+  siteId        String? // null = all sites
+  tier          Int
+  cpm           Decimal  @db.Decimal(10, 4)
+  loadsPerVisit Decimal  @default(1) @db.Decimal(6, 2)
+  validFrom     DateTime @db.Date
+  createdAt     DateTime @default(now())
+
+  @@index([sourceSlug, tier, validFrom])
+}
+
+// A computed «format × tiers» slice of a site's traffic sources over a period (ADR 0023): the answer
+// of the filtered ADOK requests, kept so that opening the page again costs no requests.
+model BuyingSlice {
+  key       String   @id // site|from|to|formats|tiers
+  siteId    String
+  data      Json
+  createdAt DateTime @default(now())
+
+  @@index([siteId])
+}
+
 // ---------- Operating expenses ----------
 
 enum OpexCategory {

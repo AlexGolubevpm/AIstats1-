@@ -123,7 +123,7 @@ export async function ingestSiteGeo(deps: AsgIngestDeps, dates: string[], siteFi
   const sites = await db.site.findMany({ where: { status: "ACTIVE", adsgSiteId: { not: null }, ...(siteFilter ? { id: siteFilter } : {}) } });
   const resolver = await loadResolver(db);
   const netId = await networkId(db);
-  // «Закупка T1/T2» (ADR 0023): only with the filters «Проверить фильтры» found.
+  // the daily history cuts of ADR 0023: only with the filters «Проверить фильтры» found.
   const filters = on.popunder_geo || on.source_t12 ? await readBuyingFilters(db) : {};
   const t12 = new Set(on.source_t12 ? (await db.country.findMany({ where: { tier: { in: T12_TIERS } }, select: { code: true } })).map((c) => c.code) : []);
   let rows = 0;

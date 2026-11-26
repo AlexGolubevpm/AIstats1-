@@ -29,7 +29,7 @@ const NAV = [
   { href: "/bundles", label: "Бандлы", icon: Layers, bundles: true },
   { href: "/sites", label: "Сайты", icon: BarChart3 },
   { href: "/geo", label: "Гео", icon: Globe },
-  { href: "/buying", label: "Закупка T1/T2", icon: ShoppingCart },
+  { href: "/buying", label: "Окупаемость закупки", icon: ShoppingCart },
   { href: "/deals", label: "Фикс-дилы", icon: ArrowLeftRight, count: "deals" as const },
   { href: "/inventory", label: "Форматы", icon: LayoutGrid },
   { href: "/alerts", label: "Алерты", icon: TriangleAlert, count: "alerts" as const },

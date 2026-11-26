@@ -1,4 +1,4 @@
-// ADOK filters for the «Закупка T1/T2» report (ADR 0023). ADOK answers 422 to two group_by
+// ADOK filters for the «Окупаемость закупки» report (ADR 0023). ADOK answers 422 to two group_by
 // dimensions, so «popunder × country» and «traffic source × T1/T2» are one dimension plus a filter:
 //  - the country cut filtered to the site's popunder zones;
 //  - the traffic_source cut filtered to the T1/T2 countries.
@@ -40,8 +40,11 @@ export async function saveBuyingFilters(db: PrismaClient, f: BuyingFilters): Pro
   await db.appSetting.upsert({ where: { key: FILTERS_KEY }, create: { key: FILTERS_KEY, value: JSON.stringify(f) }, update: { value: JSON.stringify(f) } });
 }
 
-/** The values a spot filter sends: the site's popunder zone ids, or the format name. */
-export const spotValues = (f: SpotFilter, zoneIds: number[]): string[] => (f.kind === "zone_ids" ? zoneIds.map(String) : [f.value ?? "popunder"]);
+/** ADOK's names of the ad types, for a filter that takes the type instead of zone ids. */
+export const FORMAT_ADOK: Record<string, string> = { POPUNDER: "popunder", BANNER: "banner", NATIVE: "native", SLIDER: "slider", OUTSTREAM: "outstream", INVIDEO: "invideo", INPAGEPUSH: "inpage_push" };
+/** The values a spot filter sends: the zone ids of the formats, or the formats' names (popunder when none is given). */
+export const spotValues = (f: SpotFilter, zoneIds: number[], formats?: string[]): string[] =>
+  f.kind === "zone_ids" ? zoneIds.map(String) : formats ? formats.map((x) => FORMAT_ADOK[x]).filter(Boolean) : [f.value ?? "popunder"];
 
 /** The values a country filter sends for the T1/T2 countries, from the unfiltered country rows of the same day (ADOK ids ride along as `id`). */
 export function countryValues(f: CountryFilter, rows: AsgRow[], t12: Set<string>): string[] {
@@ -94,4 +97,24 @@ export function t12Revenue(t12: Measures, all: Measures | undefined): number {
   if (!unfiltered) return t12.revenue;
   if (all.predicted > 0) return (all.revenue * t12.predicted) / all.predicted;
   return all.revenue * loadShare;
+}
+
+/**
+ * The revenue of some formats inside a slice (a source's traffic in a tier). When ADOK left
+ * broker_income unfiltered by zones (it is not below the whole slice while the formats are clearly a
+ * part of it), the slice's revenue is spread by the formats' share of predicted income, then of
+ * impressions. Never above the slice.
+ */
+export function formatRevenue(part: Measures, whole: Measures, wholeRevenue: number): number {
+  const share = whole.predicted > 0 ? part.predicted / whole.predicted : whole.impsOwn > 0 ? part.impsOwn / whole.impsOwn : 1;
+  const unfiltered = part.revenue >= wholeRevenue * 0.98 && share < 0.9;
+  return Math.min(wholeRevenue, unfiltered ? wholeRevenue * Math.max(0, share) : part.revenue);
+}
+
+/** Is a «formats inside a slice» answer really narrower? By own impressions: some, not above the slice, and not the whole slice when the formats are a clear part of the site. */
+export function formatScoped(partImps: number, wholeImps: number, expectedShare: number | null): { ok: boolean; why: string } {
+  if (partImps <= 0) return { ok: false, why: "пустой ответ" };
+  if (partImps > wholeImps * 1.1 + 10) return { ok: false, why: "показов больше, чем во всём срезе" };
+  if (expectedShare != null && expectedShare < 0.9 && partImps >= wholeImps * 0.95) return { ok: false, why: "ответ равен всему срезу — фильтр по зонам не сработал" };
+  return { ok: true, why: `показов ${partImps} из ${wholeImps}` };
 }
