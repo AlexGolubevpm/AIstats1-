@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { bidAdvice, bidElasticity } from "@/lib/metrics";
-import { countryValues, popunderScoped, spotValues, t12Revenue, t12Scoped } from "@/server/ingest/adspyglass/filters";
+import { bidAdvice, bidCostPer1kLoads } from "@/lib/metrics";
+import { countryValues, formatRevenue, formatScoped, popunderScoped, spotValues, t12Revenue, t12Scoped } from "@/server/ingest/adspyglass/filters";
 
 const M = (o: Partial<{ pageLoads: number; impsOwn: number; revenue: number; predicted: number }>) => ({ pageLoads: 0, impsOwn: 0, impsNetwork: 0, clicks: 0, revenue: 0, predicted: 0, ...o });
 
@@ -24,15 +24,11 @@ describe("bidAdvice — may the T1/T2 bid go up", () => {
   });
 });
 
-describe("bidElasticity — what dearer days did", () => {
-  it("splits priced days at the median price: dearer half against the cheaper one", () => {
-    const day = (price: number, loads: number, pop: number) => ({ loads, popRevenue: pop, cost: (price * loads) / 1000, paidLoads: loads });
-    const e = bidElasticity([day(1, 100_000, 150), day(1, 100_000, 150), day(1.2, 130_000, 182), day(1.2, 130_000, 182), day(0, 50, 0)])!;
-    expect(e.days).toBe(4); // the day without a price is left out
-    expect(e.priceChange).toBeCloseTo(0.2);
-    expect(e.loadsChange).toBeCloseTo(0.3);
-    expect(e.popPer1kChange).toBeCloseTo(1.4 / 1.5 - 1);
-    expect(bidElasticity([day(1, 1, 1), day(2, 1, 1), day(3, 1, 1)])).toBeNull();
+describe("the price of 1000 loads from a CPM bid", () => {
+  it("bid per 1000 visits / loads per visit", () => {
+    expect(bidCostPer1kLoads(2, 2)).toBe(1);
+    expect(bidCostPer1kLoads(1.2, 1)).toBe(1.2);
+    expect(bidCostPer1kLoads(1, 0)).toBeNull();
   });
 });
 
@@ -64,5 +60,19 @@ describe("ADOK filters of «Закупка T1/T2»", () => {
     expect(t12Revenue(M({ pageLoads: 400, revenue: 10, predicted: 4 }), all)).toBeCloseTo(5); // unfiltered: 10 × 4 / 8
     expect(t12Revenue(M({ pageLoads: 400, revenue: 10, predicted: 0 }), M({ pageLoads: 1000, revenue: 10 }))).toBeCloseTo(4); // no estimate: by loads
     expect(t12Revenue(M({ revenue: 3 }), undefined)).toBe(3);
+  });
+  it("any formats: zone ids as they are, or ADOK's type names for a type filter", () => {
+    expect(spotValues({ param: "spots_ids[]", kind: "zone_ids" }, [7], ["BANNER"])).toEqual(["7"]);
+    expect(spotValues({ param: "ad_types[]", kind: "ad_type" }, [], ["POPUNDER", "BANNER", "OTHER"])).toEqual(["popunder", "banner"]);
+  });
+  it("formats inside a slice: a narrower answer by impressions; an unfiltered broker_income is spread by predicted income and never exceeds the slice", () => {
+    expect(formatScoped(5500, 21000, 0.27).ok).toBe(true);
+    expect(formatScoped(21000, 21000, 0.27).ok).toBe(false); // the zone filter was ignored
+    expect(formatScoped(21000, 21000, 1).ok).toBe(true); // the formats are the whole site
+    expect(formatScoped(0, 100, null).ok).toBe(false);
+    const whole = M({ impsOwn: 15000, predicted: 14, revenue: 20 });
+    expect(formatRevenue(M({ impsOwn: 4000, predicted: 7, revenue: 20 }), whole, 14)).toBeCloseTo(7); // unfiltered: 14 × 7 / 14
+    expect(formatRevenue(M({ impsOwn: 4000, predicted: 7, revenue: 6 }), whole, 14)).toBe(6); // filtered: kept
+    expect(formatRevenue(M({ impsOwn: 15000, predicted: 14, revenue: 30 }), whole, 14)).toBe(14); // capped by the slice
   });
 });

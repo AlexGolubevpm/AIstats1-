@@ -17,9 +17,10 @@ export const CUTS: CutInfo[] = [
   { key: "hour", groupBy: "hour", title: "Часы", what: "профиль дня: загрузки и выручка по часам (вкладка «Часы»)" },
   { key: "platform", groupBy: "platform", title: "Платформы (ОС)", what: "Windows / Android / iOS…: вкладка «Платформы»" },
   { key: "browser", groupBy: "browser", title: "Браузеры", what: "Chrome / Safari…: на той же вкладке; выключен по умолчанию" },
-  // ADR 0023: both need a filter ADOK accepts, found by «Проверить фильтры» on /buying; turned on by that check.
-  { key: "popunder_geo", groupBy: "country", title: "Попсы по странам", what: "страны с фильтром по зонам попсов: отчёт «Закупка T1/T2»" },
-  { key: "source_t12", groupBy: "traffic_source", title: "Источники на T1/T2", what: "источники трафика с фильтром по странам T1/T2: расход и загрузки закупки T1/T2" },
+  // ADR 0023: daily history of two fixed slices; they need the filters found by «Проверить фильтры» on /buying. Off by default:
+  // the page itself computes any «formats × tiers» slice on request.
+  { key: "popunder_geo", groupBy: "country", title: "Попсы по странам", what: "страны с фильтром по зонам попсов, по дням; «Окупаемость закупки» считает срезы сама, по запросу" },
+  { key: "source_t12", groupBy: "traffic_source", title: "Источники на T1/T2", what: "источники трафика с фильтром по странам T1/T2, по дням; «Окупаемость закупки» считает срезы сама, по запросу" },
 ];
 /** Account-level requests a day: website totals (the per-site reference) and, unless zones are pulled per site, the account spot cut. */
 export const accountRequestsPerDay = (plan: AsgPlan) => 1 + (plan.cuts.spot_site ? 0 : 1);

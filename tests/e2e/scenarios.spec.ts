@@ -686,21 +686,43 @@ test("integrations: the daily ADOK budget is ours to change — a number, or «�
   await expect(page.getByText(/Суточный бюджет: 800 запросов/)).toBeVisible();
 });
 
-test("buying T1/T2: the verdict with the price and the bid limit, site and margin in the URL, the ADOK filter check reports its result", async ({ page }) => {
+test("buying: formats and tiers in the URL, a bid for the source turns into the verdict per tier, the exact ADOK run says why it cannot", async ({ page }) => {
   await login(page, "/buying");
-  await expect(page.getByRole("heading", { name: "Закупка T1/T2" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Окупаемость закупки" })).toBeVisible();
   await expect(page.getByTestId("buying-verdict")).toBeVisible();
-  await expect(page.getByTestId("buying-filters")).toContainText("Попсы по странам: фильтр не найден");
-  const sites = await page.getByTestId("buying-site").locator("option").allTextContents();
-  await page.getByTestId("buying-site").selectOption(sites[sites.length - 1]);
-  await expect(page).toHaveURL(new RegExp(`site=${sites[sites.length - 1].replace(/\./g, "\\.")}`));
+  await expect(page.getByTestId("buying-estimate")).toContainText("Оценка");
+  await expect(page.getByTestId("buying-scope")).toContainText("все форматы · T1 + T2");
+  await page.getByTestId("buying-formats").getByRole("button", { name: "Popunder" }).click();
+  await expect(page).toHaveURL(/fmt=POPUNDER/);
+  await page.getByTestId("buying-tiers").getByRole("button", { name: "T2" }).click();
+  await expect(page).toHaveURL(/tiers=1(&|$)/);
+  await expect(page.getByTestId("buying-scope")).toContainText("Popunder · T1");
+  // the source and its bid
+  const options = await page.getByTestId("buying-source").locator("option").allTextContents();
+  expect(options.length).toBeGreaterThan(1);
+  await page.getByTestId("buying-source").selectOption({ index: 1 });
+  await expect(page).toHaveURL(/src=/);
+  const bids = page.getByTestId("buying-bids");
+  await bids.locator("input[name=cpm]").fill("0.5");
+  await bids.locator("input[name=loadsPerVisit]").fill("2");
+  await bids.locator("input[name=validFrom]").fill("2026-01-01");
+  await bids.getByRole("button", { name: "Сохранить ставку" }).click();
+  await expect(page.getByText("Ставка сохранена")).toBeVisible();
+  await expect(bids.locator("tbody tr")).toContainText(["$0.50"]);
+  await expect(bids.locator("tbody tr").first()).toContainText("$0.2500"); // per 1000 loads
+  await expect(page.getByText(/\$0\.50 → \$\d+\.\d\d за 1000 визитов/)).toBeVisible(); // the tier row: the bid and its limit in the same unit
   await page.getByTestId("buying-margin").fill("30");
   await page.getByTestId("buying-margin").press("Enter");
   await expect(page).toHaveURL(/margin=30/);
-  await expect(page.getByText("Предел бида (маржа 30%)")).toBeVisible();
+  await expect(page.getByText("Предел ставки (маржа 30%)")).toBeVisible();
+  // exact run: no filters found yet → the reason, the estimate stays
+  await page.getByTestId("buying-compute").click();
+  await expect(page.getByText(/Проверить фильтры ADOK». Пока показана оценка/)).toBeVisible();
   await page.getByTestId("buying-check").click();
-  await expect(page.getByText(/ASG_AUTH_EMAIL/).last()).toBeVisible(); // no ADOK credentials in E2E: the check says so instead of guessing
-  await page.getByRole("link", { name: "Закупка T1/T2" }).first().click();
+  await expect(page.getByText(/ASG_AUTH_EMAIL/).last()).toBeVisible(); // no ADOK credentials in E2E
+  await bids.getByRole("button", { name: "Удалить" }).click();
+  await expect(page.getByText("Ставка удалена")).toBeVisible();
+  await page.getByRole("link", { name: "Окупаемость закупки" }).first().click();
   await expect(page).toHaveURL(/\/buying/);
 });
 
