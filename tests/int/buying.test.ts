@@ -11,7 +11,8 @@ import { setAsgBudget } from "@/server/ingest/run";
 import { config } from "@/server/config";
 import { runJob } from "@/server/jobs/handlers";
 import { buyingTable } from "@/server/queries/buying";
-import { cachedSlice, checkBuyingFilters, computeSiteSlice, estimateSlice, saveBid } from "@/server/services/buying";
+import { CHUNK, cachedSlice, checkBuyingFilters, computeSiteSlice, estimateSlice, saveBid, weeksOf } from "@/server/services/buying";
+import { asgPause } from "@/server/ingest/run";
 import { seedReference } from "@/server/seed/reference";
 import { resetDb, testDb } from "./helpers";
 
@@ -26,10 +27,14 @@ const cfg = config({ ASG_AUTH_EMAIL: "e", ASG_AUTH_TOKEN: "t", ASG_BASE_URL: "ht
  * The popunder zones are 501/502; ADOK understands `spots_ids[]` and `countries[]` (ISO) only — other
  * filter names are ignored and the unfiltered answer comes back, as ADOK does.
  */
-function adok(opts: { spots?: string; countries?: string } = { spots: "spots_ids[]", countries: "countries[]" }) {
+function adok(opts: { spots?: string; countries?: string; fail?: (u: URL) => number | null } = { spots: "spots_ids[]", countries: "countries[]" }) {
   const calls: URL[] = [];
   const fetchImpl = (async (input: URL | string) => {
     const u = new URL(String(input)); calls.push(u);
+    const status = opts.fail?.(u);
+    if (status) return new Response("oops", { status });
+    // the data is of one day: a range that does not hold it is empty
+    if (!(u.searchParams.get("from")! <= DATE && DATE <= u.searchParams.get("to")!)) return new Response("[]", { status: 200 });
     const g = u.searchParams.get("group_by");
     const zoneFiltered = opts.spots && u.searchParams.getAll(opts.spots).join(",") === "501,502";
     const bannerFiltered = opts.spots && u.searchParams.getAll(opts.spots).join(",") === "503";
@@ -50,12 +55,13 @@ function adok(opts: { spots?: string; countries?: string } = { spots: "spots_ids
       { name: "India", iso: "IN", hits: 3_000, impressions: 8_000, broker_income: 900, predicted_income: 6 }];
     else if (g === "ad_type") body = [{ name: "Popunder", hits: 6_000, impressions: 8_000, predicted_income: 11 }, { name: "Banner", hits: 4_000, impressions: 22_000, predicted_income: 19 }];
     else if (g === "traffic_source") {
-      const tier = t12.includes("US") && !t12.includes("IN") ? 1 : t12.includes("IN") && !t12.includes("US") ? 4 : 0;
+      const tier = t12.includes("US") && !t12.includes("IN") ? 1 : t12.includes("IN") && !t12.includes("US") ? 4 : t12.length ? 5 : 0;
       // ADOK filters the site's own fields only: broker_income stays the source's whole revenue (ADR 0005)
       body = tier === 1 && zoneFiltered ? [{ name: "Doni", hits: 5_000, impressions: 4_000, broker_income: 20, predicted_income: 7 }, { name: "Direct", hits: 2_000, impressions: 1_500, broker_income: 10, predicted_income: 2 }]
         : tier === 1 ? [{ name: "Doni", hits: 5_000, impressions: 15_000, broker_income: 20, predicted_income: 14 }, { name: "Direct", hits: 2_000, impressions: 6_000, broker_income: 10, predicted_income: 5 }]
         : tier === 4 && zoneFiltered ? [{ name: "Doni", hits: 2_000, impressions: 1_500, broker_income: 20, predicted_income: 1 }, { name: "Direct", hits: 1_000, impressions: 1_000, broker_income: 10, predicted_income: 1 }]
         : tier === 4 ? [{ name: "Doni", hits: 2_000, impressions: 6_000, broker_income: 20, predicted_income: 6 }, { name: "Direct", hits: 1_000, impressions: 3_000, broker_income: 10, predicted_income: 5 }]
+        : tier === 5 ? [{ name: "Doni", hits: 10 * t12.length, impressions: 30 * t12.length, broker_income: 0.01 * t12.length, predicted_income: 0.01 * t12.length }] // any other countries: 10 loads each
         : [{ name: "Doni", hits: 7_000, impressions: 21_000, broker_income: 20, predicted_income: 20 }, { name: "Direct", hits: 3_000, impressions: 9_000, broker_income: 10, predicted_income: 10 }];
     }
     return new Response(JSON.stringify(body), { status: 200 });
@@ -219,6 +225,62 @@ describe("«Окупаемость закупки» (ADR 0023)", () => {
       await db.appSetting.deleteMany({ where: { key: FILTERS_KEY } });
       await expect(computeSiteSlice(db, cfg, key, adok().fetchImpl)).rejects.toThrow(/Проверить фильтры/);
       expect(await db.buyingSlice.count()).toBe(0);
+    });
+
+    describe("ADOK answers 500", () => {
+      const both = { spots: "spots_ids[]", countries: "countries[]" };
+      const isTier = (u: URL, cc: string) => u.searchParams.get("group_by") === "traffic_source" && u.searchParams.getAll("countries[]").includes(cc);
+
+      it("one failed request does not lose the run: retried once, the part stays an estimate with a note that names the request, the rest is saved", async () => {
+        const a = adok({ ...both, fail: (u) => (isTier(u, "IN") ? 500 : null) });
+        const d = await computeSiteSlice(db, cfg, key, a.fetchImpl);
+        expect(a.calls.filter((u) => isTier(u, "IN"))).toHaveLength(2); // the request and one retry
+        expect(d.notes).toEqual(["T4: ADOK 500 (traffic_source, countries[] × 1, 20.11–20.11) — источники оценкой"]);
+        expect(d.tiers.map((t) => [t.tier, t.sourcesExact]).filter(([, e]) => e)).toEqual([[1, true]]);
+        expect(d.tiers.find((t) => t.tier === 4)!.formats.every((f) => f.exact)).toBe(true); // the formats came from their own requests
+        expect(await cachedSlice(db, key)).not.toBeNull();
+        // only the countries the site had traffic from go into the filter, not the tier's whole directory
+        expect(a.calls.find((u) => isTier(u, "US"))!.searchParams.getAll("countries[]").sort()).toEqual(["DE", "US"]);
+      });
+
+      it("the whole period fails but its weeks pass: asked week by week, the answers add up", async () => {
+        const wide = { siteId: "hs", from: "2026-11-07", to: DATE }; // two weeks, the data is in the last day
+        expect(weeksOf(wide.from, wide.to)).toEqual([{ from: "2026-11-07", to: "2026-11-13" }, { from: "2026-11-14", to: DATE }]);
+        expect(weeksOf(DATE, DATE)).toEqual([{ from: DATE, to: DATE }]);
+        const a = adok({ ...both, fail: (u) => (u.searchParams.get("from") === wide.from && u.searchParams.get("to") === wide.to ? 500 : null) });
+        const d = await computeSiteSlice(db, cfg, wide, a.fetchImpl);
+        expect(d.notes).toEqual([]);
+        expect(d.requests).toBe(4 * (2 + 2)); // each of the 4 requests: the period twice, then two weeks
+        const t1 = d.tiers.find((t) => t.tier === 1)!;
+        expect(t1.sources.find((x) => x.slug === "doni")).toMatchObject({ loads: 5000, revenue: 14 });
+        expect(t1.formats.find((f) => f.format === "POPUNDER")).toMatchObject({ revenue: 10, exact: true });
+      });
+
+      it("a long list of countries goes in parts of 40 and the answers add up", async () => {
+        const net = (await db.factRevenueGeo.findFirstOrThrow({ where: { siteId: "hs" } })).networkId;
+        const t5 = (await db.country.findMany({ where: { tier: 5 }, take: CHUNK + 5, orderBy: { code: "asc" } })).map((c) => c.code);
+        expect(t5.length).toBe(CHUNK + 5);
+        await db.factRevenueGeo.createMany({ data: t5.map((countryCode) => ({ date: new Date(`${DATE}T00:00:00Z`), siteId: "hs", networkId: net, countryCode, device: "UNKNOWN" as const, pageLoads: 10 })) });
+        const a = adok(both);
+        const d = await computeSiteSlice(db, cfg, key, a.fetchImpl);
+        const parts = a.calls.filter((u) => isTier(u, t5[0]) || isTier(u, t5[CHUNK])).map((u) => u.searchParams.getAll("countries[]").length);
+        expect(parts).toEqual([CHUNK, 5]);
+        expect(d.tiers.find((t) => t.tier === 5)).toMatchObject({ sourcesExact: true, sources: [expect.objectContaining({ slug: "doni", loads: 10 * (CHUNK + 5) })] });
+      });
+
+      it("everything fails: the error lists the failed requests and nothing is cached; a 429 stops the run and pauses ADOK", async () => {
+        const err = await computeSiteSlice(db, cfg, key, adok({ ...both, fail: () => 500 }).fetchImpl).catch((e: Error) => e.message);
+        expect(err).toMatch(/ADOK не дал точных данных: /);
+        expect(err).toMatch(/POPUNDER: ADOK 500 \(country, spots_ids\[\] × 2, 20\.11–20\.11\)/);
+        expect(err).toMatch(/T1: ADOK 500 \(traffic_source, countries\[\] × 2, 20\.11–20\.11\)/);
+        expect(await db.buyingSlice.count()).toBe(0);
+        expect(await asgPause(db)).toBeNull(); // a 500 is not a reason to pause the queue
+
+        const limited = adok({ ...both, fail: (u) => (u.searchParams.get("group_by") === "traffic_source" ? 429 : null) });
+        await expect(computeSiteSlice(db, cfg, key, limited.fetchImpl)).rejects.toThrow(/429/);
+        expect(limited.calls.filter((u) => u.searchParams.get("group_by") === "traffic_source")).toHaveLength(1); // no retry, no further tiers
+        expect(await asgPause(db)).not.toBeNull();
+      });
     });
 
     it("the job computes every site in turn, reports a site it could not do, and stops when the ADOK budget ends", async () => {

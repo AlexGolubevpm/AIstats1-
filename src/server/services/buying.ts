@@ -160,6 +160,15 @@ export async function cachedSlice(db: PrismaClient, key: SliceKey): Promise<Site
   return row ? (row.data as unknown as SiteSlice) : null;
 }
 
+/** Values of a country filter in one request: more go in parts (the answers add up). */
+export const CHUNK = 40;
+/** The period in weeks (7-day runs from its start), for asking a failed request in smaller pieces. */
+export function weeksOf(from: string, to: string): { from: string; to: string }[] {
+  const out: { from: string; to: string }[] = [], day = 86_400_000, end = D(to).getTime();
+  for (let a = D(from).getTime(); a <= end; a += 7 * day) out.push({ from: new Date(a).toISOString().slice(0, 10), to: new Date(Math.min(end, a + 6 * day)).toISOString().slice(0, 10) });
+  return out;
+}
+
 type Report = (p: { from: string; to: string; groupBy: string; websiteId?: number; extra?: Record<string, string | string[]> }) => Promise<AsgRow[]>;
 /**
  * The exact slice of a site from ADOK, whole period in one request each:
@@ -178,16 +187,53 @@ export async function siteSliceWith(db: PrismaClient, report: Report, key: Slice
     db.zone.findMany({ where: { siteId: key.siteId, isActive: true }, select: { adsgZoneId: true, format: true } })]);
   const slice = estimateFrom(st);
   const tierOf = new Map(countries.map((c) => [c.code, c.tier]));
-  const base = { from: key.from, to: key.to, websiteId: site.adsgSiteId };
   let requests = 0, exactParts = 0;
   const notes: string[] = [];
+  const ruDay = (d: string) => `${d.slice(8, 10)}.${d.slice(5, 7)}`;
+
+  /**
+   * One logical request made sturdy. A long list of values of `chunk` goes in parts of CHUNK; an
+   * ADOK error (5xx, 4xx) is retried once, then the period is asked week by week. The parts add up:
+   * the mappers sum rows of the same name. Returns the rows, or what failed — the cut, the filter and
+   * how many values, the period, the status; never the values. A pause or the budget still stops the run.
+   */
+  const ask = async (groupBy: string, extra: Record<string, string[]>, chunk?: string): Promise<AsgRow[] | string> => {
+    const once = async (from: string, to: string, ex: Record<string, string[]>): Promise<AsgRow[] | string> => {
+      for (let attempt = 0; ; attempt++) {
+        requests++;
+        try { return await report({ from, to, websiteId: site.adsgSiteId!, groupBy, extra: ex }); } catch (e) {
+          if (!(e instanceof AsgError) || e.pausesQueue || e.kind === "budget") throw e;
+          if (attempt >= 1) return `ADOK ${e.status ?? e.message} (${groupBy}, ${Object.entries(ex).map(([k, v]) => `${k} × ${v.length}`).join(", ")}, ${ruDay(from)}–${ruDay(to)})`;
+        }
+      }
+    };
+    const parts: Record<string, string[]>[] = chunk && extra[chunk].length > CHUNK
+      ? Array.from({ length: Math.ceil(extra[chunk].length / CHUNK) }, (_, i) => ({ ...extra, [chunk]: extra[chunk].slice(i * CHUNK, (i + 1) * CHUNK) })) : [extra];
+    const out: AsgRow[] = [];
+    for (const ex of parts) {
+      let rows = await once(key.from, key.to, ex);
+      if (typeof rows === "string" && weeksOf(key.from, key.to).length > 1) {
+        // the whole period failed: the same request week by week
+        const first = rows, sum: AsgRow[] = [];
+        for (const w of weeksOf(key.from, key.to)) {
+          const r = await once(w.from, w.to, ex);
+          if (typeof r === "string") return `${first}; по неделям — ${r}`;
+          sum.push(...r);
+        }
+        rows = sum;
+      }
+      if (typeof rows === "string") return rows;
+      out.push(...rows);
+    }
+    return out;
+  };
 
   if (filters.spots) {
     for (const f of st.fmt) {
       const values = spotValues(filters.spots, zones.filter((z) => z.format === f.format).map((z) => z.adsgZoneId), [f.format]);
       if (!values.length) continue; // no zones of the format (own deals, unknown types): the share stays
-      requests++;
-      const rows = await report({ ...base, groupBy: "country", extra: { [filters.spots.param]: values } });
+      const rows = await ask("country", { [filters.spots.param]: values });
+      if (typeof rows === "string") { notes.push(`${f.format}: ${rows} — по доле формата`); continue; }
       const v = popunderScoped(rows, f.imps > 0 ? { impsOwn: f.imps } : null, st.fmtImps > 0 ? { impsOwn: st.fmtImps } : null);
       if (!v.ok) { notes.push(`${f.format}: ${v.why} — по доле формата`); continue; }
       const cells = allocateBroker(mapCountryRows(rows, resolver), { pageLoads: 0, impsOwn: 0, impsNetwork: 0, clicks: 0, revenue: f.rev, predicted: 0 });
@@ -202,15 +248,18 @@ export async function siteSliceWith(db: PrismaClient, report: Report, key: Slice
 
   if (filters.countries) {
     const cf = filters.countries;
-    const idRows: AsgRow[] = cf.kind === "id" ? (requests++, await report({ ...base, groupBy: "country" })) : [];
+    const ids = cf.kind === "id" ? await ask("country", {}) : [];
+    if (typeof ids === "string") notes.push(`страны: ${ids} — расход по тирам оценкой`);
+    const idRows = typeof ids === "string" ? null : ids;
     const byName = new Map(st.sources.map((x) => [x.asgName ?? "", x])), known = new Map(st.sources.map((x) => [x.slug, x]));
     const srcStored = new Map(st.src.map((x) => [x.slug, { pageLoads: x.loads, impsOwn: x.imps, impsNetwork: 0, clicks: 0, revenue: x.rev, predicted: x.predicted } as Measures]));
-    for (const t of slice.tiers) {
+    for (const t of idRows ? slice.tiers : []) {
       if (t.loads <= 0) continue; // no traffic of the tier: nothing to ask
-      const values = countryValues(cf, idRows, new Set(countries.filter((x) => x.tier === t.tier).map((x) => x.code)));
+      // only the tier's countries the site had traffic from: the whole directory is 100+ values in the URL
+      const values = countryValues(cf, idRows!, new Set(st.geo.filter((x) => x.tier === t.tier && x.loads > 0).map((x) => x.cc)));
       if (!values.length) { notes.push(`T${t.tier}: ADOK не отдал ID стран — источники оценкой`); continue; }
-      requests++;
-      const rows = await report({ ...base, groupBy: "traffic_source", extra: { [cf.param]: values } });
+      const rows = await ask("traffic_source", { [cf.param]: values }, cf.param);
+      if (typeof rows === "string") { notes.push(`T${t.tier}: ${rows} — источники оценкой`); continue; }
       const v = t12Scoped(rows, t.loads, st.siteLoads || null);
       if (!v.ok) { notes.push(`T${t.tier}: ${v.why} — источники оценкой`); continue; }
       t.sources = mapTrafficSourceRows(rows).map((x) => {
