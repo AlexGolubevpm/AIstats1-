@@ -9,8 +9,9 @@ import { DEFAULT_PLAN, readPlan } from "@/server/ingest/adspyglass/plan";
 import { LocalRawStore } from "@/server/ingest/raw-store";
 import { setAsgBudget } from "@/server/ingest/run";
 import { config } from "@/server/config";
-import { buyingView } from "@/server/queries/buying";
-import { cachedSlice, checkBuyingFilters, computeSlice, estimateSlice, saveBid } from "@/server/services/buying";
+import { runJob } from "@/server/jobs/handlers";
+import { buyingTable } from "@/server/queries/buying";
+import { cachedSlice, checkBuyingFilters, computeSiteSlice, estimateSlice, saveBid } from "@/server/services/buying";
 import { seedReference } from "@/server/seed/reference";
 import { resetDb, testDb } from "./helpers";
 
@@ -31,6 +32,7 @@ function adok(opts: { spots?: string; countries?: string } = { spots: "spots_ids
     const u = new URL(String(input)); calls.push(u);
     const g = u.searchParams.get("group_by");
     const zoneFiltered = opts.spots && u.searchParams.getAll(opts.spots).join(",") === "501,502";
+    const bannerFiltered = opts.spots && u.searchParams.getAll(opts.spots).join(",") === "503";
     const t12 = opts.countries ? u.searchParams.getAll(opts.countries) : [];
     let body: unknown = [];
     if (g === "website") body = [{ name: "101. hentaismile.com", hits: 10_000, impressions: 30_000, broker_hits: 28_000, broker_income: 30, predicted_income: 30 }];
@@ -38,6 +40,10 @@ function adok(opts: { spots?: string; countries?: string } = { spots: "spots_ids
       { name: "United States", iso: "US", hits: 5_000, impressions: 4_000, predicted_income: 8 },
       { name: "Germany", iso: "DE", hits: 2_000, impressions: 1_500, predicted_income: 2 },
       { name: "India", iso: "IN", hits: 3_000, impressions: 2_500, predicted_income: 1 }];
+    else if (g === "country" && bannerFiltered) body = [
+      { name: "United States", iso: "US", hits: 5_000, impressions: 12_000, predicted_income: 10 },
+      { name: "Germany", iso: "DE", hits: 2_000, impressions: 4_500, predicted_income: 4 },
+      { name: "India", iso: "IN", hits: 3_000, impressions: 5_500, predicted_income: 5 }];
     else if (g === "country") body = [
       { name: "United States", iso: "US", hits: 5_000, impressions: 16_000, broker_income: 900, predicted_income: 18 },
       { name: "Germany", iso: "DE", hits: 2_000, impressions: 6_000, broker_income: 900, predicted_income: 6 },
@@ -121,94 +127,115 @@ describe("«Окупаемость закупки» (ADR 0023)", () => {
     expect(b.calls.map((u) => u.searchParams.get("group_by"))).toEqual(["website", "country", "traffic_source", "ad_type"]);
   });
 
-  describe("the slice «formats × tiers» of the bought traffic", () => {
-    const sel = { siteId: "hs", from: DATE, to: DATE };
+  describe("the site slice: tiers × formats (revenue) and tiers × sources (cost)", () => {
+    const key = { siteId: "hs", from: DATE, to: DATE };
     const P = { from: DATE, to: DATE };
+    const ALL = { siteIds: null, tiers: [1, 2, 3, 4, 5], formats: null };
     beforeEach(async () => {
       // the stored cuts of the day (site, countries, formats, sources) — the slice is checked against them
       await ingestSiteGeo({ db, client: adok().client, raw, runId: "s0" }, [DATE], "hs", { ...PLAN, cuts: { ...PLAN.cuts, popunder_geo: false, source_t12: false } });
       await saveBuyingFilters(db, { spots: { param: "spots_ids[]", kind: "zone_ids" }, countries: { param: "countries[]", kind: "iso" } });
     });
 
-    it("Doni × popunder × T1: both filters in one request, the source's own row; the bid per tier decides", async () => {
+    it("exact: one country request per format, one source request per tier with traffic; the tree adds up; cost sits on the tier", async () => {
       const a = adok();
-      const d = await computeSlice(db, cfg, { ...sel, formats: ["POPUNDER"], tiers: [1] }, a.fetchImpl);
-      expect(d).toMatchObject({ exact: true, fmtExact: true, requests: 3, notes: [] });
-      const both = a.calls.find((u) => u.searchParams.get("group_by") === "traffic_source" && u.searchParams.getAll("spots_ids[]").length)!;
-      expect(both.searchParams.getAll("spots_ids[]")).toEqual(["501", "502"]);
-      expect(both.searchParams.getAll("countries[]")).toEqual(expect.arrayContaining(["US", "DE"]));
-      expect(both.searchParams.getAll("countries[]")).not.toContain("IN");
-      expect(both.searchParams.get("from")).toBe(DATE);
-      // Doni's T1 traffic: 5 000 loads; all formats $14 (its $20 × 14 / 20 of its own estimate), popunder $7 (half of the slice's estimate)
-      expect(d.tiers[0].sources.find((x) => x.slug === "doni")).toEqual({ slug: "doni", title: "Doni", loads: 5000, revenueAll: 14, revenueFmt: 7 });
-      expect(d.countries.map((c) => [c.cc, c.revenueFmt])).toEqual(expect.arrayContaining([["US", 8], ["DE", 2]])); // the popunder $11 spread 8 : 2 : 1
+      const d = await computeSiteSlice(db, cfg, key, a.fetchImpl);
+      expect(d).toMatchObject({ requests: 4, notes: [] }); // popunder, banner, T1, T4 — T2, T3, T5 have no traffic
+      expect(a.calls.filter((u) => u.searchParams.get("group_by") === "country").map((u) => u.searchParams.getAll("spots_ids[]").join(",")).sort()).toEqual(["501,502", "503"]);
+      expect(a.calls.filter((u) => u.searchParams.get("group_by") === "traffic_source").every((u) => u.searchParams.getAll("countries[]").length > 0 && u.searchParams.get("from") === DATE)).toBe(true);
+      const t1 = d.tiers.find((t) => t.tier === 1)!;
+      // popunder $11 spread 8 : 2 : 1 over US, DE, IN; banner $19 spread 10 : 4 : 5 → T1 = US + DE
+      expect(t1.formats).toEqual([{ format: "BANNER", revenue: 14, imps: 16500, exact: true }, { format: "POPUNDER", revenue: 10, imps: 5500, exact: true }]);
+      expect(t1.sources).toEqual([{ slug: "doni", title: "Doni", loads: 5000, revenue: 14 }, { slug: "direct", title: "Direct", loads: 2000, revenue: 5 }]);
+      expect(t1.sourcesExact).toBe(true);
 
-      // a bid of $2 per 1000 visits, 2 loads a visit → $1 per 1000 loads; popunder brings $1.40
+      const v = await buyingTable(P, ALL);
+      expect(v.rows).toHaveLength(1);
+      const site = v.rows[0];
+      expect(site).toMatchObject({ domain: "hentaismile.com", revenue: 30, exact: true });
+      expect(site.tiers.map((t) => [t.tier, t.revenue, t.formats.map((f) => [f.format, f.revenue])])).toEqual([
+        [1, 24, [["BANNER", 14], ["POPUNDER", 10]]], [4, 6, [["BANNER", 5], ["POPUNDER", 1]]]]);
+      // Doni is new in ADOK: revshare 100% until a share or a bid is set — it costs what its traffic earned; Direct is free
+      expect(site.tiers.map((t) => t.cost)).toEqual([14, 6]);
+      expect(site.cost).toBe(20);
+      expect(site.tiers[0].cpm).toBeCloseTo((24 / 22000) * 1000, 4);
+      expect(site.tiers[0].formats[1].cpm).toBeCloseTo((10 / 5500) * 1000, 4);
+      expect(v.total).toMatchObject({ revenue: 30, cost: 20 });
+      expect(v.computed).toEqual({ done: 1, of: 1 });
+
+      // filters: a tier, a format — the format's revenue with the whole tier's cost
+      const pop = await buyingTable(P, { siteIds: ["hs"], tiers: [1], formats: ["POPUNDER"] });
+      expect(pop.rows[0]).toMatchObject({ revenue: 10, cost: 14, imps: 5500 });
+      expect(pop.rows[0].tiers).toHaveLength(1);
+      expect((await buyingTable(P, { siteIds: [], tiers: [1], formats: null })).rows).toEqual([]);
+
+      // opening the page again spends nothing
+      const before = a.calls.length;
+      expect(await cachedSlice(db, key)).toMatchObject({ requests: 4 });
+      await buyingTable(P, ALL);
+      expect(a.calls.length).toBe(before);
+    });
+
+    it("a CPM bid of the source for the tier replaces its revshare: loads × bid / loads per visit; the site's bid wins, a later one is not used", async () => {
+      await computeSiteSlice(db, cfg, key, adok().fetchImpl);
       await saveBid(db, { sourceSlug: "doni", siteId: null, tier: 1, cpm: "2", loadsPerVisit: "2", validFrom: "2026-11-01" });
-      const v = await buyingView("hs", P, { formats: ["POPUNDER"], tiers: [1], source: "doni", margin: 0.2 });
-      expect(v.slice).toMatchObject({ cached: true, exact: true });
-      expect(v.tiers[0]).toMatchObject({ tier: 1, loads: 5000, revenue: 7, cost: 5, costKind: "bid", bid: 2, verdict: "raise" });
-      expect(v.tiers[0].revPer1k).toBeCloseTo(1.4);
-      expect(v.tiers[0].costPer1k).toBeCloseTo(1);
-      expect(v.tiers[0].maxBid).toBeCloseTo(1.12);
-      expect(v.tiers[0].maxCpm).toBeCloseTo(2.24); // the limit in the bid's own unit
-      expect(v.advice.verdict).toBe("raise");
+      const v = await buyingTable(P, ALL);
+      expect(v.rows[0].tiers.map((t) => [t.tier, t.cost])).toEqual([[1, 5], [4, 6]]); // T1: 5 000 loads × $1 per 1000; T4 still revshare
       expect(await db.auditLog.count({ where: { entity: "BidRate" } })).toBe(1);
-
-      // the site's own bid wins over the general one; a bid that starts after the period is not used
       await saveBid(db, { sourceSlug: "doni", siteId: "hs", tier: 1, cpm: "4", loadsPerVisit: "2", validFrom: "2026-11-10" });
       await saveBid(db, { sourceSlug: "doni", siteId: "hs", tier: 1, cpm: "9", loadsPerVisit: "1", validFrom: "2026-12-01" });
-      const dearer = await buyingView("hs", P, { formats: ["POPUNDER"], tiers: [1], source: "doni", margin: 0.2 });
-      expect(dearer.tiers[0]).toMatchObject({ bid: 4, verdict: "hold" });
-      expect(dearer.tiers[0].costPer1k).toBeCloseTo(2);
+      const dearer = await buyingTable(P, ALL);
+      expect(dearer.rows[0].tiers[0].cost).toBe(10);
+      expect(dearer.bids.map((b) => [b.cpm, b.site])).toEqual([[4, "hentaismile.com"], [2, null]]);
       await expect(saveBid(db, { sourceSlug: "nobody", siteId: null, tier: 1, cpm: "1", loadsPerVisit: "1", validFrom: DATE })).rejects.toThrow(/источник/);
       await expect(saveBid(db, { sourceSlug: "doni", siteId: null, tier: 1, cpm: "abc", loadsPerVisit: "1", validFrom: DATE })).rejects.toThrow(/Ставка/);
     });
 
-    it("all formats at once need no zone filter; two tiers are two requests; the cache spends nothing; without a bid a source costs its revshare", async () => {
-      const a = adok();
-      const d = await computeSlice(db, cfg, { ...sel, formats: null, tiers: [4, 1] }, a.fetchImpl);
-      expect(d.requests).toBe(2);
-      expect(a.calls.every((u) => u.searchParams.getAll("spots_ids[]").length === 0)).toBe(true);
-      expect(d.tiers.map((t) => [t.tier, t.sources.find((x) => x.slug === "doni")!.loads, t.sources.find((x) => x.slug === "doni")!.revenueFmt])).toEqual([[1, 5000, 14], [4, 2000, 6]]);
-      expect(await cachedSlice(db, { ...sel, formats: null, tiers: [1, 4] })).toMatchObject({ requests: 2 }); // the same slice whatever the order
-      expect(await cachedSlice(db, { ...sel, formats: ["POPUNDER"], tiers: [1, 4] })).toBeNull();
-
-      const v = await buyingView("hs", P, { formats: null, tiers: [1, 4], source: "paid", margin: 0.2 });
-      // Doni is new in ADOK: revshare 100% until the owner sets a share or a bid — its cost equals what it earned; Direct is free and left out
-      expect(v.tiers.map((t) => [t.tier, t.loads, t.costKind, t.verdict])).toEqual([[1, 5000, "revshare", "hold"], [4, 2000, "revshare", "hold"]]);
-      expect(v.total.loads).toBe(7000);
-      expect(v.sourceOptions.map((x) => [x.slug, x.paid])).toEqual([["doni", true], ["direct", false]]);
-      await saveBid(db, { sourceSlug: "doni", siteId: null, tier: 4, cpm: "1", loadsPerVisit: "1", validFrom: DATE });
-      const mixed = await buyingView("hs", P, { formats: null, tiers: [1, 4], source: "doni", margin: 0.2 });
-      expect(mixed.tiers[1]).toMatchObject({ tier: 4, costKind: "bid", cost: 2, verdict: "raise" }); // $3.00 per 1000 against $1.00
+    it("without the ADOK run the tree is an estimate and says so: the tier's revenue is exact, formats by their share, sources by the tier's share", async () => {
+      const e = await estimateSlice(db, key);
+      const t1 = e.tiers.find((t) => t.tier === 1)!;
+      expect(t1.revenue).toBe(24);
+      expect(t1.formats.find((f) => f.format === "POPUNDER")).toMatchObject({ exact: false });
+      expect(t1.formats.find((f) => f.format === "POPUNDER")!.revenue).toBeCloseTo(24 * (11 / 30), 4);
+      expect(t1.formats.reduce((a, f) => a + f.revenue, 0)).toBeCloseTo(24, 4); // the formats still add up to the tier
+      expect(t1.sources.find((x) => x.slug === "doni")!.loads).toBeCloseTo(4900);
+      const v = await buyingTable(P, ALL);
+      expect(v.rows[0]).toMatchObject({ exact: false, computedAt: null, revenue: 30 });
+      expect(v.computed.done).toBe(0);
     });
 
-    it("a filter ADOK ignores is caught: nothing is cached and the page shows the marked estimate", async () => {
-      await saveBuyingFilters(db, { countries: { param: "country_codes[]", kind: "iso" } });
-      await expect(computeSlice(db, cfg, { ...sel, formats: null, tiers: [1] }, adok().fetchImpl)).rejects.toThrow(/оценка/i);
-      await db.appSetting.deleteMany({ where: { key: FILTERS_KEY } });
-      await expect(computeSlice(db, cfg, { ...sel, formats: null, tiers: [1] }, adok().fetchImpl)).rejects.toThrow(/Проверить фильтры/);
-      expect(await db.buyingSlice.count()).toBe(0);
-
-      // the estimate: every source is given the site's geo and format mix — T1 is 70% of the loads, popunder 11/30 of the revenue
-      const e = await estimateSlice(db, { ...sel, formats: ["POPUNDER"], tiers: [1] });
-      expect(e).toMatchObject({ exact: false, fmtExact: false, requests: 0 });
-      const doni = e.tiers[0].sources.find((x) => x.slug === "doni")!;
-      expect(doni.loads).toBeCloseTo(4900);
-      expect(doni.revenueFmt).toBeCloseTo(doni.revenueAll * (11 / 30), 3);
-      const v = await buyingView("hs", P, { formats: ["POPUNDER"], tiers: [1], source: "doni", margin: 0.2 });
-      expect(v.slice).toMatchObject({ cached: false, exact: false });
-      expect(v.tiers[0].exact).toBe(false);
-    });
-
-    it("the zone filter ignored only in the combined request: the tier stays exact, the formats fall back to their share with a note", async () => {
+    it("a filter ADOK ignores is caught: the part keeps the estimate with a note; nothing exact — nothing cached", async () => {
+      // the zone filter is ignored, the country one works: sources exact, formats by share
       await saveBuyingFilters(db, { spots: { param: "spot_ids[]", kind: "zone_ids" }, countries: { param: "countries[]", kind: "iso" } });
-      const d = await computeSlice(db, cfg, { ...sel, formats: ["POPUNDER"], tiers: [1] }, adok().fetchImpl);
-      expect(d).toMatchObject({ exact: true, fmtExact: false });
-      expect(d.notes.join(" ")).toMatch(/фильтр по зонам не сработал/);
-      const doni = d.tiers[0].sources.find((x) => x.slug === "doni")!;
-      expect(doni.revenueFmt).toBeCloseTo(14 * (11 / 30), 3);
+      const d = await computeSiteSlice(db, cfg, key, adok().fetchImpl);
+      expect(d.notes.join(" ")).toMatch(/POPUNDER: .*фильтр не сработал — по доле формата/);
+      expect(d.tiers[0]).toMatchObject({ sourcesExact: true });
+      expect(d.tiers[0].formats.every((f) => !f.exact)).toBe(true);
+      expect((await buyingTable(P, ALL)).rows[0].exact).toBe(false);
+
+      await db.buyingSlice.deleteMany();
+      await saveBuyingFilters(db, { countries: { param: "country_codes[]", kind: "iso" } });
+      await expect(computeSiteSlice(db, cfg, key, adok().fetchImpl)).rejects.toThrow(/оценка/i);
+      await db.appSetting.deleteMany({ where: { key: FILTERS_KEY } });
+      await expect(computeSiteSlice(db, cfg, key, adok().fetchImpl)).rejects.toThrow(/Проверить фильтры/);
+      expect(await db.buyingSlice.count()).toBe(0);
+    });
+
+    it("the job computes every site in turn, reports a site it could not do, and stops when the ADOK budget ends", async () => {
+      await db.site.create({ data: { id: "nd", domain: "nodata.test", title: "No data", adsgSiteId: 202 } });
+      const r = await runJob("asg:buying", { db, cfg, raw, today: "2026-11-25", fetchImpl: adok().fetchImpl }, { from: DATE, to: DATE });
+      expect(r.status).toBe("partial");
+      const run = () => db.ingestRun.findFirstOrThrow({ where: { job: "asg:buying" }, orderBy: { startedAt: "desc" } });
+      expect((await run()).error).toMatch(/nodata\.test: ADOK не дал точных данных/);
+      expect((await run()).rowsUpsert).toBe(1);
+      expect((await db.buyingSlice.findMany()).map((x) => x.siteId)).toEqual(["hs"]);
+
+      await db.buyingSlice.deleteMany();
+      await setAsgBudget(db, 1);
+      const stopped = await runJob("asg:buying", { db, cfg, raw, today: "2026-11-25", fetchImpl: adok().fetchImpl }, { from: DATE, to: DATE });
+      expect(stopped.status).toBe("partial");
+      expect((await run()).error).toMatch(/остановлено на hentaismile\.com/);
+      expect(await db.buyingSlice.count()).toBe(0);
     });
   });
 });

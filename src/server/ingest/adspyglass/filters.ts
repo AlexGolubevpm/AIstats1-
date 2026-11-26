@@ -99,18 +99,6 @@ export function t12Revenue(t12: Measures, all: Measures | undefined): number {
   return all.revenue * loadShare;
 }
 
-/**
- * The revenue of some formats inside a slice (a source's traffic in a tier). When ADOK left
- * broker_income unfiltered by zones (it is not below the whole slice while the formats are clearly a
- * part of it), the slice's revenue is spread by the formats' share of predicted income, then of
- * impressions. Never above the slice.
- */
-export function formatRevenue(part: Measures, whole: Measures, wholeRevenue: number): number {
-  const share = whole.predicted > 0 ? part.predicted / whole.predicted : whole.impsOwn > 0 ? part.impsOwn / whole.impsOwn : 1;
-  const unfiltered = part.revenue >= wholeRevenue * 0.98 && share < 0.9;
-  return Math.min(wholeRevenue, unfiltered ? wholeRevenue * Math.max(0, share) : part.revenue);
-}
-
 /** Is a «formats inside a slice» answer really narrower? By own impressions: some, not above the slice, and not the whole slice when the formats are a clear part of the site. */
 export function formatScoped(partImps: number, wholeImps: number, expectedShare: number | null): { ok: boolean; why: string } {
   if (partImps <= 0) return { ok: false, why: "пустой ответ" };

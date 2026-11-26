@@ -686,44 +686,52 @@ test("integrations: the daily ADOK budget is ours to change — a number, or «�
   await expect(page.getByText(/Суточный бюджет: 800 запросов/)).toBeVisible();
 });
 
-test("buying: formats and tiers in the URL, a bid for the source turns into the verdict per tier, the exact ADOK run says why it cannot", async ({ page }) => {
+test("buying: one tree site → tier → format with revenue, cost and CPM; tier and format chips in the URL; a bid changes the tier's cost", async ({ page }) => {
   await login(page, "/buying");
   await expect(page.getByRole("heading", { name: "Окупаемость закупки" })).toBeVisible();
-  await expect(page.getByTestId("buying-verdict")).toBeVisible();
-  await expect(page.getByTestId("buying-estimate")).toContainText("Оценка");
-  await expect(page.getByTestId("buying-scope")).toContainText("все форматы · T1 + T2");
+  const tree = page.getByTestId("buying-tree");
+  await expect(tree.locator("thead")).toContainText("ДоходРасходCPM");
+  await expect(tree.getByTestId("buying-site-row").first()).toContainText("оценка");
+  await expect(page.getByTestId("buying-computed")).toContainText(/точно посчитано 0 из \d+ сайтов/);
+  // one site: opens to tiers, a tier opens to formats; the cost stays on the tier
+  const sites = await page.getByTestId("buying-site").locator("option").allTextContents();
+  await page.getByTestId("buying-site").selectOption(sites[1]);
+  await expect(page).toHaveURL(new RegExp(`site=${sites[1].replace(/\./g, "\\.")}`));
+  await expect(tree.getByTestId("buying-site-row")).toHaveCount(1);
+  await expect(tree.getByTestId("buying-tier-row").first()).toContainText("T1");
+  await tree.getByTestId("buying-tier-row").first().click();
+  const fmtRow = tree.getByTestId("buying-format-row").first();
+  await expect(fmtRow).toContainText("$");
+  await expect(fmtRow.locator("td").nth(2)).toHaveText("—");
+  // chips
+  await page.getByTestId("buying-tiers").getByRole("button", { name: "T1" }).click();
+  await expect(page).toHaveURL(/tiers=1(&|$)/);
+  await expect(tree.getByTestId("buying-tier-row")).toHaveCount(1);
   await page.getByTestId("buying-formats").getByRole("button", { name: "Popunder" }).click();
   await expect(page).toHaveURL(/fmt=POPUNDER/);
-  await page.getByTestId("buying-tiers").getByRole("button", { name: "T2" }).click();
-  await expect(page).toHaveURL(/tiers=1(&|$)/);
-  await expect(page.getByTestId("buying-scope")).toContainText("Popunder · T1");
-  // the source and its bid
-  const options = await page.getByTestId("buying-source").locator("option").allTextContents();
-  expect(options.length).toBeGreaterThan(1);
-  await page.getByTestId("buying-source").selectOption({ index: 1 });
-  await expect(page).toHaveURL(/src=/);
+  await tree.getByTestId("buying-tier-row").first().click();
+  await expect(tree.getByTestId("buying-format-row")).toHaveCount(1);
+  await expect(tree.getByTestId("buying-format-row")).toContainText("Popunder");
+  // a bid for a source on T1 changes the tier's cost
+  const costBefore = await tree.getByTestId("buying-tier-row").first().locator("td").nth(2).innerText();
+  await page.getByTestId("buying-bids-block").locator("summary").click();
   const bids = page.getByTestId("buying-bids");
-  await bids.locator("input[name=cpm]").fill("0.5");
-  await bids.locator("input[name=loadsPerVisit]").fill("2");
+  await bids.locator("select[name=sourceSlug]").selectOption({ index: 1 });
+  await bids.locator("input[name=cpm]").fill("50");
   await bids.locator("input[name=validFrom]").fill("2026-01-01");
   await bids.getByRole("button", { name: "Сохранить ставку" }).click();
   await expect(page.getByText("Ставка сохранена")).toBeVisible();
-  await expect(bids.locator("tbody tr")).toContainText(["$0.50"]);
-  await expect(bids.locator("tbody tr").first()).toContainText("$0.2500"); // per 1000 loads
-  await expect(page.getByText(/\$0\.50 → \$\d+\.\d\d за 1000 визитов/)).toBeVisible(); // the tier row: the bid and its limit in the same unit
-  await page.getByTestId("buying-margin").fill("30");
-  await page.getByTestId("buying-margin").press("Enter");
-  await expect(page).toHaveURL(/margin=30/);
-  await expect(page.getByText("Предел ставки (маржа 30%)")).toBeVisible();
-  // exact run: no filters found yet → the reason, the estimate stays
-  await page.getByTestId("buying-compute").click();
-  await expect(page.getByText(/Проверить фильтры ADOK». Пока показана оценка/)).toBeVisible();
-  await page.getByTestId("buying-check").click();
-  await expect(page.getByText(/ASG_AUTH_EMAIL/).last()).toBeVisible(); // no ADOK credentials in E2E
+  await expect(bids.locator("tbody tr").first()).toContainText("$50.00");
+  await expect(tree.getByTestId("buying-tier-row").first().locator("td").nth(2)).not.toHaveText(costBefore);
   await bids.getByRole("button", { name: "Удалить" }).click();
   await expect(page.getByText("Ставка удалена")).toBeVisible();
-  await page.getByRole("link", { name: "Окупаемость закупки" }).first().click();
-  await expect(page).toHaveURL(/\/buying/);
+  // the exact run says why it cannot (no ADOK credentials in E2E); the estimate stays
+  await tree.getByRole("button", { name: "Посчитать точно" }).click();
+  await expect(page.getByText(/ASG_AUTH_EMAIL/).first()).toBeVisible();
+  await expect(tree.getByTestId("buying-site-row").first()).toContainText("оценка");
+  await page.getByTestId("buying-filters-block").locator("summary").click();
+  await expect(page.getByTestId("buying-filters")).toContainText("фильтр не найден");
+  await expect(page.getByTestId("buying-check")).toBeVisible();
 });
 
 test("site page: KPI cards compare with the bundle and the network, «Динамика» draws the cut by day, «Качество данных» lists the sources", async ({ page }) => {
